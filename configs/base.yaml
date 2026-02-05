@@ -1,0 +1,68 @@
+# AnyMAL Base Configuration
+# Common settings shared across training stages
+
+# Model Architecture
+model:
+  # LLM settings
+  # Use local path if downloaded, or HuggingFace model name
+  llm_model_name: "./checkpoints/llama3-8b-instruct"  # or "meta-llama/Meta-Llama-3-8B-Instruct"
+  use_qlora: true
+  lora_r: 64
+  lora_alpha: 16
+  lora_dropout: 0.05
+  lora_target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+  # Vision encoder settings
+  vision_model_name: "ViT-L-14"
+  vision_pretrained: "openai"  # or "laion2b_s34b_b88k" for LAION weights
+  freeze_vision: true
+
+  # Projector settings
+  projector_type: "perceiver"  # or "linear"
+  num_image_tokens: 64
+  projector_layers: 6
+  projector_heads: 16
+  projector_ff_mult: 4
+
+  # Memory optimization
+  use_flash_attention: true
+  gradient_checkpointing: true
+
+# Data settings
+data:
+  image_size: 224
+  max_length: 2048  # Maximum text sequence length
+  dataloader_num_workers: 4
+  pin_memory: true
+
+# Training settings (overridden in stage-specific configs)
+training:
+  seed: 42
+  use_amp: true
+  amp_dtype: "bfloat16"  # or "float16"
+  max_grad_norm: 1.0
+  weight_decay: 0.01
+
+# Logging
+logging:
+  logging_steps: 10
+  use_wandb: false
+  wandb_project: "anymal"
+
+# Checkpointing
+checkpointing:
+  save_steps: 1000
+  save_total_limit: 3
+  output_dir: "./outputs"
+
+# Hardware (8x A100 80GB)
+hardware:
+  num_gpus: 8
+  gpu_memory: 80  # GB

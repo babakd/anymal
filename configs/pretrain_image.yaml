@@ -1,0 +1,87 @@
+# AnyMAL Stage 1: Alignment Pretraining Configuration
+# Trains the Perceiver Resampler to align image features with LLM space
+
+# Inherit from base config
+defaults:
+  - base
+
+# Stage identifier
+stage: 1
+stage_name: "alignment_pretraining"
+
+# Override model settings for Stage 1
+model:
+  # In Stage 1, we don't use LoRA
+  use_qlora: false  # Freeze LLM completely
+
+# Data settings for LAION
+data:
+  # LAION dataset
+  train_data_path: "./data/laion"  # Path to LAION data
+  eval_data_path: null  # Optional validation data
+  streaming: false  # Set true for large-scale training
+
+  # Caption format
+  caption_prompt: "A photo of"
+
+  # Captions are short; keep sequence length small for efficiency
+  max_length: 256
+
+  # Batch size per GPU
+  # With 8x A100 and gradient accumulation, effective batch = 64 * 8 * 4 = 2048
+  per_device_batch_size: 64
+  gradient_accumulation_steps: 4
+
+  # For streaming large datasets
+  shuffle_buffer_size: 10000
+
+# Training hyperparameters (from paper)
+training:
+  # Optimization
+  learning_rate: 2.0e-4
+  lr_scheduler_type: "cosine"
+  warmup_steps: 1000
+  weight_decay: 0.01
+
+  # Training duration
+  max_steps: 100000
+  num_epochs: null  # Use max_steps instead
+
+  # What to train
+  train_projector_only: true  # Only train Perceiver Resampler
+
+# Logging
+logging:
+  logging_steps: 10
+  use_wandb: true
+  wandb_project: "anymal-pretrain"
+  wandb_run_name: "stage1-alignment"
+
+# Checkpointing
+checkpointing:
+  save_steps: 5000
+  save_total_limit: 5
+  output_dir: "./outputs/pretrain"
+
+# Evaluation
+evaluation:
+  eval_steps: 5000  # Evaluate every N steps
+  eval_strategy: "steps"
+
+# Expected training time on 8x A100: ~1.5-2 days for 100K steps
+# Memory usage per GPU: ~40-50GB with QLoRA off, bf16
+
+# Educational notes:
+# -----------------
+# Stage 1 is about teaching the projector to convert CLIP features
+# into tokens that the LLM can "understand" as if they were text.
+#
+# The training signal is simple: predict the caption given the image.
+# If the model can do this well, it means the image tokens contain
+# the right information in the right format.
+#
+# Key observations during training:
+# - Loss should drop quickly in first 10K steps
+# - Steady improvement until ~50K steps
+# - Slower gains from 50K-100K
+# - Final loss around 2.5-3.0 is typical

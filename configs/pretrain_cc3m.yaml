@@ -1,0 +1,113 @@
+# AnyMAL Stage 1: Alignment Pretraining with CC3M
+# Configuration for moderate-scale training with Conceptual Captions 3M
+
+# Inherit from base config
+defaults:
+  - base
+
+# Stage identifier
+stage: 1
+stage_name: "alignment_pretraining_cc3m"
+
+# Model settings for Stage 1
+model:
+  # In Stage 1, we don't use LoRA
+  use_qlora: false  # Freeze LLM completely
+
+  # Use local LLaMA checkpoint
+  llm_model_name: "./checkpoints/llama3-8b-instruct"
+
+  # Vision encoder
+  vision_model_name: "ViT-L-14"
+  vision_pretrained: "openai"
+
+  # Projector
+  projector_type: "perceiver"
+  num_image_tokens: 64
+  projector_layers: 6
+
+# Data settings for CC3M
+data:
+  # CC3M dataset (downloaded via img2dataset)
+  train_data_path: "./data/cc3m"
+  eval_data_path: null
+  streaming: false
+
+  # Caption format
+  caption_prompt: "A photo of"
+
+  # Image processing
+  image_size: 224
+  max_length: 256
+
+  # Batch size per GPU
+  # With 8x GPU and gradient accumulation: 32 * 8 * 4 = 1024 effective batch
+  per_device_batch_size: 32
+  gradient_accumulation_steps: 4
+
+  # Data loading
+  dataloader_num_workers: 8
+  pin_memory: true
+
+# Training hyperparameters
+training:
+  # Optimization
+  learning_rate: 2.0e-4
+  lr_scheduler_type: "cosine"
+  warmup_steps: 500
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+  # Training duration (~7 epochs on CC3M)
+  max_steps: 20000
+  num_epochs: null
+
+  # What to train
+  train_projector_only: true
+
+  # Mixed precision
+  use_amp: true
+  amp_dtype: "bfloat16"
+
+  # Reproducibility
+  seed: 42
+
+# Logging
+logging:
+  logging_steps: 100
+  use_wandb: true
+  wandb_project: "anymal-pretrain"
+  wandb_run_name: "stage1-cc3m"
+
+# Checkpointing
+checkpointing:
+  save_steps: 2000
+  save_total_limit: 5
+  output_dir: "./outputs/pretrain_cc3m"
+
+# Evaluation
+evaluation:
+  eval_steps: 2000
+  eval_strategy: "steps"
+
+# Data download instructions:
+# ---------------------------
+# 1. Install img2dataset: pip install img2dataset
+#
+# 2. Download CC3M TSV from: https://github.com/google-research-datasets/conceptual-captions
+#    The file contains URLs and captions.
+#
+# 3. Run img2dataset:
+#    img2dataset --url_list cc3m.tsv \
+#        --output_folder ./data/cc3m \
+#        --resize_mode center_crop \
+#        --image_size 224 \
+#        --processes_count 16 \
+#        --thread_count 64 \
+#        --output_format webdataset
+#
+# 4. For streaming mode (large datasets), set streaming: true and provide shard pattern:
+#    train_data_path: "./data/cc3m/{00000..00331}.tar"
+#
+# Expected disk usage: ~50GB for images
+# Expected training time: ~12-16 hours on 8x A100

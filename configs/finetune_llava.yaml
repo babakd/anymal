@@ -1,0 +1,129 @@
+# AnyMAL Stage 2: Instruction Tuning with LLaVA-Instruct-150K
+# Configuration for multimodal instruction tuning
+
+# Inherit from base config
+defaults:
+  - base
+
+# Stage identifier
+stage: 2
+stage_name: "instruction_tuning_llava"
+
+# Model settings for Stage 2
+model:
+  # Use local LLaMA checkpoint
+  llm_model_name: "./checkpoints/llama3-8b-instruct"
+
+  # Enable LoRA for Stage 2
+  use_qlora: true
+  lora_r: 64
+  lora_alpha: 16
+  lora_dropout: 0.05
+  lora_target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+  # Vision encoder (frozen)
+  vision_model_name: "ViT-L-14"
+  vision_pretrained: "openai"
+  freeze_vision: true
+
+  # Projector (initialized from Stage 1 checkpoint)
+  projector_type: "perceiver"
+  num_image_tokens: 64
+  projector_layers: 6
+
+  # Memory optimization
+  use_flash_attention: true
+  gradient_checkpointing: true
+
+# Data settings for LLaVA-Instruct
+data:
+  # LLaVA-Instruct-150K
+  train_data_path: "./data/llava_instruct_150k.json"
+  image_dir: "./data/coco/train2017"
+  eval_data_path: null
+
+  # Image processing
+  image_size: 224
+  max_length: 2048
+
+  # Batch size per GPU
+  # With 8x GPU and gradient accumulation: 8 * 8 * 2 = 128 effective batch
+  per_device_batch_size: 8
+  gradient_accumulation_steps: 2
+
+  # Data loading
+  dataloader_num_workers: 4
+  pin_memory: true
+
+# Training hyperparameters
+training:
+  # Optimization (lower LR for fine-tuning)
+  learning_rate: 1.0e-5
+  lr_scheduler_type: "cosine"
+  warmup_steps: 100
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+  # Training duration
+  max_steps: 3000
+  num_epochs: null
+
+  # What to train
+  train_projector_only: false  # Train both projector and LoRA
+
+  # Mixed precision
+  use_amp: true
+  amp_dtype: "bfloat16"
+
+  # Reproducibility
+  seed: 42
+
+# Checkpoint to load from Stage 1
+checkpoint:
+  pretrain_checkpoint: "./outputs/pretrain_cc3m/checkpoint-20000"
+  load_projector: true
+  load_lora: false  # No LoRA from Stage 1
+
+# Logging
+logging:
+  logging_steps: 50
+  use_wandb: true
+  wandb_project: "anymal-finetune"
+  wandb_run_name: "stage2-llava"
+
+# Checkpointing
+checkpointing:
+  save_steps: 500
+  save_total_limit: 3
+  output_dir: "./outputs/finetune_llava"
+
+# Evaluation
+evaluation:
+  eval_steps: 500
+  eval_strategy: "steps"
+
+# Data download instructions:
+# ---------------------------
+# 1. Download LLaVA-Instruct-150K:
+#    wget https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/raw/main/llava_instruct_150k.json \
+#        -O ./data/llava_instruct_150k.json
+#
+# 2. Download COCO 2017 train images:
+#    wget http://images.cocodataset.org/zips/train2017.zip
+#    unzip train2017.zip -d ./data/coco/
+#
+# Expected disk usage: ~18GB for COCO images
+# Expected training time: ~2-3 hours on 8x A100
+#
+# Stage 2 notes:
+# - Requires pretrained Stage 1 checkpoint for projector weights
+# - LoRA adapters are initialized fresh (not loaded from Stage 1)
+# - Lower learning rate to avoid catastrophic forgetting
+# - Shorter training since dataset is smaller and task is simpler

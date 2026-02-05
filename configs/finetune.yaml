@@ -1,0 +1,97 @@
+# AnyMAL Stage 2: Instruction Fine-tuning Configuration
+# Fine-tunes the model on instruction-following data with LoRA
+
+# Inherit from base config
+defaults:
+  - base
+
+# Stage identifier
+stage: 2
+stage_name: "instruction_finetuning"
+
+# Override model settings for Stage 2
+model:
+  # Enable LoRA for Stage 2
+  use_qlora: true
+  lora_r: 64
+  lora_alpha: 16
+  lora_dropout: 0.05
+
+# Data settings for instruction tuning
+data:
+  # Instruction dataset (LLaVA-Instruct-150K format)
+  train_data_path: "./data/llava/llava_instruct_150k.json"
+  image_dir: "./data/coco/train2017"  # Images directory
+  eval_data_path: null
+
+  # Smaller batch size for longer sequences
+  per_device_batch_size: 16
+  gradient_accumulation_steps: 2
+  # Effective batch = 16 * 8 * 2 = 256
+
+  # Longer sequences for conversations
+  max_length: 2048
+
+  # System prompt
+  system_prompt: |
+    You are a helpful AI assistant that can see and understand images.
+    Provide detailed, accurate, and helpful responses to questions about images.
+
+# Training hyperparameters (from paper)
+training:
+  # Lower learning rate for fine-tuning
+  learning_rate: 1.0e-5
+  lr_scheduler_type: "cosine"
+  warmup_steps: 100
+  weight_decay: 0.01
+
+  # Much fewer steps than Stage 1
+  max_steps: 3000
+  num_epochs: null
+
+  # Continue from Stage 1
+  pretrain_checkpoint: "./outputs/pretrain/checkpoint-100000"
+
+  # Train projector + LoRA
+  train_projector_only: false
+
+# Logging
+logging:
+  logging_steps: 10
+  use_wandb: true
+  wandb_project: "anymal-finetune"
+  wandb_run_name: "stage2-instruct"
+
+# Checkpointing
+checkpointing:
+  save_steps: 500
+  save_total_limit: 5
+  output_dir: "./outputs/finetune"
+
+# Evaluation
+evaluation:
+  eval_steps: 500
+  eval_strategy: "steps"
+
+# Expected training time on 8x A100: ~2-3 hours for 3K steps
+# Memory usage per GPU: ~50-60GB with QLoRA, bf16
+
+# Educational notes:
+# -----------------
+# Stage 2 teaches the model to follow instructions and have conversations.
+#
+# Key differences from Stage 1:
+# - LoRA adapters are now trainable (LLM can be adjusted)
+# - Much lower learning rate (don't want to forget alignment)
+# - Much fewer steps (fine-tuning is quick)
+# - More complex data (multi-turn conversations)
+#
+# Training observations:
+# - Loss should start around 2.0-2.5 (if Stage 1 was good)
+# - Drops to ~1.5-2.0 by end of training
+# - Watch for overfitting (eval loss rising)
+#
+# Qualitative checks after training:
+# - Model should give detailed image descriptions
+# - Should answer questions about image content
+# - Should handle multi-turn conversations
