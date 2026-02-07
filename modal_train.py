@@ -100,6 +100,13 @@ class Trainer:
         # Download LLaVA dataset JSON if not cached
         self._ensure_llava_data_cached()
 
+        # Download VQA evaluation data if not cached (non-fatal if it fails)
+        try:
+            self._ensure_vqa_data_cached()
+        except Exception as e:
+            print(f"Warning: VQA data download failed: {e}")
+            print("Training will proceed without VQA evaluation.")
+
         # Pre-import heavy modules
         print("Pre-importing modules...")
         from models import AnyMAL
@@ -191,7 +198,7 @@ class Trainer:
                 if len(images) >= num_images:
                     break
 
-        COCO_BASE_URL = "https://images.cocodataset.org/train2017"
+        COCO_BASE_URL = "http://images.cocodataset.org/train2017"
 
         def download_one(img_name):
             path = os.path.join(image_dir, img_name)
@@ -235,6 +242,126 @@ class Trainer:
         volume.commit()
         print(f"COCO images cached to {image_dir}")
 
+    def _ensure_vqa_data_cached(self, num_val_images: int = 500):
+        """Download VQAv2 evaluation data and a subset of COCO val2014 images."""
+        import json
+        import zipfile
+        import requests
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        vqa_dir = "/checkpoints/vqa_data"
+        val_image_dir = "/checkpoints/coco_val2014"
+        os.makedirs(vqa_dir, exist_ok=True)
+        os.makedirs(val_image_dir, exist_ok=True)
+
+        # Download VQAv2 questions
+        questions_path = os.path.join(vqa_dir, "v2_OpenEnded_mscoco_val2014_questions.json")
+        if not os.path.exists(questions_path):
+            print("Downloading VQAv2 val2014 questions...")
+            url = "https://cvmlp.s3.amazonaws.com/vqa/mscoco/vqa/v2_Questions_Val_mscoco.zip"
+            try:
+                resp = requests.get(url, timeout=120)
+                resp.raise_for_status()
+                zip_path = os.path.join(vqa_dir, "questions.zip")
+                with open(zip_path, "wb") as f:
+                    f.write(resp.content)
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    zf.extractall(vqa_dir)
+                os.remove(zip_path)
+                volume.commit()
+                print(f"VQA questions saved to {vqa_dir}")
+            except Exception as e:
+                print(f"Warning: Could not download VQA questions: {e}")
+        else:
+            print(f"Using cached VQA questions from {vqa_dir}")
+
+        # Download VQAv2 annotations
+        annotations_path = os.path.join(vqa_dir, "v2_mscoco_val2014_annotations.json")
+        if not os.path.exists(annotations_path):
+            print("Downloading VQAv2 val2014 annotations...")
+            url = "https://cvmlp.s3.amazonaws.com/vqa/mscoco/vqa/v2_Annotations_Val_mscoco.zip"
+            try:
+                resp = requests.get(url, timeout=120)
+                resp.raise_for_status()
+                zip_path = os.path.join(vqa_dir, "annotations.zip")
+                with open(zip_path, "wb") as f:
+                    f.write(resp.content)
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    zf.extractall(vqa_dir)
+                os.remove(zip_path)
+                volume.commit()
+                print(f"VQA annotations saved to {vqa_dir}")
+            except Exception as e:
+                print(f"Warning: Could not download VQA annotations: {e}")
+        else:
+            print(f"Using cached VQA annotations from {vqa_dir}")
+
+        # Download a subset of COCO val2014 images for VQA evaluation
+        manifest_path = os.path.join(val_image_dir, "manifest.json")
+        if os.path.exists(manifest_path):
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            if manifest.get("downloaded", 0) + manifest.get("skipped", 0) >= num_val_images:
+                print(f"Using cached COCO val2014 images ({manifest.get('downloaded', 0) + manifest.get('skipped', 0)} images)")
+                return
+
+        # Get image IDs from VQA questions to know which images to download
+        if not os.path.exists(questions_path):
+            print("Warning: VQA questions not available, skipping val image download")
+            return
+
+        with open(questions_path) as f:
+            questions = json.load(f)
+
+        # Get unique image IDs
+        seen_ids = set()
+        image_ids = []
+        for q in questions["questions"]:
+            img_id = q["image_id"]
+            if img_id not in seen_ids:
+                seen_ids.add(img_id)
+                image_ids.append(img_id)
+                if len(image_ids) >= num_val_images:
+                    break
+
+        COCO_VAL_URL = "http://images.cocodataset.org/val2014"
+
+        def download_one(img_id):
+            filename = f"COCO_val2014_{img_id:012d}.jpg"
+            path = os.path.join(val_image_dir, filename)
+            if os.path.exists(path):
+                return (filename, "skip")
+            try:
+                resp = requests.get(f"{COCO_VAL_URL}/{filename}", timeout=30)
+                resp.raise_for_status()
+                with open(path, "wb") as f:
+                    f.write(resp.content)
+                return (filename, "ok")
+            except Exception as e:
+                return (filename, f"fail: {e}")
+
+        print(f"Downloading {len(image_ids)} COCO val2014 images for VQA eval...")
+        ok_count, skip_count, fail_count = 0, 0, 0
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [executor.submit(download_one, img_id) for img_id in image_ids]
+            for i, future in enumerate(as_completed(futures)):
+                _, status = future.result()
+                if status == "ok":
+                    ok_count += 1
+                elif status == "skip":
+                    skip_count += 1
+                else:
+                    fail_count += 1
+                if (i + 1) % 100 == 0:
+                    print(f"  Val images: {i+1}/{len(image_ids)} (ok={ok_count}, skip={skip_count}, fail={fail_count})")
+
+        print(f"COCO val2014: downloaded={ok_count}, cached={skip_count}, failed={fail_count}")
+
+        manifest = {"downloaded": ok_count, "skipped": skip_count, "failed": fail_count, "total": len(image_ids)}
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f)
+        volume.commit()
+
     @modal.method()
     def train(
         self,
@@ -245,6 +372,8 @@ class Trainer:
         use_wandb: bool = False,
         use_dummy_data: bool = False,
         wandb_api_key: str = None,
+        track_per_layer_grad_norms: bool = True,
+        run_eval_benchmarks: bool = True,
     ):
         """
         Run AnyMAL training on Modal.
@@ -291,6 +420,8 @@ class Trainer:
                 batch_size=batch_size,
                 use_wandb=use_wandb,
                 use_dummy_data=use_dummy_data,
+                track_per_layer_grad_norms=track_per_layer_grad_norms,
+                run_eval_benchmarks=run_eval_benchmarks,
             )
         else:
             lr = learning_rate or 2e-4
@@ -308,13 +439,140 @@ class Trainer:
         print("Training complete! Outputs saved to volume.")
 
 
-def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, use_dummy_data):
-    """Run Stage 2 fine-tuning."""
+def _diagnose_model(model):
+    """Print diagnostic info about model configuration."""
+    print("\n" + "=" * 60)
+    print("MODEL DIAGNOSTICS")
+    print("=" * 60)
+
+    # Tokenizer / pad token
+    tok = model.tokenizer
+    print(f"  Tokenizer vocab size: {len(tok)}")
+    print(f"  pad_token: {repr(tok.pad_token)} (id={tok.pad_token_id})")
+    print(f"  eos_token: {repr(tok.eos_token)} (id={tok.eos_token_id})")
+    print(f"  pad_token == eos_token? {tok.pad_token_id == tok.eos_token_id}")
+    if tok.pad_token_id == tok.eos_token_id:
+        print("  WARNING: pad_token equals eos_token - EOS labels will be masked!")
+
+    # Image placeholder token
+    placeholder_id = getattr(model, "image_placeholder_token_id", None)
+    if placeholder_id is not None:
+        placeholder_str = tok.decode([placeholder_id])
+        print(f"  image_placeholder_token_id: {placeholder_id} ({repr(placeholder_str)})")
+    else:
+        print("  image_placeholder_token_id: None (will prepend image tokens)")
+
+    # Parameter counts by component
+    groups = {"projector": [0, 0], "lora": [0, 0], "vision": [0, 0], "other": [0, 0]}
+    for name, param in model.named_parameters():
+        total = param.numel()
+        trainable = total if param.requires_grad else 0
+        if "projector" in name:
+            groups["projector"][0] += total
+            groups["projector"][1] += trainable
+        elif "lora" in name.lower():
+            groups["lora"][0] += total
+            groups["lora"][1] += trainable
+        elif "image_encoder" in name:
+            groups["vision"][0] += total
+            groups["vision"][1] += trainable
+        else:
+            groups["other"][0] += total
+            groups["other"][1] += trainable
+
+    print("\n  Parameter counts (total / trainable):")
+    for g, (t, tr) in groups.items():
+        print(f"    {g:12s}: {t:>12,} / {tr:>12,}")
+
+    print("=" * 60 + "\n")
+
+
+def _diagnose_dataset_sample(dataset, tokenizer, num_samples=3):
+    """Sample a few items from the dataset and log diagnostics."""
+    import torch
+    print("\n" + "=" * 60)
+    print("DATASET DIAGNOSTICS")
+    print("=" * 60)
+
+    for i in range(min(num_samples, len(dataset))):
+        sample = dataset[i]
+        img = sample["image"]
+        ids = sample["input_ids"]
+        mask = sample["attention_mask"]
+        labels = sample["labels"]
+
+        total_tokens = mask.sum().item()
+        supervised = (labels != -100).sum().item()
+        pad_count = (ids == tokenizer.pad_token_id).sum().item()
+
+        # Check if any image placeholder tokens exist
+        placeholder_id = getattr(dataset, "image_placeholder_token_id", None)
+        if placeholder_id is None:
+            # try the tokenizer vocab
+            vocab = tokenizer.get_vocab()
+            for c in ["<|reserved_special_token_0|>", "<|image|>"]:
+                if c in vocab:
+                    placeholder_id = vocab[c]
+                    break
+        has_placeholder = (ids == placeholder_id).sum().item() if placeholder_id else 0
+
+        print(f"\n  Sample {i}:")
+        print(f"    image shape: {list(img.shape)}, range: [{img.min():.2f}, {img.max():.2f}]")
+        print(f"    input_ids shape: {list(ids.shape)}, non-pad: {total_tokens}, pad: {pad_count}")
+        print(f"    labels: {supervised} supervised / {total_tokens} non-pad tokens ({100*supervised/max(total_tokens,1):.1f}%)")
+        print(f"    image placeholder tokens: {has_placeholder}")
+
+        # Decode a small window of supervised tokens to sanity-check
+        supervised_mask = labels != -100
+        if supervised_mask.any():
+            first_sup_idx = supervised_mask.nonzero(as_tuple=True)[0][0].item()
+            supervised_window = ids[first_sup_idx:first_sup_idx+20]
+            decoded = tokenizer.decode(supervised_window, skip_special_tokens=False)
+            print(f"    first supervised tokens: {repr(decoded[:100])}")
+
+        # Check that eos_token is NOT masked (should be supervised if at end of response)
+        eos_id = tokenizer.eos_token_id
+        eot_vocab = tokenizer.get_vocab()
+        eot_id = eot_vocab.get("<|eot_id|>", None)
+        if eot_id is not None:
+            eot_positions = (ids == eot_id).nonzero(as_tuple=True)[0]
+            if len(eot_positions) > 0:
+                eot_supervised = sum(1 for pos in eot_positions if labels[pos] != -100)
+                print(f"    <|eot_id|> tokens: {len(eot_positions)} total, {eot_supervised} supervised")
+
+    print("=" * 60 + "\n")
+
+
+def _diagnose_batch(batch, tokenizer, step_name="first batch"):
+    """Log diagnostics for a collated batch."""
+    print(f"\n--- Batch diagnostics ({step_name}) ---")
+    for key, val in batch.items():
+        if hasattr(val, "shape"):
+            print(f"  {key}: shape={list(val.shape)}, dtype={val.dtype}, device={val.device}")
+    if "labels" in batch:
+        labels = batch["labels"]
+        supervised = (labels != -100).sum().item()
+        total = labels.numel()
+        print(f"  labels: {supervised} supervised / {total} total ({100*supervised/max(total,1):.1f}%)")
+    if "images" in batch:
+        imgs = batch["images"]
+        print(f"  images range: [{imgs.min():.2f}, {imgs.max():.2f}]")
+    print("---\n")
+
+
+def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, use_dummy_data,
+                  track_per_layer_grad_norms=True, run_eval_benchmarks=True):
+    """Run Stage 2 fine-tuning with real COCO images."""
     import torch
     from models import AnyMAL
     from data import build_dataloader, ImageTextCollator
+    from data.dataset_splitter import deterministic_train_val_split
     from training import FinetuneTrainer
     from training.finetune import FinetuneConfig
+
+    if use_dummy_data:
+        print("WARNING: --use-dummy-data was passed but all training must use real images.")
+        print("Ignoring --use-dummy-data flag and loading real COCO images.")
 
     # Initialize model
     print("Initializing model...")
@@ -326,28 +584,32 @@ def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
         num_image_tokens=64,
         use_qlora=True,
         lora_r=64,
-        lora_alpha=16,
+        lora_alpha=64,
         gradient_checkpointing=True,
         use_flash_attention=False,  # Skip flash-attn, use SDPA instead
     )
 
-    # Load dataset
-    print("Loading dataset...")
-    if use_dummy_data:
-        dataset = create_dummy_instruction_dataset(
-            model.tokenizer,
-            num_samples=max_steps * batch_size * 2
-        )
-    else:
-        dataset = load_llava_instruct_dataset(model.tokenizer)
+    # Diagnose model
+    _diagnose_model(model)
+
+    # Always load real images - never use dummy data
+    print("Loading dataset with real COCO images...")
+    dataset = load_llava_instruct_dataset(model.tokenizer)
+
+    # Split into train/val
+    train_dataset, val_dataset = deterministic_train_val_split(dataset, val_fraction=0.05)
+    print(f"Dataset split: {len(train_dataset):,} train / {len(val_dataset):,} val")
+
+    # Diagnose dataset
+    _diagnose_dataset_sample(train_dataset, model.tokenizer)
 
     collator = ImageTextCollator(
         tokenizer=model.tokenizer,
         max_length=512,
     )
 
-    dataloader = build_dataloader(
-        dataset=dataset,
+    train_dataloader = build_dataloader(
+        dataset=train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=4,
@@ -355,9 +617,23 @@ def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
         collate_fn=collator,
     )
 
-    print(f"Dataset size: {len(dataset):,}")
+    eval_dataloader = build_dataloader(
+        dataset=val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=2,
+        distributed=False,
+        collate_fn=collator,
+    )
+
+    # Diagnose one collated batch
+    print("Sampling one batch for diagnostics...")
+    diag_iter = iter(train_dataloader)
+    diag_batch = next(diag_iter)
+    _diagnose_batch(diag_batch, model.tokenizer, "pre-training sample")
 
     # Create trainer config
+    eval_steps = max(50, max_steps // 10)  # ~10 eval points during training
     config = FinetuneConfig(
         max_steps=max_steps,
         gradient_accumulation_steps=4,
@@ -366,22 +642,59 @@ def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
         weight_decay=0.01,
         use_amp=True,
         amp_dtype="bfloat16",
-        logging_steps=10,
+        logging_steps=1,  # Log every step for close monitoring
         save_steps=max(100, max_steps // 4),
+        eval_steps=eval_steps,
+        max_eval_batches=200,  # Clip eval to 200 batches (~55s) during training
         output_dir="/checkpoints/finetune-output",
         use_wandb=use_wandb,
         wandb_project="anymal-finetune",
+        track_per_layer_grad_norms=track_per_layer_grad_norms,
     )
 
     # Train
     trainer = FinetuneTrainer(
         model=model,
         config=config,
-        train_dataloader=dataloader,
+        train_dataloader=train_dataloader,
+        eval_dataloader=eval_dataloader,
     )
 
+    # Set up eval runner for VQA benchmarks
+    eval_runner = None
+    if run_eval_benchmarks:
+        try:
+            from evaluation.eval_runner import EvalRunner
+            vqa_questions = "/checkpoints/vqa_data/v2_OpenEnded_mscoco_val2014_questions.json"
+            vqa_annotations = "/checkpoints/vqa_data/v2_mscoco_val2014_annotations.json"
+            vqa_image_dir = "/checkpoints/coco_val2014"
+            if os.path.exists(vqa_questions) and os.path.exists(vqa_annotations) and os.path.exists(vqa_image_dir):
+                eval_runner = EvalRunner(
+                    model=model,
+                    vqa_questions_file=vqa_questions,
+                    vqa_annotations_file=vqa_annotations,
+                    vqa_image_dir=vqa_image_dir,
+                )
+                print(f"VQA eval runner initialized (will run every {eval_steps} steps)")
+            else:
+                print("VQA data not found, skipping benchmark evaluation")
+        except Exception as e:
+            print(f"Could not initialize eval runner: {e}")
+
     metrics = trainer.train()
-    print(f"Training complete! Final metrics: {metrics}")
+
+    # Run final VQA eval
+    if eval_runner is not None:
+        print("\nRunning final VQA evaluation...")
+        try:
+            vqa_metrics = eval_runner.run(["vqa"])
+            if vqa_metrics and trainer.logger is not None:
+                trainer.logger.log(vqa_metrics)
+            print(f"Final VQA metrics: {vqa_metrics}")
+        except Exception as e:
+            print(f"Final VQA eval failed: {e}")
+
+    print(f"\nTraining complete! Final metrics: {metrics}")
 
 
 def run_pretrain(llama_path, max_steps, learning_rate, batch_size, use_wandb, use_dummy_data):
@@ -489,32 +802,38 @@ def load_llava_instruct_dataset(tokenizer):
 
     print(f"Loading LLaVA-Instruct-150K from {json_path}")
 
-    # Use real COCO images - filter dataset to only samples with available images
+    # Require real COCO images - no dummy image fallback
     image_dir = "/checkpoints/coco_images"
-    if os.path.exists(image_dir):
-        num_images = len([f for f in os.listdir(image_dir) if f.endswith('.jpg')])
-        print(f"Found {num_images} real COCO images in {image_dir}")
-        print("Filtering dataset to only samples with real images (no dummy images)")
-
-        dataset = InstructionDataset(
-            data_path=json_path,
-            image_dir=image_dir,
-            tokenizer=tokenizer,
-            image_size=224,
-            max_length=512,
-            filter_to_available_images=True,  # Only use samples with real images
-        )
-    else:
-        print("WARNING: No COCO images found, using dummy images")
-        dataset = InstructionDataset(
-            data_path=json_path,
-            image_dir=None,
-            tokenizer=tokenizer,
-            image_size=224,
-            max_length=512,
+    if not os.path.exists(image_dir):
+        raise RuntimeError(
+            f"COCO images directory not found at {image_dir}. "
+            "Real images are required for training. "
+            "The container setup should have downloaded them via _ensure_coco_images_cached()."
         )
 
-    print(f"Loaded {len(dataset)} instruction samples")
+    num_images = len([f for f in os.listdir(image_dir) if f.endswith('.jpg')])
+    print(f"Found {num_images} real COCO images in {image_dir}")
+    if num_images == 0:
+        raise RuntimeError(f"No JPEG images found in {image_dir}. Cannot train without real images.")
+
+    print("Filtering dataset to only samples with real images")
+
+    dataset = InstructionDataset(
+        data_path=json_path,
+        image_dir=image_dir,
+        tokenizer=tokenizer,
+        image_size=224,
+        max_length=512,
+        filter_to_available_images=True,  # Only use samples with real images
+    )
+
+    if len(dataset) == 0:
+        raise RuntimeError(
+            f"Dataset is empty after filtering. No LLaVA samples matched the "
+            f"{num_images} available COCO images. Check image filenames."
+        )
+
+    print(f"Loaded {len(dataset)} instruction samples with real images")
     return dataset
 
 
@@ -567,8 +886,11 @@ def load_llava_pretrain_dataset(tokenizer):
             if not caption:
                 caption = "A sample image."
 
-            # Use dummy image (downloading millions of images is impractical)
-            image = torch.randn(3, 224, 224)
+            # Use dummy image with CLIP normalization (bounded, like real images)
+            from data.data_utils import CLIP_MEAN, CLIP_STD
+            from torchvision import transforms as T
+            raw = torch.rand(3, 224, 224)
+            image = T.Normalize(mean=CLIP_MEAN, std=CLIP_STD)(raw)
 
             encoding = self.text_processor.encode_text(caption)
 
@@ -600,12 +922,15 @@ def create_dummy_instruction_dataset(tokenizer, num_samples=1000):
             self.num_samples = num_samples
             self.transform = get_image_transform(image_size=224, is_train=True)
             self.text_processor = TextProcessor(tokenizer, max_length=512)
+            from data.data_utils import CLIP_MEAN, CLIP_STD
+            from torchvision import transforms as T
+            self._clip_normalize = T.Normalize(mean=CLIP_MEAN, std=CLIP_STD)
 
         def __len__(self):
             return self.num_samples
 
         def __getitem__(self, idx):
-            image = torch.randn(3, 224, 224)
+            image = self._clip_normalize(torch.rand(3, 224, 224))
             conversations = [
                 {"role": "user", "content": f"What do you see in this image? (sample {idx})"},
                 {"role": "assistant", "content": "I see various objects in this image."},
@@ -633,12 +958,15 @@ def create_dummy_caption_dataset(tokenizer, num_samples=1000):
             self.tokenizer = tokenizer
             self.num_samples = num_samples
             self.text_processor = TextProcessor(tokenizer, max_length=256)
+            from data.data_utils import CLIP_MEAN, CLIP_STD
+            from torchvision import transforms as T
+            self._clip_normalize = T.Normalize(mean=CLIP_MEAN, std=CLIP_STD)
 
         def __len__(self):
             return self.num_samples
 
         def __getitem__(self, idx):
-            image = torch.randn(3, 224, 224)
+            image = self._clip_normalize(torch.rand(3, 224, 224))
             caption = f"A photograph showing various objects, sample {idx}."
             encoding = self.text_processor.encode_text(caption)
             labels = encoding["input_ids"].clone()
@@ -662,6 +990,8 @@ def main(
     use_wandb: bool = False,
     use_dummy_data: bool = False,
     wandb_api_key: str = None,
+    track_per_layer_grad_norms: bool = True,
+    run_eval_benchmarks: bool = True,
 ):
     """
     Entry point for Modal training.
@@ -679,6 +1009,8 @@ def main(
     print(f"  Batch size: {batch_size}")
     print(f"  Data: {'dummy' if use_dummy_data else 'LLaVA'}")
     print(f"  W&B: {'enabled' if use_wandb else 'disabled'}")
+    print(f"  Per-layer grad norms: {track_per_layer_grad_norms}")
+    print(f"  Eval benchmarks: {run_eval_benchmarks}")
 
     # Use the Trainer class - model loading happens once in @modal.enter()
     trainer = Trainer()
@@ -690,4 +1022,6 @@ def main(
         use_wandb=use_wandb,
         use_dummy_data=use_dummy_data,
         wandb_api_key=wandb_api_key,
+        track_per_layer_grad_norms=track_per_layer_grad_norms,
+        run_eval_benchmarks=run_eval_benchmarks,
     )

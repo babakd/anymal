@@ -8,7 +8,7 @@ model:
   llm_model_name: "./checkpoints/llama3-8b-instruct"  # or "meta-llama/Meta-Llama-3-8B-Instruct"
   use_qlora: true
   lora_r: 64
-  lora_alpha: 16
+  lora_alpha: 64
   lora_dropout: 0.05
   lora_target_modules:
     - "q_proj"

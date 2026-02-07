@@ -11,8 +11,9 @@ stage_name: "alignment_pretraining"
 
 # Override model settings for Stage 1
 model:
-  # In Stage 1, we don't use LoRA
-  use_qlora: false  # Freeze LLM completely
+  # Quantize LLM for memory savings (~11GB less) even though it's frozen.
+  # LoRA is disabled separately in the training script (use_lora=False).
+  use_qlora: true
 
 # Data settings for LAION
 data:

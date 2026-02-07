@@ -14,7 +14,7 @@ model:
   # Enable LoRA for Stage 2
   use_qlora: true
   lora_r: 64
-  lora_alpha: 16
+  lora_alpha: 64  # scaling = alpha/r = 1.0 (was 0.25 with alpha=16)
   lora_dropout: 0.05
 
 # Data settings for instruction tuning
@@ -22,7 +22,8 @@ data:
   # Instruction dataset (LLaVA-Instruct-150K format)
   train_data_path: "./data/llava/llava_instruct_150k.json"
   image_dir: "./data/coco/train2017"  # Images directory
-  eval_data_path: null
+  eval_data_path: null  # Set to a JSON path to enable validation (e.g., 5K held-out samples)
+  eval_samples: 5000  # Number of samples to hold out for validation if eval_data_path is null
 
   # Smaller batch size for longer sequences
   per_device_batch_size: 16
