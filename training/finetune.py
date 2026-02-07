@@ -176,6 +176,23 @@ class FinetuneTrainer(Trainer):
         attention_mask = batch["attention_mask"]
         labels = batch["labels"]
 
+        # Detailed logging for the first few micro-steps
+        if self.global_step == 0 and not hasattr(self, '_first_step_logged'):
+            self._first_step_logged = True
+            supervised = (labels != -100).sum().item()
+            total = labels.numel()
+            print_rank_0(f"\n--- First micro-batch diagnostics ---")
+            print_rank_0(f"  images: {list(images.shape)}, range=[{images.min():.2f}, {images.max():.2f}]")
+            print_rank_0(f"  input_ids: {list(input_ids.shape)}")
+            print_rank_0(f"  attention_mask: {list(attention_mask.shape)}, sum={attention_mask.sum().item()}")
+            print_rank_0(f"  labels: {list(labels.shape)}, supervised={supervised}/{total} ({100*supervised/max(total,1):.1f}%)")
+            # Check for image placeholder tokens
+            placeholder_id = getattr(self.unwrapped_model, 'image_placeholder_token_id', None)
+            if placeholder_id is not None:
+                n_ph = (input_ids == placeholder_id).sum().item()
+                print_rank_0(f"  image placeholder tokens in input_ids: {n_ph}")
+            print_rank_0(f"---\n")
+
         # Forward pass with mixed precision
         device_type = "cuda" if torch.cuda.is_available() else "cpu"
         with torch.amp.autocast(
@@ -190,6 +207,10 @@ class FinetuneTrainer(Trainer):
                 labels=labels,
             )
             loss = outputs.loss
+
+            # NaN/Inf check
+            if torch.isnan(loss) or torch.isinf(loss):
+                print_rank_0(f"WARNING: loss is {loss.item()} at step {self.global_step}!")
 
             # Scale loss for gradient accumulation
             loss = loss / self.config.gradient_accumulation_steps

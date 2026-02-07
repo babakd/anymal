@@ -71,6 +71,7 @@ class TrainerConfig:
 
     # Optimization
     learning_rate: float = 2e-4
+    lora_learning_rate: Optional[float] = None  # Separate LR for LoRA params (defaults to learning_rate)
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
     warmup_steps: int = 1000
@@ -95,10 +96,15 @@ class TrainerConfig:
     # Evaluation
     eval_steps: Optional[int] = None
     eval_strategy: str = "steps"  # "steps" or "epoch"
+    max_eval_batches: Optional[int] = None  # Clip eval to N batches (None = full)
 
     # Other
     seed: int = 42
     dataloader_num_workers: int = 4
+
+    # Health monitoring
+    enable_health_monitoring: bool = True
+    track_per_layer_grad_norms: bool = False
 
 
 class Trainer:
@@ -200,24 +206,56 @@ class Trainer:
         if is_main_process():
             os.makedirs(config.output_dir, exist_ok=True)
 
+        # Initialize health monitor
+        self.health_monitor = None
+        if config.enable_health_monitoring and is_main_process():
+            from .health_monitor import TrainingHealthMonitor, HealthMonitorConfig
+            hm_config = HealthMonitorConfig(max_grad_norm=config.max_grad_norm)
+            self.health_monitor = TrainingHealthMonitor(hm_config, wandb_logger=self.logger)
+
+        # Initialize throughput tracker
+        self.throughput_tracker = None
+        if is_main_process():
+            from .throughput_tracker import ThroughputTracker
+            self.throughput_tracker = ThroughputTracker()
+
     def _create_optimizer(self) -> torch.optim.Optimizer:
-        """Create optimizer with weight decay."""
-        # Separate parameters that should/shouldn't have weight decay
-        decay_params = []
-        no_decay_params = []
+        """Create optimizer with weight decay and optional per-component learning rates."""
+        lora_lr = self.config.lora_learning_rate or self.config.learning_rate
+
+        # Separate parameters by component and weight decay
+        projector_decay = []
+        projector_no_decay = []
+        lora_decay = []
+        lora_no_decay = []
+        other_decay = []
+        other_no_decay = []
 
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
-            if "bias" in name or "norm" in name or "layernorm" in name:
-                no_decay_params.append(param)
-            else:
-                decay_params.append(param)
+            is_no_decay = "bias" in name or "norm" in name or "layernorm" in name
 
-        optimizer_groups = [
-            {"params": decay_params, "weight_decay": self.config.weight_decay},
-            {"params": no_decay_params, "weight_decay": 0.0},
-        ]
+            if "lora" in name.lower():
+                (lora_no_decay if is_no_decay else lora_decay).append(param)
+            elif "projector" in name:
+                (projector_no_decay if is_no_decay else projector_decay).append(param)
+            else:
+                (other_no_decay if is_no_decay else other_decay).append(param)
+
+        optimizer_groups = []
+        if projector_decay:
+            optimizer_groups.append({"params": projector_decay, "weight_decay": self.config.weight_decay, "lr": self.config.learning_rate})
+        if projector_no_decay:
+            optimizer_groups.append({"params": projector_no_decay, "weight_decay": 0.0, "lr": self.config.learning_rate})
+        if lora_decay:
+            optimizer_groups.append({"params": lora_decay, "weight_decay": self.config.weight_decay, "lr": lora_lr})
+        if lora_no_decay:
+            optimizer_groups.append({"params": lora_no_decay, "weight_decay": 0.0, "lr": lora_lr})
+        if other_decay:
+            optimizer_groups.append({"params": other_decay, "weight_decay": self.config.weight_decay, "lr": self.config.learning_rate})
+        if other_no_decay:
+            optimizer_groups.append({"params": other_no_decay, "weight_decay": 0.0, "lr": self.config.learning_rate})
 
         return torch.optim.AdamW(
             optimizer_groups,
@@ -305,6 +343,9 @@ class Trainer:
         print_rank_0(f"  Gradient accumulation: {self.config.gradient_accumulation_steps}")
         print_rank_0(f"  Effective batch size: {self._get_effective_batch_size()}")
 
+        if is_main_process():
+            self._log_training_config()
+
         self.model.train()
         total_loss = 0.0
         start_time = time.time()
@@ -371,13 +412,19 @@ class Trainer:
             # Accumulate gradients over valid micro-batches
             if micro_steps % self.config.gradient_accumulation_steps == 0:
                 # Gradient clipping
+                grad_norm_before_clip = None
                 if self.config.max_grad_norm > 0:
                     if self.scaler is not None:
                         self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(
+                    # Capture pre-clip grad norm for health monitoring
+                    if self.health_monitor is not None:
+                        grad_norm_before_clip = self._compute_total_grad_norm()
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(),
                         self.config.max_grad_norm,
                     )
+                else:
+                    grad_norm = None
 
                 # Optimizer step
                 if self.scaler is not None:
@@ -392,9 +439,47 @@ class Trainer:
                 self.optimizer.zero_grad()
                 self.global_step += 1
 
+                # Feed health monitor
+                if self.health_monitor is not None:
+                    gn_val = grad_norm.item() if grad_norm is not None and hasattr(grad_norm, 'item') else (float(grad_norm) if grad_norm is not None else 0.0)
+                    gn_before = grad_norm_before_clip if grad_norm_before_clip is not None else None
+                    self.health_monitor.on_step(self.global_step, loss, gn_val, gn_before)
+
+                # Feed throughput tracker
+                if self.throughput_tracker is not None:
+                    # Determine batch size and seq_len from current batch
+                    batch_sz = batch.get("input_ids").shape[0] if "input_ids" in batch and hasattr(batch.get("input_ids"), "shape") else 1
+                    seq_ln = batch.get("input_ids").shape[1] if "input_ids" in batch and hasattr(batch.get("input_ids"), "shape") and batch.get("input_ids").dim() > 1 else 1
+                    self.throughput_tracker.step(batch_sz, seq_ln)
+
                 # Logging
                 if self.global_step % self.config.logging_steps == 0:
-                    self._log_metrics({"train/loss": loss})
+                    metrics = {"train/loss": loss}
+                    if grad_norm is not None:
+                        gn = grad_norm.item() if hasattr(grad_norm, 'item') else float(grad_norm)
+                        metrics["train/grad_norm"] = gn
+                    # Per-component gradient norms (first 10 steps + every 50th step)
+                    if self.global_step <= 10 or self.global_step % 50 == 0:
+                        comp_norms = self._compute_component_grad_norms()
+                        metrics.update(comp_norms)
+                    # Health monitor summary
+                    if self.health_monitor is not None:
+                        health_summary = self.health_monitor.get_summary()
+                        for k, v in health_summary.items():
+                            if v is not None:
+                                metrics[f"health/{k}"] = v
+                    # Throughput metrics
+                    if self.throughput_tracker is not None:
+                        throughput = self.throughput_tracker.get_metrics()
+                        for k, v in throughput.items():
+                            if v > 0:
+                                metrics[f"perf/{k}"] = v
+                    # Per-layer gradient norms (if enabled, first 10 steps + every 50th)
+                    if self.config.track_per_layer_grad_norms:
+                        if self.global_step <= 10 or self.global_step % 50 == 0:
+                            layer_norms = self._compute_per_layer_grad_norms()
+                            metrics.update(layer_norms)
+                    self._log_metrics(metrics)
 
                 # Evaluation
                 if (
@@ -403,6 +488,8 @@ class Trainer:
                     and self.eval_dataloader
                 ):
                     eval_loss = self.evaluate()
+                    if self.health_monitor is not None and self.health_monitor.loss_ema is not None:
+                        self.health_monitor.on_eval(self.global_step, self.health_monitor.loss_ema, eval_loss)
                     self.model.train()
 
                 # Checkpointing
@@ -467,7 +554,9 @@ class Trainer:
         total_loss = 0.0
         num_steps = 0
 
-        for batch in tqdm(self.eval_dataloader, desc="Evaluating", disable=not is_main_process()):
+        max_batches = self.config.max_eval_batches
+        for batch in tqdm(self.eval_dataloader, desc="Evaluating", disable=not is_main_process(),
+                          total=max_batches):
             if batch is None:
                 continue
             batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
@@ -484,6 +573,9 @@ class Trainer:
 
             total_loss += loss.item()
             num_steps += 1
+
+            if max_batches and num_steps >= max_batches:
+                break
 
         # Average across all processes
         avg_loss = total_loss / max(num_steps, 1)
@@ -508,13 +600,21 @@ class Trainer:
         self.unwrapped_model.save_pretrained(checkpoint_dir)
 
         # Save optimizer and scheduler state
-        torch.save({
+        state_dict = {
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
             "global_step": self.global_step,
             "epoch": self.epoch,
             "config": vars(self.config),
-        }, os.path.join(checkpoint_dir, "trainer_state.pt"))
+            "rng_state": {
+                "python": random.getstate(),
+                "numpy": np.random.get_state(),
+                "torch": torch.random.get_rng_state(),
+                "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            },
+            "health_monitor_state": self.health_monitor.get_state() if self.health_monitor else None,
+        }
+        torch.save(state_dict, os.path.join(checkpoint_dir, "trainer_state.pt"))
 
         print_rank_0(f"Saved checkpoint to {checkpoint_dir}")
 
@@ -540,6 +640,102 @@ class Trainer:
             import shutil
             shutil.rmtree(path)
 
+    def _compute_component_grad_norms(self) -> Dict[str, float]:
+        """Compute gradient norms per model component for diagnostics."""
+        norms = {"projector": 0.0, "lora": 0.0, "other": 0.0}
+        counts = {"projector": 0, "lora": 0, "other": 0}
+
+        for name, param in self.model.named_parameters():
+            if param.grad is None:
+                continue
+            pnorm = param.grad.data.norm(2).item() ** 2
+            if "projector" in name:
+                norms["projector"] += pnorm
+                counts["projector"] += 1
+            elif "lora" in name.lower():
+                norms["lora"] += pnorm
+                counts["lora"] += 1
+            else:
+                norms["other"] += pnorm
+                counts["other"] += 1
+
+        result = {}
+        for comp in norms:
+            if counts[comp] > 0:
+                result[f"train/grad_norm_{comp}"] = norms[comp] ** 0.5
+        return result
+
+    def _compute_total_grad_norm(self) -> float:
+        """Compute L2 norm of all parameter gradients (before clipping)."""
+        total_norm_sq = 0.0
+        for param in self.model.parameters():
+            if param.grad is not None:
+                total_norm_sq += param.grad.data.norm(2).item() ** 2
+        return total_norm_sq ** 0.5
+
+    def _compute_per_layer_grad_norms(self) -> Dict[str, float]:
+        """Compute per-layer gradient norms for perceiver and LoRA layers."""
+        layer_norms = {}  # group_name -> sum of squared norms
+
+        for name, param in self.model.named_parameters():
+            if param.grad is None:
+                continue
+
+            pnorm_sq = param.grad.data.norm(2).item() ** 2
+
+            # Group by perceiver layer index
+            if "projector" in name and "layers." in name:
+                # Extract layer index from names like "projector.layers.0...."
+                parts = name.split("layers.")
+                if len(parts) > 1:
+                    layer_idx = parts[1].split(".")[0]
+                    key = f"grad_norm/perceiver_layer_{layer_idx}"
+                    layer_norms[key] = layer_norms.get(key, 0.0) + pnorm_sq
+            # Group by LoRA layer index
+            elif "lora" in name.lower():
+                # Extract layer index from names like "...layers.0...lora_A..."
+                parts = name.split("layers.")
+                if len(parts) > 1:
+                    layer_idx = parts[1].split(".")[0]
+                    key = f"grad_norm/lora_layer_{layer_idx}"
+                    layer_norms[key] = layer_norms.get(key, 0.0) + pnorm_sq
+
+        # Convert squared sums to L2 norms
+        return {k: v ** 0.5 for k, v in layer_norms.items()}
+
+    def _log_training_config(self):
+        """Log training configuration at start of training."""
+        print_rank_0("\n" + "=" * 60)
+        print_rank_0("TRAINING CONFIGURATION")
+        print_rank_0("=" * 60)
+        print_rank_0(f"  Learning rate: {self.config.learning_rate}")
+        print_rank_0(f"  LR scheduler: {self.config.lr_scheduler_type}")
+        print_rank_0(f"  Warmup steps: {self.config.warmup_steps}")
+        print_rank_0(f"  Max grad norm: {self.config.max_grad_norm}")
+        print_rank_0(f"  Weight decay: {self.config.weight_decay}")
+        print_rank_0(f"  AMP dtype: {self.config.amp_dtype}")
+        print_rank_0(f"  Gradient accumulation: {self.config.gradient_accumulation_steps}")
+        print_rank_0(f"  Eval steps: {self.config.eval_steps}")
+        print_rank_0(f"  Health monitoring: {self.config.enable_health_monitoring}")
+        print_rank_0(f"  Per-layer grad norms: {self.config.track_per_layer_grad_norms}")
+        print_rank_0(f"  Optimizer: {type(self.optimizer).__name__}")
+        print_rank_0(f"  Num param groups: {len(self.optimizer.param_groups)}")
+        print_rank_0("=" * 60 + "\n")
+
+        # Log to W&B config if available
+        if self.logger is not None:
+            try:
+                self.logger.config.update({
+                    "lr_scheduler_type": self.config.lr_scheduler_type,
+                    "warmup_steps": self.config.warmup_steps,
+                    "max_grad_norm": self.config.max_grad_norm,
+                    "weight_decay": self.config.weight_decay,
+                    "health_monitoring_enabled": self.config.enable_health_monitoring,
+                    "track_per_layer_grad_norms": self.config.track_per_layer_grad_norms,
+                }, allow_val_change=True)
+            except Exception:
+                pass
+
     def _log_metrics(self, metrics: Dict[str, float]):
         """Log metrics to wandb and/or console."""
         if not is_main_process():
@@ -548,6 +744,20 @@ class Trainer:
         metrics["train/lr"] = self._get_lr()
         metrics["train/step"] = self.global_step
         metrics["train/epoch"] = self.epoch
+
+        # Always print key metrics to console for monitoring
+        loss_str = f"loss={metrics.get('train/loss', 0):.4f}"
+        lr_str = f"lr={metrics.get('train/lr', 0):.2e}"
+        gn_str = f"grad_norm={metrics.get('train/grad_norm', 0):.4f}" if 'train/grad_norm' in metrics else ""
+        parts = [f"[step {self.global_step}]", loss_str, lr_str]
+        if gn_str:
+            parts.append(gn_str)
+        # Component grad norms
+        for comp in ["projector", "lora", "other"]:
+            key = f"train/grad_norm_{comp}"
+            if key in metrics:
+                parts.append(f"gn_{comp}={metrics[key]:.4f}")
+        print_rank_0("  ".join(parts))
 
         if self.logger is not None:
             self.logger.log(metrics)
