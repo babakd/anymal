@@ -158,8 +158,15 @@ class TextProcessor:
         self.truncation = truncation
 
         # Ensure padding token is set
+        # Use a dedicated pad token, not eos_token (to avoid masking
+        # legitimate EOS tokens in labels during training).
         if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
+            if "<|filetune_right_pad_id|>" in tokenizer.get_vocab():
+                tokenizer.pad_token = "<|filetune_right_pad_id|>"
+            elif "<|finetune_right_pad_id|>" in tokenizer.get_vocab():
+                tokenizer.pad_token = "<|finetune_right_pad_id|>"
+            else:
+                tokenizer.pad_token = tokenizer.eos_token
 
     def encode_text(
         self,
@@ -193,7 +200,7 @@ class TextProcessor:
     def encode_for_training(
         self,
         text: str,
-        response_start_idx: Optional[int] = None,
+        response_start_idx=None,
     ) -> Dict[str, torch.Tensor]:
         """
         Encode text with labels for training.
@@ -203,7 +210,8 @@ class TextProcessor:
 
         Args:
             text: Full conversation text
-            response_start_idx: Character index where response starts
+            response_start_idx: Character index where first response starts (int),
+                or list of (start, end) char ranges for multi-turn support.
 
         Returns:
             Dict with input_ids, attention_mask, labels
@@ -223,22 +231,27 @@ class TextProcessor:
         attention_mask = full_encoding["attention_mask"].squeeze(0)
         offset_mapping = full_encoding["offset_mapping"].squeeze(0)
 
-        # Create labels (copy of input_ids)
-        labels = input_ids.clone()
-
-        # Mask padding tokens
-        labels[labels == self.tokenizer.pad_token_id] = -100
-
-        if response_start_idx is not None:
-            # Find token index where response starts using offset mapping
-            response_token_idx = 0
-            for i, (start, end) in enumerate(offset_mapping):
-                if start >= response_start_idx:
-                    response_token_idx = i
-                    break
-
-            # Mask all tokens before response
-            labels[:response_token_idx] = -100
+        if isinstance(response_start_idx, list):
+            # Multi-turn: list of (start_char, end_char) ranges
+            # Start with all masked, then unmask response ranges
+            labels = torch.full_like(input_ids, -100)
+            for start_char, end_char in response_start_idx:
+                for i, (token_start, token_end) in enumerate(offset_mapping.tolist()):
+                    if token_end > start_char and token_start < end_char:
+                        labels[i] = input_ids[i]
+            # Re-mask padding tokens
+            labels[input_ids == self.tokenizer.pad_token_id] = -100
+        else:
+            # Single response_start_idx (backward compatible)
+            labels = input_ids.clone()
+            labels[labels == self.tokenizer.pad_token_id] = -100
+            if response_start_idx is not None:
+                response_token_idx = 0
+                for i, (start, end) in enumerate(offset_mapping):
+                    if start >= response_start_idx:
+                        response_token_idx = i
+                        break
+                labels[:response_token_idx] = -100
 
         return {
             "input_ids": input_ids,
@@ -250,7 +263,7 @@ class TextProcessor:
         self,
         conversations: List[Dict[str, str]],
         system_prompt: Optional[str] = None,
-    ) -> Tuple[str, int]:
+    ) -> Tuple[str, List[Tuple[int, int]]]:
         """
         Format a conversation for training.
 
@@ -259,30 +272,34 @@ class TextProcessor:
             system_prompt: Optional system prompt
 
         Returns:
-            Tuple of (formatted_text, response_start_idx)
+            Tuple of (formatted_text, response_ranges) where response_ranges
+            is a list of (start_char, end_char) for all assistant responses
+            (including the end-of-turn token).
         """
         parts = []
+        response_ranges = []
 
         # Add system prompt
         if system_prompt:
             parts.append(f"{self.SYSTEM_HEADER}{system_prompt}{self.END_TURN}")
 
         # Add conversation turns
-        response_start_idx = None
-        for i, turn in enumerate(conversations):
+        for turn in conversations:
             role = turn.get("role", turn.get("from", ""))
             content = turn.get("content", turn.get("value", ""))
 
             if role in ["user", "human"]:
                 parts.append(f"{self.USER_HEADER}{content}{self.END_TURN}")
             elif role in ["assistant", "gpt"]:
-                # Mark where response starts (for label masking)
-                if response_start_idx is None:
-                    response_start_idx = len("".join(parts)) + len(self.ASSISTANT_HEADER)
+                current_pos = len("".join(parts))
+                header_len = len(self.ASSISTANT_HEADER)
+                response_start = current_pos + header_len
+                response_end = response_start + len(content) + len(self.END_TURN)
+                response_ranges.append((response_start, response_end))
                 parts.append(f"{self.ASSISTANT_HEADER}{content}{self.END_TURN}")
 
         formatted_text = "".join(parts)
-        return formatted_text, response_start_idx or 0
+        return formatted_text, response_ranges
 
 
 def collate_fn(
