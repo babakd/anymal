@@ -161,9 +161,17 @@ class LlamaWrapper(nn.Module):
         )
 
         # Set padding token if not set
+        # Use LLaMA 3's dedicated pad token instead of eos_token to avoid
+        # masking legitimate end-of-sequence tokens during label creation.
         if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-            self.model.config.pad_token_id = self.tokenizer.eos_token_id
+            if "<|filetune_right_pad_id|>" in self.tokenizer.get_vocab():
+                self.tokenizer.pad_token = "<|filetune_right_pad_id|>"
+            elif "<|finetune_right_pad_id|>" in self.tokenizer.get_vocab():
+                self.tokenizer.pad_token = "<|finetune_right_pad_id|>"
+            else:
+                self.tokenizer.add_special_tokens({"pad_token": "<pad>"})
+                self.model.resize_token_embeddings(len(self.tokenizer))
+            self.model.config.pad_token_id = self.tokenizer.pad_token_id
 
         # Enable gradient checkpointing for memory efficiency
         if gradient_checkpointing:

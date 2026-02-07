@@ -176,6 +176,27 @@ class AnyMAL(nn.Module):
         # Store tokenizer reference
         self.tokenizer = self.llm.tokenizer
 
+        # Register a special image placeholder token for positional insertion.
+        # We use a reserved special token from LLaMA 3 if available; otherwise
+        # add one. The dataset puts N copies of this token where <image> appears,
+        # and the forward pass replaces their embeddings with projected image tokens.
+        self._setup_image_placeholder_token()
+
+    def _setup_image_placeholder_token(self):
+        """Set up a dedicated token ID used as the image placeholder in input_ids."""
+        # Try to use a LLaMA 3 reserved token that is not used elsewhere
+        vocab = self.tokenizer.get_vocab()
+        # <|reserved_special_token_0|> is token 128002 in LLaMA 3
+        for candidate in ["<|reserved_special_token_0|>", "<|image|>"]:
+            if candidate in vocab:
+                self.image_placeholder_token_id = vocab[candidate]
+                return
+
+        # Fallback: add a new special token
+        self.tokenizer.add_special_tokens({"additional_special_tokens": ["<|image|>"]})
+        self.llm.model.resize_token_embeddings(len(self.tokenizer))
+        self.image_placeholder_token_id = self.tokenizer.convert_tokens_to_ids("<|image|>")
+
     def encode_images(self, images: torch.Tensor) -> torch.Tensor:
         """
         Encode images to LLM token space.
@@ -209,6 +230,141 @@ class AnyMAL(nn.Module):
 
         return image_tokens
 
+    def _splice_image_tokens(
+        self,
+        input_ids: torch.LongTensor,
+        image_tokens: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        labels: Optional[torch.LongTensor],
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Replace image placeholder tokens in the embedding sequence with actual image tokens.
+
+        If no placeholder tokens are found, falls back to prepending image tokens
+        (backward compatible with datasets that strip <image>).
+
+        Returns:
+            (inputs_embeds, full_attention_mask, full_labels)
+        """
+        batch_size = input_ids.shape[0]
+        placeholder_id = self.image_placeholder_token_id
+
+        # Get text embeddings
+        text_embeds = self.llm.get_input_embeddings()(input_ids)
+
+        # Ensure image_tokens are on the same device and dtype
+        image_tokens = image_tokens.to(device=text_embeds.device, dtype=text_embeds.dtype)
+
+        # Check if any sample has placeholder tokens
+        has_placeholders = (input_ids == placeholder_id).any()
+
+        # Log on first call which path we take
+        if not hasattr(self, '_splice_logged'):
+            self._splice_logged = True
+            n_placeholders = (input_ids == placeholder_id).sum().item()
+            path = "SPLICE (positional insertion)" if has_placeholders else "PREPEND (fallback)"
+            print(f"[AnyMAL] _splice_image_tokens: {path}, "
+                  f"placeholder_id={placeholder_id}, found={n_placeholders}, "
+                  f"input_ids={list(input_ids.shape)}, image_tokens={list(image_tokens.shape)}")
+
+        if has_placeholders:
+            # Positional insertion: replace placeholder token embeddings with image tokens
+            new_embeds_list = []
+            new_mask_list = []
+            new_labels_list = []
+
+            for b in range(batch_size):
+                ids = input_ids[b]
+                placeholder_mask = (ids == placeholder_id)
+
+                if not placeholder_mask.any():
+                    # No placeholders in this sample — prepend (fallback)
+                    new_embeds_list.append(torch.cat([image_tokens[b], text_embeds[b]], dim=0))
+                    if attention_mask is not None:
+                        img_mask = torch.ones(self.num_image_tokens, device=ids.device, dtype=attention_mask.dtype)
+                        new_mask_list.append(torch.cat([img_mask, attention_mask[b]], dim=0))
+                    if labels is not None:
+                        img_labels = torch.full((self.num_image_tokens,), -100, device=ids.device, dtype=labels.dtype)
+                        new_labels_list.append(torch.cat([img_labels, labels[b]], dim=0))
+                    continue
+
+                # Find positions of placeholder tokens
+                placeholder_indices = placeholder_mask.nonzero(as_tuple=True)[0]
+                first_placeholder = placeholder_indices[0].item()
+
+                # Split text embeddings around the placeholder block
+                before = text_embeds[b, :first_placeholder]
+                after = text_embeds[b, first_placeholder + len(placeholder_indices):]
+
+                new_embeds_list.append(torch.cat([before, image_tokens[b], after], dim=0))
+
+                if attention_mask is not None:
+                    mask_before = attention_mask[b, :first_placeholder]
+                    mask_after = attention_mask[b, first_placeholder + len(placeholder_indices):]
+                    img_mask = torch.ones(self.num_image_tokens, device=ids.device, dtype=attention_mask.dtype)
+                    new_mask_list.append(torch.cat([mask_before, img_mask, mask_after], dim=0))
+
+                if labels is not None:
+                    labels_before = labels[b, :first_placeholder]
+                    labels_after = labels[b, first_placeholder + len(placeholder_indices):]
+                    img_labels = torch.full((self.num_image_tokens,), -100, device=ids.device, dtype=labels.dtype)
+                    new_labels_list.append(torch.cat([labels_before, img_labels, labels_after], dim=0))
+
+            # Pad to same length and stack
+            inputs_embeds = self._pad_and_stack_embeds(new_embeds_list, text_embeds.device)
+            full_attention_mask = self._pad_and_stack_1d(new_mask_list, 0) if new_mask_list else None
+            full_labels = self._pad_and_stack_1d(new_labels_list, -100) if new_labels_list else None
+        else:
+            # No placeholders found — fall back to prepending image tokens
+            inputs_embeds = torch.cat([image_tokens, text_embeds], dim=1)
+
+            if attention_mask is not None:
+                image_attention = torch.ones(
+                    batch_size, self.num_image_tokens,
+                    device=text_embeds.device, dtype=attention_mask.dtype
+                )
+                full_attention_mask = torch.cat([image_attention, attention_mask], dim=1)
+            else:
+                full_attention_mask = None
+
+            if labels is not None:
+                image_labels = torch.full(
+                    (batch_size, self.num_image_tokens),
+                    fill_value=-100,
+                    device=text_embeds.device,
+                    dtype=labels.dtype,
+                )
+                full_labels = torch.cat([image_labels, labels], dim=1)
+            else:
+                full_labels = None
+
+        return inputs_embeds, full_attention_mask, full_labels
+
+    @staticmethod
+    def _pad_and_stack_embeds(embed_list: List[torch.Tensor], device: torch.device) -> torch.Tensor:
+        """Pad embedding sequences to same length and stack into batch."""
+        max_len = max(e.shape[0] for e in embed_list)
+        dim = embed_list[0].shape[1]
+        padded = []
+        for e in embed_list:
+            pad_len = max_len - e.shape[0]
+            if pad_len > 0:
+                e = torch.cat([e, torch.zeros(pad_len, dim, device=device, dtype=e.dtype)], dim=0)
+            padded.append(e)
+        return torch.stack(padded)
+
+    @staticmethod
+    def _pad_and_stack_1d(tensor_list: List[torch.Tensor], pad_value: int) -> torch.Tensor:
+        """Pad 1D tensors to same length and stack into batch."""
+        max_len = max(t.shape[0] for t in tensor_list)
+        padded = []
+        for t in tensor_list:
+            pad_len = max_len - t.shape[0]
+            if pad_len > 0:
+                t = torch.cat([t, torch.full((pad_len,), pad_value, device=t.device, dtype=t.dtype)])
+            padded.append(t)
+        return torch.stack(padded)
+
     def forward(
         self,
         images: Optional[torch.Tensor] = None,
@@ -221,6 +377,10 @@ class AnyMAL(nn.Module):
         """
         Forward pass for multimodal input.
 
+        If input_ids contain image placeholder tokens, image embeddings are
+        inserted at those positions. Otherwise, image tokens are prepended
+        (backward compatible).
+
         Args:
             images: Input images [B, 3, H, W]
             input_ids: Text token IDs [B, text_seq_len]
@@ -231,19 +391,8 @@ class AnyMAL(nn.Module):
 
         Returns:
             AnyMALOutput with loss and logits
-
-        Input Format:
-        The model concatenates: [image_tokens, text_embeddings]
-        - image_tokens: [B, num_image_tokens, hidden_dim]
-        - text_embeddings: [B, text_seq_len, hidden_dim]
-        - Total sequence: [B, num_image_tokens + text_seq_len, hidden_dim]
-
-        Label Handling:
-        Labels are only for text tokens. We prepend -100 (ignore index)
-        for image positions so the loss is computed only on text.
         """
         batch_size = input_ids.shape[0] if input_ids is not None else images.shape[0]
-        device = input_ids.device if input_ids is not None else images.device
 
         # Encode images if not pre-computed
         if image_tokens is None and images is not None:
@@ -262,43 +411,10 @@ class AnyMAL(nn.Module):
                 logits=outputs.logits,
             )
 
-        # Get text embeddings
-        text_embeds = self.llm.get_input_embeddings()(input_ids)
-
-        # Cast image_tokens to match text_embeds dtype (for mixed precision)
-        if image_tokens.dtype != text_embeds.dtype:
-            image_tokens = image_tokens.to(text_embeds.dtype)
-
-        # Concatenate image and text embeddings
-        # Format: [image_tokens, text_embeddings]
-        inputs_embeds = torch.cat([image_tokens, text_embeds], dim=1)
-
-        # Create attention mask for full sequence
-        if attention_mask is not None:
-            # Create attention mask for image tokens (all ones)
-            image_attention = torch.ones(
-                batch_size, self.num_image_tokens,
-                device=device, dtype=attention_mask.dtype
-            )
-            # Concatenate: [image_mask, text_mask]
-            full_attention_mask = torch.cat([image_attention, attention_mask], dim=1)
-        else:
-            full_attention_mask = None
-
-        # Prepare labels
-        # Labels should have -100 for image positions (ignored in loss)
-        if labels is not None:
-            # Create ignore labels for image tokens
-            image_labels = torch.full(
-                (batch_size, self.num_image_tokens),
-                fill_value=-100,
-                device=device,
-                dtype=labels.dtype,
-            )
-            # Concatenate: [image_labels (-100), text_labels]
-            full_labels = torch.cat([image_labels, labels], dim=1)
-        else:
-            full_labels = None
+        # Splice image tokens into the sequence (at placeholder or prepended)
+        inputs_embeds, full_attention_mask, full_labels = self._splice_image_tokens(
+            input_ids, image_tokens, attention_mask, labels
+        )
 
         # Forward through LLM
         outputs = self.llm(
@@ -344,7 +460,6 @@ class AnyMAL(nn.Module):
             Generated token IDs [B, generated_seq_len]
         """
         batch_size = input_ids.shape[0] if input_ids is not None else images.shape[0]
-        device = input_ids.device if input_ids is not None else images.device
 
         # Encode images if needed
         if image_tokens is None and images is not None:
@@ -362,20 +477,15 @@ class AnyMAL(nn.Module):
                 **kwargs,
             )
 
-        # Get text embeddings
+        # Build inputs_embeds with image tokens spliced in
         if input_ids is not None:
-            text_embeds = self.llm.get_input_embeddings()(input_ids)
-            inputs_embeds = torch.cat([image_tokens, text_embeds], dim=1)
-
-            # Create attention mask
-            if attention_mask is not None:
-                image_attention = torch.ones(
-                    batch_size, self.num_image_tokens,
-                    device=device, dtype=attention_mask.dtype
-                )
-                attention_mask = torch.cat([image_attention, attention_mask], dim=1)
+            inputs_embeds, attention_mask, _ = self._splice_image_tokens(
+                input_ids, image_tokens, attention_mask, labels=None
+            )
         else:
-            inputs_embeds = image_tokens
+            device = images.device if images is not None else image_tokens.device
+            text_embeds_dtype = self.llm.get_input_embeddings().weight.dtype
+            inputs_embeds = image_tokens.to(dtype=text_embeds_dtype)
             attention_mask = torch.ones(
                 batch_size, self.num_image_tokens,
                 device=device, dtype=torch.bool
@@ -396,6 +506,9 @@ class AnyMAL(nn.Module):
         # For consistency with text-only generation (and to simplify downstream decoding),
         # prepend the original text prompt tokens when available.
         if input_ids is not None and isinstance(generated, torch.Tensor):
+            # Strip placeholder tokens from the prepended input_ids
+            mask = input_ids != self.image_placeholder_token_id
+            # For simplicity, just prepend original input_ids (placeholders won't affect decoding)
             return torch.cat([input_ids, generated], dim=1)
 
         return generated

@@ -199,6 +199,7 @@ class PerceiverResamplerBlock(nn.Module):
 
         # Cross-attention: latents query vision features
         self.cross_attn_norm = nn.LayerNorm(dim)
+        self.context_norm = nn.LayerNorm(dim)
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=dim,
             num_heads=num_heads,
@@ -237,8 +238,9 @@ class PerceiverResamplerBlock(nn.Module):
             Updated latents [B, num_latents, dim]
         """
         # Cross-attention: latents attend to vision features
-        # Pre-norm on latents only (context is already normalized in resampler)
+        # Pre-norm on both latents and context for stable training
         normed_latents = self.cross_attn_norm(latents)
+        normed_context = self.context_norm(context)
 
         # Convert boolean mask to attention mask if provided
         # MultiheadAttention expects: True = ignore, False = attend
@@ -250,8 +252,8 @@ class PerceiverResamplerBlock(nn.Module):
 
         cross_attn_out, _ = self.cross_attn(
             query=normed_latents,
-            key=context,
-            value=context,
+            key=normed_context,
+            value=normed_context,
             key_padding_mask=attn_mask,
             need_weights=False,
         )
