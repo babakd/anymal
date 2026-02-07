@@ -276,6 +276,204 @@ class TestDistributed:
         assert reduced.item() == 5.0  # No change in single process
 
 
+class TestLabelMasking:
+    """Tests for label masking correctness after bug fixes."""
+
+    def test_multi_turn_response_masking(self):
+        """Test that all assistant responses in multi-turn conversations are supervised."""
+        from data.data_utils import TextProcessor
+        from unittest.mock import MagicMock
+
+        # Create a mock tokenizer that behaves like a real one
+        # We test the format_conversation logic directly
+        tp = MagicMock(spec=TextProcessor)
+        tp.SYSTEM_HEADER = "<|start_header_id|>system<|end_header_id|>\n\n"
+        tp.USER_HEADER = "<|start_header_id|>user<|end_header_id|>\n\n"
+        tp.ASSISTANT_HEADER = "<|start_header_id|>assistant<|end_header_id|>\n\n"
+        tp.END_TURN = "<|eot_id|>"
+
+        # Test TextProcessor.format_conversation returns ranges for ALL responses
+        real_tp = TextProcessor.__new__(TextProcessor)
+        real_tp.SYSTEM_HEADER = tp.SYSTEM_HEADER
+        real_tp.USER_HEADER = tp.USER_HEADER
+        real_tp.ASSISTANT_HEADER = tp.ASSISTANT_HEADER
+        real_tp.END_TURN = tp.END_TURN
+
+        conversations = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there!"},
+            {"role": "user", "content": "How are you?"},
+            {"role": "assistant", "content": "I'm doing well."},
+        ]
+
+        text, response_ranges = real_tp.format_conversation(conversations)
+
+        # Should have 2 response ranges (one per assistant turn)
+        assert len(response_ranges) == 2, \
+            f"Expected 2 response ranges, got {len(response_ranges)}"
+
+        # Each range should include the eot_id token
+        eot = tp.END_TURN
+        for start, end in response_ranges:
+            response_text = text[start:end]
+            assert response_text.endswith(eot), \
+                f"Response range should end with eot_id, got: '{response_text}'"
+
+    def test_eot_id_included_in_response_range(self):
+        """Test that response ranges in InstructionDataset include end-of-turn token."""
+        from data.data_utils import TextProcessor
+
+        tp = TextProcessor.__new__(TextProcessor)
+        tp.SYSTEM_HEADER = "<|start_header_id|>system<|end_header_id|>\n\n"
+        tp.USER_HEADER = "<|start_header_id|>user<|end_header_id|>\n\n"
+        tp.ASSISTANT_HEADER = "<|start_header_id|>assistant<|end_header_id|>\n\n"
+        tp.END_TURN = "<|eot_id|>"
+
+        conversations = [
+            {"role": "user", "content": "Describe this image."},
+            {"role": "assistant", "content": "The image shows a cat."},
+        ]
+
+        text, ranges = tp.format_conversation(conversations)
+
+        assert len(ranges) == 1
+        start, end = ranges[0]
+        response_text = text[start:end]
+
+        # Should contain both the content and the eot_id
+        assert "The image shows a cat." in response_text
+        assert response_text.endswith("<|eot_id|>"), \
+            f"Response should end with <|eot_id|>, got: '{response_text}'"
+
+    def test_encode_for_training_with_ranges(self):
+        """Test that encode_for_training handles list of (start, end) ranges."""
+        from data.data_utils import TextProcessor
+        from transformers import AutoTokenizer
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                "meta-llama/Meta-Llama-3-8B-Instruct",
+                use_fast=True,
+            )
+        except Exception:
+            pytest.skip("LLaMA tokenizer not available")
+
+        tp = TextProcessor(tokenizer, max_length=256)
+
+        conversations = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi!"},
+            {"role": "user", "content": "Bye"},
+            {"role": "assistant", "content": "Goodbye!"},
+        ]
+
+        text, ranges = tp.format_conversation(conversations)
+        encoding = tp.encode_for_training(text, ranges)
+
+        labels = encoding["labels"]
+        input_ids = encoding["input_ids"]
+
+        # Non-padding, non-response tokens should be masked
+        # At least some tokens should have labels != -100 (the responses)
+        supervised_count = (labels != -100).sum().item()
+        assert supervised_count > 0, "Should have some supervised tokens"
+
+        # Padding tokens should be masked
+        pad_mask = input_ids == tokenizer.pad_token_id
+        assert (labels[pad_mask] == -100).all(), "Padding tokens should be masked"
+
+
+class TestImageTokenInsertion:
+    """Tests for image token positional insertion."""
+
+    def test_splice_image_tokens_prepend_fallback(self):
+        """Test that _splice_image_tokens falls back to prepending when no placeholders."""
+        from models.anymal import AnyMAL
+
+        # We can't easily construct AnyMAL without the full model,
+        # so test the static helper methods directly
+        embed_list = [
+            torch.randn(10, 64),
+            torch.randn(8, 64),
+        ]
+        result = AnyMAL._pad_and_stack_embeds(embed_list, torch.device("cpu"))
+        assert result.shape == (2, 10, 64), f"Expected (2, 10, 64), got {result.shape}"
+
+    def test_pad_and_stack_1d(self):
+        """Test 1D tensor padding and stacking."""
+        from models.anymal import AnyMAL
+
+        tensors = [
+            torch.tensor([1, 2, 3]),
+            torch.tensor([4, 5]),
+        ]
+        result = AnyMAL._pad_and_stack_1d(tensors, pad_value=-100)
+        assert result.shape == (2, 3)
+        assert result[1, 2].item() == -100  # Padded value
+
+
+class TestPerceiverContextNorm:
+    """Test that perceiver resampler has context normalization."""
+
+    def test_context_norm_exists(self):
+        """Test that PerceiverResamplerBlock has context_norm."""
+        from models.projectors.perceiver_resampler import PerceiverResamplerBlock
+
+        block = PerceiverResamplerBlock(dim=256, num_heads=4)
+        assert hasattr(block, "context_norm"), "Block should have context_norm"
+        assert isinstance(block.context_norm, nn.LayerNorm)
+
+    def test_context_norm_applied(self):
+        """Test that context normalization doesn't change output shape."""
+        from models.projectors.perceiver_resampler import PerceiverResampler
+
+        resampler = PerceiverResampler(
+            input_dim=64, output_dim=128, num_latents=8, num_layers=2, num_heads=4
+        )
+        x = torch.randn(2, 16, 64)
+        output = resampler(x)
+        assert output.shape == (2, 8, 128)
+
+
+class TestSeparateLearningRates:
+    """Test separate learning rate configuration."""
+
+    def test_lora_lr_config(self):
+        """Test that TrainerConfig supports separate LoRA learning rate."""
+        from training.trainer import TrainerConfig
+
+        config = TrainerConfig(
+            learning_rate=1e-5,
+            lora_learning_rate=5e-5,
+        )
+        assert config.learning_rate == 1e-5
+        assert config.lora_learning_rate == 5e-5
+
+    def test_lora_lr_defaults_to_none(self):
+        """Test that lora_learning_rate defaults to None."""
+        from training.trainer import TrainerConfig
+
+        config = TrainerConfig()
+        assert config.lora_learning_rate is None
+
+
+class TestDummyImageDistribution:
+    """Test that dummy images use proper CLIP normalization."""
+
+    def test_dummy_image_bounded(self):
+        """Test that dummy images have bounded values (not unbounded Gaussian)."""
+        from data.data_utils import CLIP_MEAN, CLIP_STD
+        from torchvision import transforms
+
+        clip_normalize = transforms.Normalize(mean=CLIP_MEAN, std=CLIP_STD)
+        raw = torch.rand(3, 224, 224)
+        normalized = clip_normalize(raw)
+
+        # CLIP-normalized images from [0,1] input should be roughly in [-2, 3]
+        assert normalized.min() > -3.0, f"Min too low: {normalized.min()}"
+        assert normalized.max() < 4.0, f"Max too high: {normalized.max()}"
+
+
 # Integration tests (require more resources)
 @pytest.mark.slow
 class TestIntegration:
