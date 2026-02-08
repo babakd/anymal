@@ -32,6 +32,7 @@ sys.path.insert(0, str(project_root))
 
 from models import AnyMAL
 from data import InstructionDataset, build_dataloader, ImageTextCollator
+from data.dataset_splitter import deterministic_train_val_split
 from training import FinetuneTrainer
 from training.finetune import FinetuneConfig
 from training.distributed import setup_distributed, cleanup_distributed, print_rank_0
@@ -219,6 +220,9 @@ def main():
         config.get("checkpoint", {}).get("pretrain_checkpoint")
     )
 
+    # Read evaluation config
+    eval_config = config.get("evaluation", {})
+
     trainer_config = FinetuneConfig(
         # Training
         max_steps=config["training"]["max_steps"],
@@ -248,7 +252,55 @@ def main():
         save_steps=config["checkpointing"].get("save_steps", 500),
         save_total_limit=config["checkpointing"].get("save_total_limit", 5),
         output_dir=config["checkpointing"]["output_dir"],
+
+        # Evaluation
+        eval_steps=eval_config.get("eval_steps"),
+        eval_strategy=eval_config.get("eval_strategy", "steps"),
+        max_eval_batches=eval_config.get("max_eval_batches"),
     )
+
+    # Create eval dataloader if eval config is present
+    eval_dataloader = None
+    if trainer_config.eval_steps:
+        eval_data_path = config["data"].get("eval_data_path")
+        if eval_data_path:
+            # Use explicit eval data path
+            print_rank_0(f"\nLoading eval dataset from {eval_data_path}...")
+            eval_dataset = InstructionDataset(
+                data_path=eval_data_path,
+                image_dir=config["data"]["image_dir"],
+                tokenizer=model.tokenizer,
+                image_size=config["data"].get("image_size", 224),
+                max_length=config["data"].get("max_length", 2048),
+                system_prompt=config["data"].get("system_prompt"),
+            )
+        else:
+            # Split train dataset into train/val
+            val_fraction = config["data"].get("eval_samples", 5000) / len(train_dataset)
+            val_fraction = min(val_fraction, 0.2)  # Cap at 20%
+            print_rank_0(f"\nSplitting dataset: {1-val_fraction:.0%} train / {val_fraction:.0%} val")
+            train_dataset, eval_dataset = deterministic_train_val_split(
+                train_dataset, val_fraction=val_fraction
+            )
+            # Recreate train dataloader with the split subset
+            train_dataloader = build_dataloader(
+                dataset=train_dataset,
+                batch_size=config["data"].get("per_device_batch_size", 16),
+                shuffle=True,
+                num_workers=config["data"].get("dataloader_num_workers", 4),
+                distributed=(world_size > 1),
+                collate_fn=collator,
+            )
+
+        print_rank_0(f"Eval dataset size: {len(eval_dataset):,}")
+        eval_dataloader = build_dataloader(
+            dataset=eval_dataset,
+            batch_size=config["data"].get("per_device_batch_size", 16),
+            shuffle=False,
+            num_workers=config["data"].get("dataloader_num_workers", 4),
+            distributed=(world_size > 1),
+            collate_fn=collator,
+        )
 
     # Initialize trainer
     print_rank_0("\nInitializing trainer...")
@@ -256,6 +308,7 @@ def main():
         model=model,
         config=trainer_config,
         train_dataloader=train_dataloader,
+        eval_dataloader=eval_dataloader,
     )
 
     # Print training info

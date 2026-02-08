@@ -337,7 +337,13 @@ class Trainer:
         Returns:
             Dict of training metrics
         """
-        print_rank_0(f"Starting training for {self.config.num_epochs} epochs")
+        # When max_steps is set, loop enough epochs to reach it.
+        # Otherwise, use the configured num_epochs.
+        num_epochs = self.config.num_epochs
+        if self.config.max_steps is not None:
+            num_epochs = max(num_epochs, 10_000)
+
+        print_rank_0(f"Starting training for {self.config.num_epochs} epochs (max_steps={self.config.max_steps})")
         print_rank_0(f"  Total steps: {self._get_total_steps()}")
         print_rank_0(f"  Batch size per GPU: {self.train_dataloader.batch_size}")
         print_rank_0(f"  Gradient accumulation: {self.config.gradient_accumulation_steps}")
@@ -348,12 +354,14 @@ class Trainer:
 
         self.model.train()
         total_loss = 0.0
+        num_completed_epochs = 0
         start_time = time.time()
 
-        for epoch in range(self.config.num_epochs):
+        for epoch in range(num_epochs):
             self.epoch = epoch
             epoch_loss = self._train_epoch()
             total_loss += epoch_loss
+            num_completed_epochs += 1
 
             # Evaluate at end of epoch if configured
             if self.config.eval_strategy == "epoch" and self.eval_dataloader:
@@ -376,7 +384,7 @@ class Trainer:
             print_rank_0("=" * 60)
             print_rank_0("")
 
-        return {"train_loss": total_loss / (epoch + 1)}
+        return {"train_loss": total_loss / max(num_completed_epochs, 1)}
 
     def _train_epoch(self) -> float:
         """Train for one epoch."""

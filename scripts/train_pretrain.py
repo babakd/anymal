@@ -34,6 +34,7 @@ sys.path.insert(0, str(project_root))
 
 from models import AnyMAL
 from data import create_laion_dataset, build_dataloader, ImageTextCollator
+from data.dataset_splitter import deterministic_train_val_split
 from training import PretrainTrainer
 from training.pretrain import PretrainConfig
 from training.distributed import setup_distributed, cleanup_distributed, print_rank_0
@@ -209,7 +210,10 @@ def main():
         **dataset_kwargs,
     )
 
-    print_rank_0(f"Dataset size: {len(train_dataset):,}")
+    if hasattr(train_dataset, '__len__'):
+        print_rank_0(f"Dataset size: {len(train_dataset):,}")
+    else:
+        print_rank_0("Dataset: streaming (size unknown)")
 
     # Create data loader
     collator = ImageTextCollator(
@@ -225,6 +229,9 @@ def main():
         distributed=(world_size > 1),
         collate_fn=collator,
     )
+
+    # Read evaluation config
+    eval_config = config.get("evaluation", {})
 
     # Create trainer config
     trainer_config = PretrainConfig(
@@ -251,7 +258,54 @@ def main():
         save_steps=config["checkpointing"].get("save_steps", 5000),
         save_total_limit=config["checkpointing"].get("save_total_limit", 5),
         output_dir=config["checkpointing"]["output_dir"],
+
+        # Evaluation
+        eval_steps=eval_config.get("eval_steps"),
+        eval_strategy=eval_config.get("eval_strategy", "steps"),
+        max_eval_batches=eval_config.get("max_eval_batches"),
     )
+
+    # Create eval dataloader if eval config is present and dataset supports splitting
+    eval_dataloader = None
+    if trainer_config.eval_steps and not streaming:
+        eval_data_path = config["data"].get("eval_data_path")
+        if eval_data_path:
+            print_rank_0(f"\nLoading eval dataset from {eval_data_path}...")
+            eval_dataset = create_laion_dataset(
+                data_path=eval_data_path,
+                tokenizer=model.tokenizer,
+                streaming=False,
+                **dataset_kwargs,
+            )
+        elif hasattr(train_dataset, '__len__'):
+            # Split train dataset into train/val
+            val_fraction = 0.05
+            print_rank_0(f"\nSplitting dataset: {1-val_fraction:.0%} train / {val_fraction:.0%} val")
+            train_dataset, eval_dataset = deterministic_train_val_split(
+                train_dataset, val_fraction=val_fraction
+            )
+            # Recreate train dataloader with the split subset
+            train_dataloader = build_dataloader(
+                dataset=train_dataset,
+                batch_size=config["data"].get("per_device_batch_size", 64),
+                shuffle=True,
+                num_workers=config["data"].get("dataloader_num_workers", 4),
+                distributed=(world_size > 1),
+                collate_fn=collator,
+            )
+        else:
+            eval_dataset = None
+
+        if eval_dataset is not None:
+            print_rank_0(f"Eval dataset size: {len(eval_dataset):,}")
+            eval_dataloader = build_dataloader(
+                dataset=eval_dataset,
+                batch_size=config["data"].get("per_device_batch_size", 64),
+                shuffle=False,
+                num_workers=config["data"].get("dataloader_num_workers", 4),
+                distributed=(world_size > 1),
+                collate_fn=collator,
+            )
 
     # Initialize trainer
     print_rank_0("\nInitializing trainer...")
@@ -259,6 +313,7 @@ def main():
         model=model,
         config=trainer_config,
         train_dataloader=train_dataloader,
+        eval_dataloader=eval_dataloader,
     )
 
     # Print training info
