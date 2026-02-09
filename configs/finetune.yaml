@@ -14,7 +14,7 @@ model:
   # Enable LoRA for Stage 2
   use_qlora: true
   lora_r: 64
-  lora_alpha: 64  # scaling = alpha/r = 1.0 (was 0.25 with alpha=16)
+  lora_alpha: 16  # scaling = alpha/r = 0.25 (matches paper)
   lora_dropout: 0.05
 
 # Data settings for instruction tuning
