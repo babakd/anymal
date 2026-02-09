@@ -2,12 +2,12 @@
 
 ## Project Status (Last Updated: Feb 2026)
 
-**Current State**: Two-stage training pipeline working end-to-end on Modal. Stage 1 pretrain verified on 4x A100-80GB with real COCO images (loss 11 -> 2 in 20 steps). Stage 2 finetune verified on 1x A100-80GB (500 steps, loss 7.5 -> 1.4). Inference script produces predictions across checkpoints.
+**Current State**: Two-stage training pipeline working end-to-end on Modal. Stage 1 pretrain completed on 4x A100-80GB (2500 steps, loss 12 -> 1.5, checkpoint-2500 saved). Stage 2 finetune verified on 1x A100-80GB (500 steps, loss 7.5 -> 1.4). Checkpoint resume and `--detach` mode working for long runs. Inference script produces predictions across checkpoints.
 
 | Component | Status |
 |-----------|--------|
 | Model architecture | Complete |
-| Stage 1 pretrain (Modal, 4 GPU DDP) | Verified (20-step smoke test, real COCO images) |
+| Stage 1 pretrain (Modal, 4 GPU DDP) | Complete (2500 steps, loss 12 -> 1.5, checkpoint-2500) |
 | Stage 2 finetune (Modal, 1 GPU QLoRA) | Verified (500-step run, real COCO images) |
 | Inference / prediction viewer | Working (`modal_inference.py` + `prediction_viewer.html`) |
 | W&B integration | Working (both stages) |
@@ -19,25 +19,31 @@
 | Train/val split | Working (deterministic 95/5 split, both stages) |
 | In-training eval | Working (clipped to 200 batches, both stages) |
 | Pretrain checkpoint auto-discovery | Working (Stage 2 auto-loads Stage 1 projector) |
+| Checkpoint resume | Working (restores optimizer, scheduler, scaler, RNG states) |
 | VQA evaluation | Partial (fails on missing images, see Known Issues) |
 | Unit tests | 101 passing, 1 skipped |
 
 ### Two-Stage Training Pipeline
 
 **Stage 1 -> Stage 2 flow**:
-1. `modal run modal_train.py --stage pretrain --max-steps 5000` (4 GPUs, DDP)
+1. `modal run --detach modal_train.py --stage pretrain --max-steps 2500 --use-wandb` (4 GPUs, DDP)
 2. Checkpoint saved to `/checkpoints/pretrain-output/checkpoint-N/projector.pt`
-3. `modal run modal_train.py --stage finetune --max-steps 500` (1 GPU, QLoRA)
+3. `modal run modal_train.py --stage finetune --max-steps 500 --use-wandb` (1 GPU, QLoRA)
 4. Stage 2 auto-discovers the pretrain checkpoint and loads `projector.pt`
 5. `modal run modal_inference.py` to generate predictions from all checkpoints
 
+**Note**: Use `--detach` for Stage 1 (long runs). Without it, Modal kills the run if the local client disconnects.
+
 ### Verified Runs
 
-**Stage 1 smoke test (20 steps, 4x A100-80GB)**:
-- Loss: ~11 -> ~2 in 20 steps (perceiver learning fast)
+**Stage 1 full run (2500 steps, 4x A100-80GB)**:
+- Loss: ~12 -> ~1.5 (plateaus around step 500, expected with frozen LLM)
 - 4 GPUs via `mp.spawn` + DDP
 - 157,712 caption samples from 81,479 COCO images
-- Wall time: ~2.5 min, Cost: ~$0.50
+- Checkpoints saved every 500 steps (checkpoint-500 through checkpoint-2500)
+- Resumed from checkpoint-1500 after Modal timeout (checkpoint resume working)
+- Wall time: ~1.5 hours total, Cost: ~$22
+- W&B: `anymal-pretrain` project
 
 **Stage 2 verified run (500 steps, 1x A100-80GB)**:
 - Loss: 7.5 -> 1.4 (converged)
@@ -55,6 +61,9 @@
 6. **DDP pickling**: Moved `COCOCaptionDataset` to module level (was unpicklable inside function)
 7. **DDP device_map**: Set `llm_device_map=None` for distributed mode (avoids cross-GPU tensor errors)
 8. **DDP dataloader workers**: Set `num_workers=0` in distributed mode (avoids nested fork issues with `mp.spawn`)
+9. **Checkpoint resume**: Added full checkpoint resume support (optimizer, scheduler, scaler, RNG states, health monitor) with micro-batch fast-forward on resume
+10. **Modal function timeout**: Increased `pretrain_distributed` timeout from 7200s (2 hours) to 14400s (4 hours) to avoid timeout on long Stage 1 runs
+11. **Modal client disconnect**: Long-running `modal run` commands fail if the local client disconnects. Fix: use `modal run --detach` for Stage 1
 
 ---
 
@@ -110,14 +119,18 @@ modal secret create wandb WANDB_API_KEY=wandb_xxxxxxxxxxxxx
 ### Running Training
 
 ```bash
-# Stage 1: Alignment pretraining (4 GPUs, ~12 min for 5K steps)
-modal run modal_train.py --stage pretrain --max-steps 5000 --batch-size 2 --use-wandb
+# Stage 1: Alignment pretraining (4 GPUs, ~1.5 hours for 2500 steps)
+# IMPORTANT: Use --detach for long runs to avoid Modal killing the run on client disconnect
+modal run --detach modal_train.py --stage pretrain --max-steps 2500 --batch-size 2 --use-wandb
+
+# Stage 1: Resume from checkpoint (if interrupted)
+modal run --detach modal_train.py --stage pretrain --max-steps 2500 --batch-size 2 --use-wandb --resume-checkpoint /checkpoints/pretrain-output/checkpoint-1500
 
 # Stage 2: Instruction finetuning (auto-loads Stage 1 checkpoint)
 modal run modal_train.py --stage finetune --max-steps 500 --batch-size 2 --use-wandb
 
 # Stage 2 with explicit pretrain checkpoint
-modal run modal_train.py --stage finetune --max-steps 500 --pretrain-checkpoint /checkpoints/pretrain-output/checkpoint-5000
+modal run modal_train.py --stage finetune --max-steps 500 --pretrain-checkpoint /checkpoints/pretrain-output/checkpoint-2500
 
 # Inference: generate predictions across all checkpoints
 modal run modal_inference.py --num-examples 20
@@ -136,13 +149,14 @@ modal run modal_inference.py --num-examples 20
 | `--pretrain-checkpoint` | Path to Stage 1 checkpoint (auto-discovered if omitted) | None |
 | `--track-per-layer-grad-norms` | Log per-layer gradient norms | True |
 | `--run-eval-benchmarks` | Run VQA eval during finetune | True |
+| `--resume-checkpoint` | Path to checkpoint to resume training from | None |
 
 ### Cost Estimates
 
 | Run | GPU | Steps | Time | Cost |
 |-----|-----|-------|------|------|
+| Pretrain full | 4x A100-80GB | 2500 | ~1.5 hours | ~$22 |
 | Pretrain smoke test | 4x A100-80GB | 20 | ~2.5 min | ~$0.50 |
-| Pretrain alignment | 4x A100-80GB | 5000 | ~12 min | ~$3.00 |
 | Finetune short | 1x A100-80GB | 200 | ~8 min | ~$1.00 |
 | Finetune verified | 1x A100-80GB | 500 | ~35 min | ~$2.50 |
 
@@ -290,6 +304,18 @@ The trainer includes automatic health monitoring (`training/health_monitor.py`) 
 
 Alerts are logged to console with `[HEALTH]` prefix and to W&B as `health/alert_*` metrics.
 
+### Checkpoint Resume
+
+The trainer supports resuming from any checkpoint via `--resume-checkpoint`. The checkpoint contains:
+- Model state (projector weights, LoRA if applicable)
+- Optimizer and scheduler state
+- AMP GradScaler state
+- Global step, epoch number
+- CUDA/CPU RNG states (for reproducibility)
+- Health monitor state
+
+On resume, the trainer fast-forwards through `global_step * gradient_accumulation_steps` micro-batches in the first epoch to reach the correct data position. This takes ~3-13 minutes depending on step count (15-55 it/s).
+
 ### Clipped Evaluation
 
 In-training eval is clipped to `max_eval_batches=200` (both stages) to avoid blocking training. With batch_size=2, this evaluates 400 samples in ~57 seconds.
@@ -308,9 +334,15 @@ In-training eval is clipped to `max_eval_batches=200` (both stages) to avoid blo
 
 4. **Stage 2 without Stage 1**: If no pretrain checkpoint exists, Stage 2 warns and runs with random perceiver weights. The model will learn to ignore image tokens. Always run Stage 1 first.
 
+5. **Eval loss logging**: During Stage 1 pretrain, eval steps run (200 batches, progress bars visible) but logged eval loss shows `0.0000`. The eval loop runs but the loss value isn't captured correctly in stdout.
+
+6. **Stage 1 loss plateau**: Loss plateaus at ~1.5 after ~500 steps. This is expected — the LLM is completely frozen in Stage 1, so the perceiver quickly learns the projection and then the frozen LLM becomes the bottleneck. More steps beyond 2500 are unlikely to help.
+
 ### TODO
 
-- [ ] Run full Stage 1 alignment (5K+ steps) and verify Stage 2 produces multimodal output
+- [x] Run full Stage 1 alignment (2500 steps, loss 12 -> 1.5, checkpoint-2500)
+- [ ] Run Stage 2 finetune with pretrained perceiver and verify multimodal output
+- [ ] Fix eval loss logging (currently shows 0.0000 in pretrain)
 - [ ] Add flash-attn to Modal image (use pre-built wheel)
 - [ ] Fix VQA eval to filter to available images only
 - [ ] Support multi-image input
@@ -349,8 +381,11 @@ In-training eval is clipped to `max_eval_batches=200` (both stages) to avoid blo
 # Run tests
 pytest tests/ -v
 
-# Stage 1: pretrain (4 GPUs)
-modal run modal_train.py --stage pretrain --max-steps 5000 --batch-size 2 --use-wandb
+# Stage 1: pretrain (4 GPUs, use --detach for long runs)
+modal run --detach modal_train.py --stage pretrain --max-steps 2500 --batch-size 2 --use-wandb
+
+# Stage 1: resume from checkpoint
+modal run --detach modal_train.py --stage pretrain --max-steps 2500 --batch-size 2 --use-wandb --resume-checkpoint /checkpoints/pretrain-output/checkpoint-1500
 
 # Stage 2: finetune (1 GPU, auto-loads pretrain checkpoint)
 modal run modal_train.py --stage finetune --max-steps 500 --batch-size 2 --use-wandb
