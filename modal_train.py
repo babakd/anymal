@@ -374,6 +374,7 @@ class Trainer:
         wandb_api_key: str = None,
         track_per_layer_grad_norms: bool = True,
         run_eval_benchmarks: bool = True,
+        pretrain_checkpoint: str = None,
     ):
         """
         Run AnyMAL training on Modal.
@@ -386,6 +387,7 @@ class Trainer:
             use_wandb: Enable Weights & Biases logging
             use_dummy_data: Use dummy data instead of real dataset (for testing)
             wandb_api_key: Weights & Biases API key (optional, pass directly)
+            pretrain_checkpoint: Path to Stage 1 checkpoint for Stage 2 (auto-discovered if None)
         """
         import sys
         sys.path.insert(0, "/root/anymal")
@@ -422,6 +424,7 @@ class Trainer:
                 use_dummy_data=use_dummy_data,
                 track_per_layer_grad_norms=track_per_layer_grad_norms,
                 run_eval_benchmarks=run_eval_benchmarks,
+                pretrain_checkpoint=pretrain_checkpoint,
             )
         else:
             lr = learning_rate or 2e-4
@@ -561,7 +564,8 @@ def _diagnose_batch(batch, tokenizer, step_name="first batch"):
 
 
 def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, use_dummy_data,
-                  track_per_layer_grad_norms=True, run_eval_benchmarks=True):
+                  track_per_layer_grad_norms=True, run_eval_benchmarks=True,
+                  pretrain_checkpoint=None):
     """Run Stage 2 fine-tuning with real COCO images."""
     import torch
     from models import AnyMAL
@@ -584,7 +588,7 @@ def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
         num_image_tokens=64,
         use_qlora=True,
         lora_r=64,
-        lora_alpha=64,
+        lora_alpha=16,
         gradient_checkpointing=True,
         use_flash_attention=False,  # Skip flash-attn, use SDPA instead
     )
@@ -632,6 +636,33 @@ def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
     diag_batch = next(diag_iter)
     _diagnose_batch(diag_batch, model.tokenizer, "pre-training sample")
 
+    # Auto-discover pretrain checkpoint if not explicitly provided
+    if pretrain_checkpoint is None:
+        pretrain_dir = "/checkpoints/pretrain-output"
+        if os.path.exists(pretrain_dir):
+            # Find the latest checkpoint
+            candidates = []
+            for entry in os.listdir(pretrain_dir):
+                if entry.startswith("checkpoint-"):
+                    ckpt_path = os.path.join(pretrain_dir, entry)
+                    projector_path = os.path.join(ckpt_path, "projector.pt")
+                    if os.path.exists(projector_path):
+                        step_str = entry.split("-", 1)[1]
+                        try:
+                            candidates.append((int(step_str), ckpt_path))
+                        except ValueError:
+                            continue
+            if candidates:
+                candidates.sort(key=lambda x: x[0])
+                pretrain_checkpoint = candidates[-1][1]
+                print(f"Auto-discovered pretrain checkpoint: {pretrain_checkpoint}")
+
+    if pretrain_checkpoint:
+        print(f"Will load Stage 1 projector from: {pretrain_checkpoint}")
+    else:
+        print("WARNING: No pretrain checkpoint found. Perceiver resampler has random weights.")
+        print("Stage 1 pretraining is strongly recommended before Stage 2.")
+
     # Create trainer config
     eval_steps = max(50, max_steps // 10)  # ~10 eval points during training
     config = FinetuneConfig(
@@ -650,6 +681,7 @@ def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
         use_wandb=use_wandb,
         wandb_project="anymal-finetune",
         track_per_layer_grad_norms=track_per_layer_grad_norms,
+        pretrain_checkpoint=pretrain_checkpoint,
     )
 
     # Train
@@ -697,16 +729,24 @@ def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
     print(f"\nTraining complete! Final metrics: {metrics}")
 
 
-def run_pretrain(llama_path, max_steps, learning_rate, batch_size, use_wandb, use_dummy_data):
-    """Run Stage 1 pretraining."""
+def run_pretrain(llama_path, max_steps, learning_rate, batch_size, use_wandb,
+                  use_dummy_data=False, distributed=False, resume_checkpoint=None):
+    """Run Stage 1 pretraining with real COCO images."""
     import torch
     from models import AnyMAL
     from data import build_dataloader, ImageTextCollator
+    from data.dataset_splitter import deterministic_train_val_split
     from training import PretrainTrainer
     from training.pretrain import PretrainConfig
 
+    if use_dummy_data:
+        print("WARNING: --use-dummy-data was passed but Stage 1 must use real images.")
+        print("Ignoring --use-dummy-data flag and loading real COCO images.")
+
     # Initialize model (no LoRA for pretraining)
     print("Initializing model...")
+    # For DDP, disable device_map so each process places model on its own GPU
+    device_map = None if distributed else "auto"
     model = AnyMAL(
         llm_model_name=llama_path,
         vision_model_name="ViT-L-14",
@@ -716,38 +756,65 @@ def run_pretrain(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
         use_qlora=False,  # No LoRA for Stage 1
         gradient_checkpointing=True,
         use_flash_attention=False,  # Skip flash-attn, use SDPA instead
+        llm_device_map=device_map,
     )
 
     # Configure for Stage 1: only train projector
     model.set_training_stage(1)
 
-    # Load dataset
-    print("Loading dataset...")
-    if use_dummy_data:
-        dataset = create_dummy_caption_dataset(
-            model.tokenizer,
-            num_samples=max_steps * batch_size * 2
-        )
-    else:
-        dataset = load_llava_pretrain_dataset(model.tokenizer)
+    # Diagnose model (rank 0 only)
+    from training.distributed import is_main_process as _is_main
+    if _is_main():
+        _diagnose_model(model)
+
+    # Always load real images
+    print("Loading dataset with real COCO images...")
+    dataset = load_llava_pretrain_dataset(model.tokenizer)
+
+    # Split into train/val
+    train_dataset, val_dataset = deterministic_train_val_split(dataset, val_fraction=0.05)
+    print(f"Dataset split: {len(train_dataset):,} train / {len(val_dataset):,} val")
+
+    # Diagnose dataset (rank 0 only)
+    if _is_main():
+        _diagnose_dataset_sample(train_dataset, model.tokenizer)
 
     collator = ImageTextCollator(
         tokenizer=model.tokenizer,
         max_length=256,
     )
 
-    dataloader = build_dataloader(
-        dataset=dataset,
+    # When using mp.spawn for DDP, num_workers>0 causes nested fork issues
+    dl_workers = 0 if distributed else 4
+
+    train_dataloader = build_dataloader(
+        dataset=train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=dl_workers,
+        distributed=distributed,
+        collate_fn=collator,
+    )
+
+    eval_dataloader = build_dataloader(
+        dataset=val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0 if distributed else 2,
         distributed=False,
         collate_fn=collator,
     )
 
-    print(f"Dataset size: {len(dataset):,}")
+    # Diagnose one collated batch (only on rank 0)
+    from training.distributed import is_main_process
+    if is_main_process():
+        print("Sampling one batch for diagnostics...")
+        diag_iter = iter(train_dataloader)
+        diag_batch = next(diag_iter)
+        _diagnose_batch(diag_batch, model.tokenizer, "pre-training sample")
 
     # Create trainer config
+    eval_steps = max(50, max_steps // 10)
     config = PretrainConfig(
         max_steps=max_steps,
         gradient_accumulation_steps=8,
@@ -756,17 +823,22 @@ def run_pretrain(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
         use_amp=True,
         amp_dtype="bfloat16",
         logging_steps=10,
-        save_steps=max(100, max_steps // 4),
+        save_steps=250,
+        save_total_limit=5,
+        eval_steps=eval_steps,
+        max_eval_batches=200,
         output_dir="/checkpoints/pretrain-output",
         use_wandb=use_wandb,
         wandb_project="anymal-pretrain",
+        resume_from_checkpoint=resume_checkpoint,
     )
 
     # Train
     trainer = PretrainTrainer(
         model=model,
         config=config,
-        train_dataloader=dataloader,
+        train_dataloader=train_dataloader,
+        eval_dataloader=eval_dataloader,
     )
 
     metrics = trainer.train()
@@ -837,76 +909,103 @@ def load_llava_instruct_dataset(tokenizer):
     return dataset
 
 
+class COCOCaptionDataset:
+    """Caption dataset with real COCO images for Stage 1 pretraining.
+
+    Defined at module level so it can be pickled by DataLoader workers.
+    """
+
+    def __init__(self, samples, image_dir, tokenizer):
+        from data.data_utils import get_image_transform, TextProcessor
+        self.samples = samples
+        self.image_dir = image_dir
+        self.tokenizer = tokenizer
+        self.transform = get_image_transform(image_size=224, is_train=True)
+        self.text_processor = TextProcessor(tokenizer, max_length=256)
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        from PIL import Image
+        item = self.samples[idx]
+
+        # Load real image
+        image_path = os.path.join(self.image_dir, item["image"])
+        image = Image.open(image_path).convert("RGB")
+        image = self.transform(image)
+
+        caption = item["caption"]
+        encoding = self.text_processor.encode_text(caption)
+
+        # For captioning, predict all non-pad tokens
+        labels = encoding["input_ids"].clone()
+        labels[labels == self.tokenizer.pad_token_id] = -100
+
+        return {
+            "image": image,
+            "input_ids": encoding["input_ids"],
+            "attention_mask": encoding["attention_mask"],
+            "labels": labels,
+        }
+
+
 def load_llava_pretrain_dataset(tokenizer):
     """
-    Load LLaVA-Pretrain (CC3M/LAION subset) for Stage 1 alignment.
+    Load captioning dataset for Stage 1 alignment using real COCO images.
 
-    Uses cached JSON from volume. Falls back to dummy data if JSON
-    is not available (pretrain JSON is larger and may fail to download).
+    Uses llava_instruct_150k.json (which references COCO images we have cached)
+    and extracts the first GPT response as a caption. Filters to samples whose
+    images exist in /checkpoints/coco_images.
     """
-    import torch
-    from torch.utils.data import Dataset
     import json
-    from data.data_utils import get_image_transform, TextProcessor
 
-    # JSON should be cached by Trainer.setup()
-    json_path = "/checkpoints/llava_data/blip_laion_cc_sbu_558k.json"
+    json_path = "/checkpoints/llava_data/llava_instruct_150k.json"
+    image_dir = "/checkpoints/coco_images"
 
     if not os.path.exists(json_path):
-        print("Warning: LLaVA-Pretrain JSON not available, using dummy data")
-        # Return dummy dataset for testing
-        return create_dummy_caption_dataset(tokenizer, num_samples=10000)
+        raise RuntimeError(
+            f"LLaVA JSON not found at {json_path}. "
+            "Run training setup first to cache data."
+        )
+    if not os.path.exists(image_dir):
+        raise RuntimeError(
+            f"COCO images not found at {image_dir}. "
+            "Run training setup first to cache images."
+        )
 
-    print(f"Loading LLaVA-Pretrain from {json_path}")
+    print(f"Loading pretrain captions from {json_path}")
 
-    class LLaVAPretrainDataset(Dataset):
-        """Simple pretrain dataset that loads from cached JSON with dummy images."""
+    with open(json_path, "r") as f:
+        raw_data = json.load(f)
 
-        def __init__(self, json_path, tokenizer):
-            with open(json_path, "r") as f:
-                self.data = json.load(f)
-            self.tokenizer = tokenizer
-            self.transform = get_image_transform(image_size=224, is_train=True)
-            self.text_processor = TextProcessor(tokenizer, max_length=256)
+    # Build set of available images
+    available_images = set(f for f in os.listdir(image_dir) if f.endswith('.jpg'))
+    print(f"Found {len(available_images)} COCO images in {image_dir}")
 
-        def __len__(self):
-            return len(self.data)
+    # Filter to samples with available images and extract captions
+    samples = []
+    for item in raw_data:
+        img_name = item.get("image", "")
+        if img_name not in available_images:
+            continue
+        # Extract first GPT response as caption
+        conversations = item.get("conversations", [])
+        caption = ""
+        for conv in conversations:
+            if conv.get("from") == "gpt":
+                caption = conv.get("value", "")
+                break
+        if not caption:
+            continue
+        samples.append({"image": img_name, "caption": caption})
 
-        def __getitem__(self, idx):
-            item = self.data[idx]
+    print(f"Filtered to {len(samples)} samples with real images")
+    if len(samples) == 0:
+        raise RuntimeError("No pretrain samples matched available COCO images.")
 
-            # Get caption from conversations
-            conversations = item.get("conversations", [])
-            caption = ""
-            for conv in conversations:
-                if conv.get("from") == "gpt":
-                    caption = conv.get("value", "")
-                    break
-
-            if not caption:
-                caption = "A sample image."
-
-            # Use dummy image with CLIP normalization (bounded, like real images)
-            from data.data_utils import CLIP_MEAN, CLIP_STD
-            from torchvision import transforms as T
-            raw = torch.rand(3, 224, 224)
-            image = T.Normalize(mean=CLIP_MEAN, std=CLIP_STD)(raw)
-
-            encoding = self.text_processor.encode_text(caption)
-
-            # For captioning, predict all tokens
-            labels = encoding["input_ids"].clone()
-            labels[labels == self.tokenizer.pad_token_id] = -100
-
-            return {
-                "image": image,
-                "input_ids": encoding["input_ids"],
-                "attention_mask": encoding["attention_mask"],
-                "labels": labels,
-            }
-
-    dataset = LLaVAPretrainDataset(json_path, tokenizer)
-    print(f"Loaded {len(dataset)} pretrain samples (using dummy images)")
+    dataset = COCOCaptionDataset(samples, image_dir, tokenizer)
+    print(f"Loaded {len(dataset)} pretrain samples with real COCO images")
     return dataset
 
 
@@ -981,6 +1080,96 @@ def create_dummy_caption_dataset(tokenizer, num_samples=1000):
     return DummyCaptionDataset(tokenizer, num_samples)
 
 
+def _pretrain_worker(local_rank, world_size, config):
+    """Worker function for distributed Stage 1 pretraining."""
+    import sys
+    sys.path.insert(0, "/root/anymal")
+
+    # Set environment variables for distributed training
+    os.environ["RANK"] = str(local_rank)
+    os.environ["LOCAL_RANK"] = str(local_rank)
+    os.environ["WORLD_SIZE"] = str(world_size)
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "29500"
+
+    import torch
+    torch.cuda.set_device(local_rank)
+
+    from training.distributed import setup_distributed, cleanup_distributed
+
+    setup_distributed()
+
+    try:
+        run_pretrain(
+            llama_path=config["llama_path"],
+            max_steps=config["max_steps"],
+            learning_rate=config["learning_rate"],
+            batch_size=config["batch_size"],
+            use_wandb=config["use_wandb"] and local_rank == 0,  # Only rank 0 logs
+            distributed=True,
+            resume_checkpoint=config.get("resume_checkpoint"),
+        )
+    finally:
+        cleanup_distributed()
+
+
+@app.function(
+    image=image,
+    gpu="A100-80GB:4",
+    timeout=14400,  # 4 hour timeout
+    volumes={"/checkpoints": volume},
+    secrets=[
+        modal.Secret.from_name("huggingface"),
+        modal.Secret.from_name("wandb"),
+    ],
+)
+def pretrain_distributed(max_steps, learning_rate, batch_size, use_wandb, wandb_api_key=None, resume_checkpoint=None):
+    """Run Stage 1 pretraining on 4 GPUs using DDP."""
+    import sys
+    sys.path.insert(0, "/root/anymal")
+    import torch
+    import torch.multiprocessing as mp
+
+    # Setup W&B
+    if use_wandb:
+        import wandb
+        api_key = wandb_api_key or os.environ.get("WANDB_API_KEY")
+        if api_key:
+            os.environ["WANDB_API_KEY"] = api_key
+        else:
+            print("WARNING: use_wandb=True but no WANDB_API_KEY found. Disabling W&B.")
+            use_wandb = False
+
+    # Ensure data is cached
+    llama_path = "/checkpoints/llama3-8b-instruct"
+    if not os.path.exists(os.path.join(llama_path, "config.json")):
+        print("Downloading LLaMA-3-8B-Instruct weights...")
+        from huggingface_hub import snapshot_download
+        snapshot_download(
+            repo_id="meta-llama/Meta-Llama-3-8B-Instruct",
+            local_dir=llama_path,
+            local_dir_use_symlinks=False,
+        )
+        volume.commit()
+
+    num_gpus = torch.cuda.device_count()
+    print(f"Starting distributed pretraining on {num_gpus} GPUs")
+
+    config = {
+        "llama_path": llama_path,
+        "max_steps": max_steps,
+        "learning_rate": learning_rate,
+        "batch_size": batch_size,
+        "use_wandb": use_wandb,
+        "resume_checkpoint": resume_checkpoint,
+    }
+
+    mp.spawn(_pretrain_worker, nprocs=num_gpus, args=(num_gpus, config))
+
+    volume.commit()
+    print("Distributed pretraining complete! Outputs saved to volume.")
+
+
 @app.local_entrypoint()
 def main(
     max_steps: int = 100,
@@ -992,6 +1181,8 @@ def main(
     wandb_api_key: str = None,
     track_per_layer_grad_norms: bool = True,
     run_eval_benchmarks: bool = True,
+    pretrain_checkpoint: str = None,
+    resume_checkpoint: str = None,
 ):
     """
     Entry point for Modal training.
@@ -1000,8 +1191,10 @@ def main(
         modal run modal_train.py                              # Quick test with LLaVA data
         modal run modal_train.py --use-dummy-data             # Test with dummy data
         modal run modal_train.py --max-steps 500              # Longer run
-        modal run modal_train.py --stage pretrain             # Stage 1
+        modal run modal_train.py --stage pretrain             # Stage 1 (4 GPUs)
+        modal run modal_train.py --stage finetune             # Stage 2 (auto-discovers pretrain ckpt)
         modal run modal_train.py --use-wandb --wandb-api-key YOUR_KEY  # With W&B
+        modal run modal_train.py --stage pretrain --resume-checkpoint /checkpoints/pretrain-output/checkpoint-250
     """
     print(f"Starting AnyMAL training on Modal...")
     print(f"  Stage: {stage}")
@@ -1011,17 +1204,34 @@ def main(
     print(f"  W&B: {'enabled' if use_wandb else 'disabled'}")
     print(f"  Per-layer grad norms: {track_per_layer_grad_norms}")
     print(f"  Eval benchmarks: {run_eval_benchmarks}")
+    if pretrain_checkpoint:
+        print(f"  Pretrain checkpoint: {pretrain_checkpoint}")
+    if resume_checkpoint:
+        print(f"  Resume from: {resume_checkpoint}")
 
-    # Use the Trainer class - model loading happens once in @modal.enter()
-    trainer = Trainer()
-    trainer.train.remote(
-        max_steps=max_steps,
-        stage=stage,
-        learning_rate=learning_rate,
-        batch_size=batch_size,
-        use_wandb=use_wandb,
-        use_dummy_data=use_dummy_data,
-        wandb_api_key=wandb_api_key,
-        track_per_layer_grad_norms=track_per_layer_grad_norms,
-        run_eval_benchmarks=run_eval_benchmarks,
-    )
+    if stage == "pretrain":
+        # Stage 1 uses multi-GPU distributed pretraining
+        lr = learning_rate or 2e-4
+        pretrain_distributed.remote(
+            max_steps=max_steps,
+            learning_rate=lr,
+            batch_size=batch_size,
+            use_wandb=use_wandb,
+            wandb_api_key=wandb_api_key,
+            resume_checkpoint=resume_checkpoint,
+        )
+    else:
+        # Stage 2 uses single-GPU with QLoRA
+        trainer = Trainer()
+        trainer.train.remote(
+            max_steps=max_steps,
+            stage=stage,
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+            use_wandb=use_wandb,
+            use_dummy_data=use_dummy_data,
+            wandb_api_key=wandb_api_key,
+            track_per_layer_grad_norms=track_per_layer_grad_norms,
+            run_eval_benchmarks=run_eval_benchmarks,
+            pretrain_checkpoint=pretrain_checkpoint,
+        )
