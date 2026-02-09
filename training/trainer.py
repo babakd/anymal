@@ -106,6 +106,9 @@ class TrainerConfig:
     enable_health_monitoring: bool = True
     track_per_layer_grad_norms: bool = False
 
+    # Resume from checkpoint
+    resume_from_checkpoint: Optional[str] = None
+
 
 class Trainer:
     """
@@ -218,6 +221,10 @@ class Trainer:
         if is_main_process():
             from .throughput_tracker import ThroughputTracker
             self.throughput_tracker = ThroughputTracker()
+
+        # Resume from checkpoint if specified
+        if config.resume_from_checkpoint:
+            self._load_checkpoint(config.resume_from_checkpoint)
 
     def _create_optimizer(self) -> torch.optim.Optimizer:
         """Create optimizer with weight decay and optional per-component learning rates."""
@@ -343,11 +350,16 @@ class Trainer:
         if self.config.max_steps is not None:
             num_epochs = max(num_epochs, 10_000)
 
+        # Determine starting epoch (for resume)
+        start_epoch = self.epoch if self.config.resume_from_checkpoint else 0
+
         print_rank_0(f"Starting training for {self.config.num_epochs} epochs (max_steps={self.config.max_steps})")
         print_rank_0(f"  Total steps: {self._get_total_steps()}")
         print_rank_0(f"  Batch size per GPU: {self.train_dataloader.batch_size}")
         print_rank_0(f"  Gradient accumulation: {self.config.gradient_accumulation_steps}")
         print_rank_0(f"  Effective batch size: {self._get_effective_batch_size()}")
+        if start_epoch > 0:
+            print_rank_0(f"  Resuming from epoch {start_epoch}, step {self.global_step}")
 
         if is_main_process():
             self._log_training_config()
@@ -357,7 +369,7 @@ class Trainer:
         num_completed_epochs = 0
         start_time = time.time()
 
-        for epoch in range(num_epochs):
+        for epoch in range(start_epoch, num_epochs):
             self.epoch = epoch
             epoch_loss = self._train_epoch()
             total_loss += epoch_loss
@@ -409,7 +421,20 @@ class Trainer:
         self.optimizer.zero_grad()
         micro_steps = 0
 
-        for batch in progress:
+        # When resuming mid-epoch, skip batches that were already processed
+        skip_batches = 0
+        if self.config.resume_from_checkpoint and self.global_step > 0:
+            skip_batches = self.global_step * self.config.gradient_accumulation_steps
+            if skip_batches > 0:
+                print_rank_0(f"  Skipping {skip_batches} micro-batches to resume position...")
+            # Only skip once (clear after first epoch of resumed training)
+            self.config.resume_from_checkpoint = None
+
+        for batch_idx, batch in enumerate(progress):
+            # Skip already-processed batches when resuming
+            if batch_idx < skip_batches:
+                continue
+
             # Some collators may return None (e.g. if every sample in a batch is invalid).
             if batch is None:
                 continue
@@ -622,12 +647,76 @@ class Trainer:
             },
             "health_monitor_state": self.health_monitor.get_state() if self.health_monitor else None,
         }
+        if self.scaler is not None:
+            state_dict["scaler"] = self.scaler.state_dict()
         torch.save(state_dict, os.path.join(checkpoint_dir, "trainer_state.pt"))
 
         print_rank_0(f"Saved checkpoint to {checkpoint_dir}")
 
         # Clean up old checkpoints
         self._cleanup_checkpoints()
+
+    def _load_checkpoint(self, checkpoint_dir: str):
+        """Resume training from a saved checkpoint."""
+        import os as _os
+
+        trainer_state_path = _os.path.join(checkpoint_dir, "trainer_state.pt")
+        if not _os.path.exists(trainer_state_path):
+            print_rank_0(f"WARNING: No trainer_state.pt in {checkpoint_dir}, cannot resume")
+            return
+
+        print_rank_0(f"Resuming from checkpoint: {checkpoint_dir}")
+
+        # Load model weights (projector + optionally LoRA)
+        projector_path = _os.path.join(checkpoint_dir, "projector.pt")
+        if _os.path.exists(projector_path):
+            self.unwrapped_model.projector.load_state_dict(
+                torch.load(projector_path, map_location=self.device, weights_only=True)
+            )
+            print_rank_0("  Loaded projector weights")
+
+        llm_path = _os.path.join(checkpoint_dir, "llm")
+        if _os.path.exists(llm_path) and hasattr(self.unwrapped_model.llm, "model"):
+            try:
+                from peft import set_peft_model_state_dict
+                import safetensors.torch
+                adapter_path = _os.path.join(llm_path, "adapter_model.safetensors")
+                if _os.path.exists(adapter_path):
+                    lora_state = safetensors.torch.load_file(adapter_path, device=str(self.device))
+                    set_peft_model_state_dict(self.unwrapped_model.llm.model, lora_state)
+                    print_rank_0("  Loaded LoRA weights")
+            except Exception as e:
+                print_rank_0(f"  WARNING: Could not load LoRA weights: {e}")
+
+        # Load trainer state (use CPU to avoid moving RNG states to GPU)
+        state = torch.load(trainer_state_path, map_location="cpu", weights_only=False)
+
+        self.optimizer.load_state_dict(state["optimizer"])
+        self.scheduler.load_state_dict(state["scheduler"])
+        self.global_step = state["global_step"]
+        self.epoch = state["epoch"]
+
+        if self.scaler is not None and "scaler" in state:
+            self.scaler.load_state_dict(state["scaler"])
+
+        # Restore RNG states for reproducibility
+        rng = state.get("rng_state")
+        if rng:
+            random.setstate(rng["python"])
+            np.random.set_state(rng["numpy"])
+            # RNG states must be CPU ByteTensors
+            torch_rng = rng["torch"]
+            if isinstance(torch_rng, torch.Tensor):
+                torch.random.set_rng_state(torch_rng.cpu().byte())
+            if rng.get("cuda") is not None and torch.cuda.is_available():
+                cuda_states = rng["cuda"]
+                torch.cuda.set_rng_state_all([s.cpu().byte() if isinstance(s, torch.Tensor) else s for s in cuda_states])
+
+        # Restore health monitor state
+        if self.health_monitor is not None and state.get("health_monitor_state"):
+            self.health_monitor.load_state(state["health_monitor_state"])
+
+        print_rank_0(f"  Resumed at global_step={self.global_step}, epoch={self.epoch}")
 
     def _cleanup_checkpoints(self):
         """Remove old checkpoints beyond save_total_limit."""
