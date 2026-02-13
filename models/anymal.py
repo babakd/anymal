@@ -583,19 +583,26 @@ class AnyMAL(nn.Module):
         print(f"  Total:          {vision_train + proj_train + llm_train:,} / "
               f"{vision_total + proj_total + llm_total:,}")
 
-    def save_pretrained(self, save_path: str) -> None:
+    def save_pretrained(
+        self,
+        save_path: str,
+        save_llm: bool = True,
+        save_llm_base: bool = False,
+    ) -> None:
         """
         Save model components.
 
         Saves:
         - Projector weights
-        - LLM LoRA adapters
-        - Tokenizer
+        - Optional LLM checkpoint payload (LoRA adapters, or full base weights if requested)
 
         Args:
             save_path: Directory to save model
+            save_llm: Whether to save LLM checkpoint payload
+            save_llm_base: Whether to save full base LLM weights (large)
         """
         import os
+        import shutil
         os.makedirs(save_path, exist_ok=True)
 
         # Save projector
@@ -604,8 +611,15 @@ class AnyMAL(nn.Module):
             os.path.join(save_path, "projector.pt")
         )
 
-        # Save LLM (LoRA weights)
-        self.llm.save_pretrained(os.path.join(save_path, "llm"))
+        llm_save_path = os.path.join(save_path, "llm")
+        llm_saved = False
+        if save_llm:
+            llm_saved = self.llm.save_pretrained(
+                llm_save_path,
+                save_base_model=save_llm_base,
+            )
+        if not llm_saved and os.path.isdir(llm_save_path):
+            shutil.rmtree(llm_save_path)
 
         write_model_metadata(
             save_path,
@@ -613,6 +627,8 @@ class AnyMAL(nn.Module):
             extra={
                 "projector_type": type(self.projector).__name__,
                 "num_image_tokens": self.num_image_tokens,
+                "llm_checkpoint_saved": llm_saved,
+                "llm_base_weights_saved": bool(llm_saved and save_llm_base),
             },
         )
 

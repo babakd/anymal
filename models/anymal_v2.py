@@ -473,8 +473,14 @@ class AnyMALv2(nn.Module):
             f"{vision_total + comp_total + proj_total + llm_total:,}"
         )
 
-    def save_pretrained(self, save_path: str) -> None:
+    def save_pretrained(
+        self,
+        save_path: str,
+        save_llm: bool = True,
+        save_llm_base: bool = False,
+    ) -> None:
         import os
+        import shutil
 
         os.makedirs(save_path, exist_ok=True)
         torch.save(self.projector.state_dict(), os.path.join(save_path, "projector.pt"))
@@ -482,7 +488,15 @@ class AnyMALv2(nn.Module):
             self.token_compressor.state_dict(),
             os.path.join(save_path, "token_compressor.pt"),
         )
-        self.llm.save_pretrained(os.path.join(save_path, "llm"))
+        llm_save_path = os.path.join(save_path, "llm")
+        llm_saved = False
+        if save_llm:
+            llm_saved = self.llm.save_pretrained(
+                llm_save_path,
+                save_base_model=save_llm_base,
+            )
+        if not llm_saved and os.path.isdir(llm_save_path):
+            shutil.rmtree(llm_save_path)
         write_model_metadata(
             save_path,
             architecture=self.architecture,
@@ -491,6 +505,8 @@ class AnyMALv2(nn.Module):
                 "token_compressor_type": self.token_compressor_type,
                 "max_image_tokens": self.max_image_tokens,
                 "min_image_tokens": self.min_image_tokens,
+                "llm_checkpoint_saved": llm_saved,
+                "llm_base_weights_saved": bool(llm_saved and save_llm_base),
             },
         )
         print(f"Model saved to {save_path}")

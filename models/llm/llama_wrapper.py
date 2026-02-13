@@ -334,15 +334,27 @@ class LlamaWrapper(nn.Module):
         print(f"Trainable parameters: {trainable:,} / {total:,} "
               f"({100 * trainable / total:.2f}%)")
 
-    def save_pretrained(self, save_path: str) -> None:
+    def save_pretrained(self, save_path: str, save_base_model: bool = False) -> bool:
         """
-        Save model (LoRA adapters only if using LoRA).
+        Save model weights.
 
         Args:
             save_path: Directory to save model
+            save_base_model: If False, skip writing full base LLM weights when no LoRA adapters exist.
+
+        Returns:
+            True if any LLM weights were written, False otherwise.
         """
-        self.model.save_pretrained(save_path)
-        self.tokenizer.save_pretrained(save_path)
+        # For PeftModel, save_pretrained writes adapter weights (small).
+        is_peft_model = hasattr(self.model, "peft_config")
+
+        if is_peft_model or save_base_model:
+            self.model.save_pretrained(save_path)
+            self.tokenizer.save_pretrained(save_path)
+            return True
+
+        # Base model only + save_base_model=False: skip heavy write.
+        return False
 
     def merge_and_save(self, save_path: str) -> None:
         """

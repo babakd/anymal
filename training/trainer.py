@@ -87,6 +87,8 @@ class TrainerConfig:
     save_steps: int = 1000
     save_total_limit: int = 3
     output_dir: str = "./outputs"
+    save_llm_checkpoint: bool = True
+    save_llm_base_weights: bool = False
 
     # Logging
     logging_steps: int = 10
@@ -642,8 +644,16 @@ class Trainer:
         )
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-        # Save model
-        self.unwrapped_model.save_pretrained(checkpoint_dir)
+        # Save model (prefer lightweight LLM checkpoint payload unless explicitly requested)
+        try:
+            self.unwrapped_model.save_pretrained(
+                checkpoint_dir,
+                save_llm=self.config.save_llm_checkpoint,
+                save_llm_base=self.config.save_llm_base_weights,
+            )
+        except TypeError:
+            # Backward compatibility for model classes without the new save signature.
+            self.unwrapped_model.save_pretrained(checkpoint_dir)
 
         # Save optimizer and scheduler state
         state_dict = {

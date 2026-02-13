@@ -83,6 +83,75 @@ def _resolve_modal_gpu(stage: str, gpu_type: str) -> str:
     return GPU_MODAL_RESOURCES[key][mode]
 
 
+def _parse_checkpoint_step(name: str):
+    """Parse step from checkpoint directory name like checkpoint-1234."""
+    if not str(name).startswith("checkpoint-"):
+        return None
+    try:
+        return int(str(name).split("-", 1)[1])
+    except (IndexError, ValueError):
+        return None
+
+
+def _create_versioned_run_dir(base_dir: str, prefix: str = "run") -> str:
+    """Create a monotonically numbered run directory under base_dir."""
+    os.makedirs(base_dir, exist_ok=True)
+
+    max_existing = 0
+    for entry in os.listdir(base_dir):
+        if not entry.startswith(f"{prefix}-"):
+            continue
+        suffix = entry.split("-", 1)[1]
+        if suffix.isdigit():
+            max_existing = max(max_existing, int(suffix))
+
+    next_id = max_existing + 1
+    while True:
+        run_name = f"{prefix}-{next_id:04d}"
+        run_dir = os.path.join(base_dir, run_name)
+        try:
+            os.mkdir(run_dir)
+            return run_dir
+        except FileExistsError:
+            next_id += 1
+
+
+def _resolve_run_output_dir(base_dir: str, resume_checkpoint: str = None, prefix: str = "run") -> str:
+    """
+    Resolve output directory for a training run.
+
+    - New runs: create numbered run dirs (e.g., run-0001) to avoid overwriting.
+    - Resumed runs: write checkpoints into the run directory containing resume_checkpoint.
+    """
+    if resume_checkpoint:
+        ckpt_dir = os.path.abspath(str(resume_checkpoint))
+        if os.path.basename(ckpt_dir).startswith("checkpoint-"):
+            resumed_output_dir = os.path.dirname(ckpt_dir)
+            os.makedirs(resumed_output_dir, exist_ok=True)
+            return resumed_output_dir
+        os.makedirs(ckpt_dir, exist_ok=True)
+        return ckpt_dir
+    return _create_versioned_run_dir(base_dir, prefix=prefix)
+
+
+def _collect_checkpoint_candidates(root_dir: str):
+    """Collect checkpoint directories recursively under root_dir."""
+    if not os.path.exists(root_dir):
+        return []
+
+    candidates = []
+    for current_root, dirnames, _filenames in os.walk(root_dir):
+        base = os.path.basename(current_root.rstrip("/"))
+        step = _parse_checkpoint_step(base)
+        if step is not None:
+            projector_path = os.path.join(current_root, "projector.pt")
+            if os.path.exists(projector_path):
+                candidates.append((os.path.getmtime(current_root), step, current_root))
+            # Do not recurse inside checkpoint dirs.
+            dirnames[:] = []
+    return candidates
+
+
 @app.cls(
     image=image,
     gpu="A100-80GB",  # Use A100 80GB for large models
@@ -490,6 +559,11 @@ class Trainer:
             )
         else:
             lr = learning_rate or 2e-4
+            pretrain_output_dir = _resolve_run_output_dir(
+                base_dir="/checkpoints/pretrain-output",
+                resume_checkpoint=resume_checkpoint,
+                prefix="run",
+            )
             run_pretrain(
                 llama_path=self.llama_path,
                 architecture=architecture,
@@ -498,6 +572,8 @@ class Trainer:
                 batch_size=batch_size,
                 use_wandb=use_wandb,
                 use_dummy_data=use_dummy_data,
+                resume_checkpoint=resume_checkpoint,
+                output_dir=pretrain_output_dir,
             )
 
         # Save outputs to volume
@@ -737,26 +813,22 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
     diag_batch = next(diag_iter)
     _diagnose_batch(diag_batch, model.tokenizer, "pre-training sample")
 
+    finetune_output_dir = _resolve_run_output_dir(
+        base_dir="/checkpoints/finetune-output",
+        resume_checkpoint=resume_checkpoint,
+        prefix="run",
+    )
+    print(f"Finetune checkpoints will be written to: {finetune_output_dir}")
+
     # Auto-discover pretrain checkpoint if not explicitly provided
     if pretrain_checkpoint is None:
         pretrain_dir = "/checkpoints/pretrain-output"
-        if os.path.exists(pretrain_dir):
-            # Find the latest checkpoint
-            candidates = []
-            for entry in os.listdir(pretrain_dir):
-                if entry.startswith("checkpoint-"):
-                    ckpt_path = os.path.join(pretrain_dir, entry)
-                    projector_path = os.path.join(ckpt_path, "projector.pt")
-                    if os.path.exists(projector_path):
-                        step_str = entry.split("-", 1)[1]
-                        try:
-                            candidates.append((int(step_str), ckpt_path))
-                        except ValueError:
-                            continue
-            if candidates:
-                candidates.sort(key=lambda x: x[0])
-                pretrain_checkpoint = candidates[-1][1]
-                print(f"Auto-discovered pretrain checkpoint: {pretrain_checkpoint}")
+        candidates = _collect_checkpoint_candidates(pretrain_dir)
+        if candidates:
+            # Choose most recently modified checkpoint, break ties by step.
+            candidates.sort(key=lambda x: (x[0], x[1]))
+            _mtime, _step, pretrain_checkpoint = candidates[-1]
+            print(f"Auto-discovered pretrain checkpoint: {pretrain_checkpoint}")
 
     if pretrain_checkpoint:
         print(f"Will load Stage 1 projector from: {pretrain_checkpoint}")
@@ -779,7 +851,9 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         save_steps=max(100, max_steps // 4),
         eval_steps=eval_steps,
         max_eval_batches=200,  # Clip eval to 200 batches (~55s) during training
-        output_dir="/checkpoints/finetune-output",
+        output_dir=finetune_output_dir,
+        save_llm_checkpoint=True,
+        save_llm_base_weights=False,
         use_wandb=use_wandb,
         wandb_project="anymal-finetune",
         track_per_layer_grad_norms=track_per_layer_grad_norms,
@@ -832,8 +906,18 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
     print(f"\nTraining complete! Final metrics: {metrics}")
 
 
-def run_pretrain(llama_path, architecture, max_steps, learning_rate, batch_size, use_wandb,
-                  use_dummy_data=False, distributed=False, resume_checkpoint=None):
+def run_pretrain(
+    llama_path,
+    architecture,
+    max_steps,
+    learning_rate,
+    batch_size,
+    use_wandb,
+    use_dummy_data=False,
+    distributed=False,
+    resume_checkpoint=None,
+    output_dir="/checkpoints/pretrain-output",
+):
     """Run Stage 1 pretraining with real COCO images."""
     import torch
     from models import create_model_from_config
@@ -845,6 +929,7 @@ def run_pretrain(llama_path, architecture, max_steps, learning_rate, batch_size,
     if use_dummy_data:
         print("WARNING: --use-dummy-data was passed but Stage 1 must use real images.")
         print("Ignoring --use-dummy-data flag and loading real COCO images.")
+    print(f"Pretrain checkpoints will be written to: {output_dir}")
 
     # Initialize model (no LoRA for pretraining)
     print("Initializing model...")
@@ -966,7 +1051,9 @@ def run_pretrain(llama_path, architecture, max_steps, learning_rate, batch_size,
         save_total_limit=5,
         eval_steps=eval_steps,
         max_eval_batches=200,
-        output_dir="/checkpoints/pretrain-output",
+        output_dir=output_dir,
+        save_llm_checkpoint=False,
+        save_llm_base_weights=False,
         use_wandb=use_wandb,
         wandb_project="anymal-pretrain",
         resume_from_checkpoint=resume_checkpoint,
@@ -1394,6 +1481,7 @@ def _pretrain_worker(local_rank, world_size, config):
             use_wandb=config["use_wandb"] and local_rank == 0,  # Only rank 0 logs
             distributed=True,
             resume_checkpoint=config.get("resume_checkpoint"),
+            output_dir=config["output_dir"],
         )
     finally:
         cleanup_distributed()
@@ -1439,6 +1527,13 @@ def _run_pretrain_distributed(
     num_gpus = torch.cuda.device_count()
     print(f"Starting distributed pretraining on {num_gpus} GPUs")
 
+    pretrain_output_dir = _resolve_run_output_dir(
+        base_dir="/checkpoints/pretrain-output",
+        resume_checkpoint=resume_checkpoint,
+        prefix="run",
+    )
+    print(f"Pretrain checkpoints will be written to: {pretrain_output_dir}")
+
     config = {
         "llama_path": llama_path,
         "max_steps": max_steps,
@@ -1447,6 +1542,7 @@ def _run_pretrain_distributed(
         "use_wandb": use_wandb,
         "architecture": architecture,
         "resume_checkpoint": resume_checkpoint,
+        "output_dir": pretrain_output_dir,
     }
 
     mp.spawn(_pretrain_worker, nprocs=num_gpus, args=(num_gpus, config))
@@ -1546,7 +1642,7 @@ def main(
         modal run modal_train.py --stage pretrain --gpu-type h100
         modal run modal_train.py --stage finetune             # Stage 2 (auto-discovers pretrain ckpt)
         modal run modal_train.py --use-wandb --wandb-api-key YOUR_KEY  # With W&B
-        modal run modal_train.py --stage pretrain --resume-checkpoint /checkpoints/pretrain-output/checkpoint-250
+        modal run modal_train.py --stage pretrain --resume-checkpoint /checkpoints/pretrain-output/run-0001/checkpoint-250
         modal run modal_train.py --stage finetune --learning-rate 2e-5 --lora-learning-rate 2e-4 --dataset mix_665k
     """
     selected_gpu = _resolve_modal_gpu(stage, gpu_type)
