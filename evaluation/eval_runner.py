@@ -81,6 +81,7 @@ class EvalRunner:
                 image_dir=self.vqa_image_dir,
                 transform=transform,
                 tokenizer=self.model.tokenizer,
+                filter_to_available_images=True,
             )
 
             # Take a subset for speed
@@ -176,5 +177,7 @@ class EvalRunner:
             }
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"EvalRunner: VQA evaluation failed: {e}")
-            return {}
+            return {"eval/vqa_error": str(e)}

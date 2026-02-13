@@ -156,6 +156,65 @@ class TestDatasets:
         assert "image" in sample
         assert "labels" in sample
 
+    def test_instruction_dataset_uniform_token_policy(self, tmp_path):
+        """InstructionDataset should sample placeholder lengths from configured range."""
+        from data.instruction_dataset import InstructionDataset
+        from transformers import AutoTokenizer
+        import random
+
+        random.seed(7)
+
+        images_dir = tmp_path / "images"
+        images_dir.mkdir()
+        for i in range(6):
+            img = Image.fromarray(
+                np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+            )
+            img.save(images_dir / f"{i:06d}.jpg")
+
+        samples = [
+            {
+                "id": f"uniform_{i}",
+                "image": f"{i:06d}.jpg",
+                "conversations": [
+                    {"from": "human", "value": "<image>\nDescribe this image."},
+                    {"from": "gpt", "value": f"Response {i}."},
+                ],
+            }
+            for i in range(6)
+        ]
+        data_path = tmp_path / "uniform.json"
+        with open(data_path, "w") as f:
+            json.dump(samples, f)
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("gpt2", trust_remote_code=True)
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.add_special_tokens({"additional_special_tokens": ["<|image|>"]})
+        except Exception:
+            pytest.skip("Tokenizer not available")
+
+        dataset = InstructionDataset(
+            data_path=str(data_path),
+            image_dir=str(images_dir),
+            tokenizer=tokenizer,
+            image_token_policy="uniform",
+            min_image_tokens=4,
+            max_image_tokens=9,
+        )
+
+        observed_counts = []
+        for i in range(len(dataset)):
+            item = dataset[i]
+            count = int(item["num_image_tokens"].item())
+            observed_counts.append(count)
+            assert 4 <= count <= 9
+
+            placeholder_count = int((item["input_ids"] == dataset.image_placeholder_token_id).sum().item())
+            assert placeholder_count == count
+
+        assert len(set(observed_counts)) > 1, "Uniform policy should produce varied token counts"
+
     def test_corrupted_image_handling(self, tmp_path):
         """Test that corrupted images return None."""
         from data.laion_dataset import LaionDataset
@@ -201,6 +260,48 @@ class TestDatasets:
 
         # Bad image should return None (not raise)
         assert dataset[1] is None
+
+    def test_laion_dataset_inserts_v2_placeholders(self, tmp_path):
+        """LaionDataset should prepend fixed image placeholder block for strict v2 splice."""
+        from data.laion_dataset import LaionDataset
+        from transformers import AutoTokenizer
+
+        images_dir = tmp_path / "images"
+        images_dir.mkdir()
+
+        img = Image.fromarray(
+            np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+        )
+        img.save(images_dir / "000000.jpg")
+
+        metadata = [
+            {"image": "images/000000.jpg", "caption": "A small test caption."},
+        ]
+        with open(tmp_path / "metadata.json", "w") as f:
+            json.dump(metadata, f)
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("gpt2", trust_remote_code=True)
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.add_special_tokens({"additional_special_tokens": ["<|image|>"]})
+        except Exception:
+            pytest.skip("Tokenizer not available")
+
+        dataset = LaionDataset(
+            data_path=str(tmp_path),
+            tokenizer=tokenizer,
+            max_length=64,
+            insert_image_placeholders=True,
+            num_image_tokens=8,
+        )
+
+        sample = dataset[0]
+        assert sample is not None
+        placeholder_id = dataset.image_placeholder_token_id
+        assert placeholder_id is not None
+
+        placeholder_count = int((sample["input_ids"] == placeholder_id).sum().item())
+        assert placeholder_count == 8
 
     def test_collate_fn_filters_none(self, tmp_path):
         """Test that collate_fn filters out None samples."""
@@ -361,6 +462,36 @@ class TestCheckpointing:
         # Outputs should match
         out2 = resampler2(x)
         assert torch.allclose(out1, out2, atol=1e-6)
+
+
+class TestCheckpointMetadataCompatibility:
+    """Tests for architecture metadata compatibility gating."""
+
+    def test_legacy_checkpoint_is_v1_only(self, tmp_path):
+        from model_metadata import validate_checkpoint_architecture
+
+        # No model_meta.json => treated as legacy v1 checkpoint.
+        with pytest.raises(RuntimeError, match="legacy checkpoints are treated as anymal_v1-only"):
+            validate_checkpoint_architecture(
+                checkpoint_dir=str(tmp_path),
+                expected_architecture="anymal_v2",
+            )
+
+        # v1 should still be accepted.
+        validate_checkpoint_architecture(
+            checkpoint_dir=str(tmp_path),
+            expected_architecture="anymal_v1",
+        )
+
+    def test_explicit_architecture_mismatch_fails(self, tmp_path):
+        from model_metadata import write_model_metadata, validate_checkpoint_architecture
+
+        write_model_metadata(str(tmp_path), architecture="anymal_v1")
+        with pytest.raises(RuntimeError, match="architecture mismatch"):
+            validate_checkpoint_architecture(
+                checkpoint_dir=str(tmp_path),
+                expected_architecture="anymal_v2",
+            )
 
 
 class TestTrainingConfigs:

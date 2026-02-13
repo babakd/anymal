@@ -32,7 +32,7 @@ import torch
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from models import AnyMAL
+from models import create_model_from_config
 from data import create_laion_dataset, build_dataloader, ImageTextCollator
 from data.dataset_splitter import deterministic_train_val_split
 from training import PretrainTrainer
@@ -88,6 +88,7 @@ def parse_args():
     parser.add_argument("--llm_model_name", type=str, default=None)
     parser.add_argument("--vision_model_name", type=str, default=None)
     parser.add_argument("--num_image_tokens", type=int, default=None)
+    parser.add_argument("--architecture", type=str, default=None)
 
     # Data overrides
     parser.add_argument("--train_data_path", type=str, default=None)
@@ -128,8 +129,11 @@ def main():
         config["model"]["llm_model_name"] = args.llm_model_name
     if args.vision_model_name:
         config["model"]["vision_model_name"] = args.vision_model_name
+    if args.architecture:
+        config["model"]["architecture"] = args.architecture
     if args.num_image_tokens:
         config["model"]["num_image_tokens"] = args.num_image_tokens
+        config["model"]["max_image_tokens"] = args.num_image_tokens
     if args.train_data_path:
         config["data"]["train_data_path"] = args.train_data_path
     if args.per_device_batch_size:
@@ -174,23 +178,17 @@ def main():
         llm_torch_dtype = torch.float32
         llm_device_map = None
 
-    model = AnyMAL(
-        llm_model_name=config["model"]["llm_model_name"],
-        vision_model_name=config["model"]["vision_model_name"],
-        vision_pretrained=config["model"].get("vision_pretrained", "openai"),
-        projector_type=config["model"].get("projector_type", "perceiver"),
-        num_image_tokens=config["model"].get("num_image_tokens", 64),
-        projector_layers=config["model"].get("projector_layers", 6),
-        projector_heads=config["model"].get("projector_heads", 16),
-        projector_ff_mult=config["model"].get("projector_ff_mult", 4),
-        # Stage 1: quantization optional, LoRA always disabled.
-        use_qlora=config["model"].get("use_qlora", False),
-        use_lora=False,
-        use_flash_attention=config["model"].get("use_flash_attention", True),
-        gradient_checkpointing=config["model"].get("gradient_checkpointing", True),
+    model = create_model_from_config(
+        config,
+        model_overrides={
+            # Stage 1: quantization optional, LoRA always disabled.
+            "use_lora": False,
+        },
         llm_device_map=llm_device_map,
         llm_torch_dtype=llm_torch_dtype,
     )
+    architecture = config["model"].get("architecture", "anymal_v1")
+    print_rank_0(f"Model architecture: {architecture}")
 
     # Initialize dataset
     print_rank_0("\nLoading dataset...")
@@ -200,6 +198,9 @@ def main():
         "max_length": config["data"].get("max_length", 256),
         "caption_prompt": config["data"].get("caption_prompt", "A photo of"),
     }
+    if architecture == "anymal_v2":
+        dataset_kwargs["insert_image_placeholders"] = True
+        dataset_kwargs["num_image_tokens"] = config["model"].get("max_image_tokens", 256)
     if streaming:
         dataset_kwargs["buffer_size"] = config["data"].get("shuffle_buffer_size", 10000)
 

@@ -30,7 +30,7 @@ import torch
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from models import AnyMAL
+from models import create_model_from_config
 from data import InstructionDataset, build_dataloader, ImageTextCollator
 from data.dataset_splitter import deterministic_train_val_split
 from training import FinetuneTrainer
@@ -84,6 +84,7 @@ def parse_args():
     parser.add_argument("--llm_model_name", type=str, default=None)
     parser.add_argument("--lora_r", type=int, default=None)
     parser.add_argument("--lora_alpha", type=int, default=None)
+    parser.add_argument("--architecture", type=str, default=None)
 
     # Data overrides
     parser.add_argument("--train_data_path", type=str, default=None)
@@ -119,6 +120,8 @@ def main():
     # Apply command-line overrides
     if args.llm_model_name:
         config["model"]["llm_model_name"] = args.llm_model_name
+    if args.architecture:
+        config["model"]["architecture"] = args.architecture
     if args.lora_r:
         config["model"]["lora_r"] = args.lora_r
     if args.lora_alpha:
@@ -165,25 +168,13 @@ def main():
         llm_torch_dtype = torch.float32
         llm_device_map = None
 
-    model = AnyMAL(
-        llm_model_name=config["model"]["llm_model_name"],
-        vision_model_name=config["model"].get("vision_model_name", "ViT-L-14"),
-        vision_pretrained=config["model"].get("vision_pretrained", "openai"),
-        projector_type=config["model"].get("projector_type", "perceiver"),
-        num_image_tokens=config["model"].get("num_image_tokens", 64),
-        projector_layers=config["model"].get("projector_layers", 6),
-        projector_heads=config["model"].get("projector_heads", 16),
-        projector_ff_mult=config["model"].get("projector_ff_mult", 4),
-        use_qlora=config["model"].get("use_qlora", True),
-        lora_r=config["model"].get("lora_r", 64),
-        lora_alpha=config["model"].get("lora_alpha", 16),
-        lora_dropout=config["model"].get("lora_dropout", 0.05),
-        lora_target_modules=config["model"].get("lora_target_modules"),
-        use_flash_attention=config["model"].get("use_flash_attention", True),
-        gradient_checkpointing=config["model"].get("gradient_checkpointing", True),
+    model = create_model_from_config(
+        config,
         llm_device_map=llm_device_map,
         llm_torch_dtype=llm_torch_dtype,
     )
+    architecture = config["model"].get("architecture", "anymal_v1")
+    print_rank_0(f"Model architecture: {architecture}")
 
     # Initialize dataset
     print_rank_0("\nLoading dataset...")
@@ -193,6 +184,13 @@ def main():
         tokenizer=model.tokenizer,
         image_size=config["data"].get("image_size", 224),
         max_length=config["data"].get("max_length", 2048),
+        num_image_tokens=config["model"].get(
+            "max_image_tokens",
+            config["model"].get("num_image_tokens", 64),
+        ),
+        image_token_policy=config["data"].get("image_token_policy", "fixed"),
+        min_image_tokens=config["model"].get("min_image_tokens"),
+        max_image_tokens=config["model"].get("max_image_tokens"),
         system_prompt=config["data"].get("system_prompt"),
     )
 
@@ -272,6 +270,13 @@ def main():
                 tokenizer=model.tokenizer,
                 image_size=config["data"].get("image_size", 224),
                 max_length=config["data"].get("max_length", 2048),
+                num_image_tokens=config["model"].get(
+                    "max_image_tokens",
+                    config["model"].get("num_image_tokens", 64),
+                ),
+                image_token_policy=config["data"].get("image_token_policy", "fixed"),
+                min_image_tokens=config["model"].get("min_image_tokens"),
+                max_image_tokens=config["model"].get("max_image_tokens"),
                 system_prompt=config["data"].get("system_prompt"),
             )
         else:

@@ -1,0 +1,60 @@
+# AnyMALv2 Stage 1: Alignment Pretraining Configuration
+
+defaults:
+  - base
+
+stage: 1
+stage_name: "alignment_pretraining_v2"
+
+model:
+  architecture: "anymal_v2"
+  llm_model_name: "./checkpoints/llama3-8b-instruct"
+  use_qlora: false
+  use_flash_attention: true
+  gradient_checkpointing: true
+
+  vision_encoder_type: "siglip2"
+  vision_model_name: "google/siglip2-so400m-patch14-384"
+  token_compressor_type: "learned"
+  bottleneck_dim: 2048
+  max_image_tokens: 256
+  min_image_tokens: 256
+
+data:
+  train_data_path: "./data/cc3m"
+  eval_data_path: null
+  streaming: false
+  caption_prompt: "A photo of"
+  image_size: 224
+  max_length: 640
+  per_device_batch_size: 16
+  gradient_accumulation_steps: 4
+  dataloader_num_workers: 8
+  pin_memory: true
+
+training:
+  learning_rate: 2.0e-4
+  lr_scheduler_type: "cosine"
+  warmup_steps: 1000
+  weight_decay: 0.01
+  max_steps: 20000
+  num_epochs: null
+  train_projector_only: true
+  use_amp: true
+  amp_dtype: "bfloat16"
+  seed: 42
+
+logging:
+  logging_steps: 100
+  use_wandb: true
+  wandb_project: "anymal-pretrain-v2"
+  wandb_run_name: "stage1-v2-alignment"
+
+checkpointing:
+  save_steps: 2000
+  save_total_limit: 5
+  output_dir: "./outputs/pretrain_v2_alignment"
+
+evaluation:
+  eval_steps: 2000
+  eval_strategy: "steps"

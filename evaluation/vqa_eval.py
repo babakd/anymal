@@ -56,6 +56,7 @@ class VQADataset(Dataset):
         image_dir: str,
         transform,
         tokenizer,
+        filter_to_available_images: bool = True,
     ):
         self.image_dir = image_dir
         self.transform = transform
@@ -74,10 +75,20 @@ class VQADataset(Dataset):
             for ann in annotations_data["annotations"]:
                 self.annotations[ann["question_id"]] = ann
 
+        # Filter to only questions whose images exist on disk
+        if filter_to_available_images and image_dir and os.path.exists(image_dir):
+            available_files = set(f for f in os.listdir(image_dir) if f.endswith(('.jpg', '.jpeg', '.png')))
+            total = len(self.questions)
+            self.questions = [
+                q for q in self.questions
+                if f"COCO_val2014_{q['image_id']:012d}.jpg" in available_files
+            ]
+            print(f"VQA filtered to {len(self.questions)}/{total} questions with available images")
+
     def __len__(self) -> int:
         return len(self.questions)
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
+    def __getitem__(self, idx: int) -> Optional[Dict[str, Any]]:
         q = self.questions[idx]
 
         # Load image
@@ -88,8 +99,12 @@ class VQADataset(Dataset):
         )
 
         from PIL import Image
-        image = Image.open(image_path).convert("RGB")
-        image_tensor = self.transform(image)
+        try:
+            image = Image.open(image_path).convert("RGB")
+            image_tensor = self.transform(image)
+        except (FileNotFoundError, OSError) as e:
+            print(f"VQA: skipping image {image_path}: {e}")
+            return None
 
         # Get question
         question = q["question"]
@@ -284,7 +299,7 @@ class VQAEvaluator:
         return min(1.0, count / 3)
 
 
-def vqa_collate_fn(batch: List[Dict[str, Any]], pad_token_id: int) -> Dict[str, Any]:
+def vqa_collate_fn(batch: List[Dict[str, Any]], pad_token_id: int) -> Optional[Dict[str, Any]]:
     """
     Custom collate function for VQA evaluation with variable-length sequences.
 
@@ -293,8 +308,11 @@ def vqa_collate_fn(batch: List[Dict[str, Any]], pad_token_id: int) -> Dict[str, 
         pad_token_id: Token ID for padding
 
     Returns:
-        Batched dict with padded tensors
+        Batched dict with padded tensors, or None if all samples are invalid
     """
+    batch = [item for item in batch if item is not None]
+    if len(batch) == 0:
+        return None
     images = torch.stack([item["image"] for item in batch])
     max_len = max(item["input_ids"].shape[-1] for item in batch)
 

@@ -124,6 +124,8 @@ class LaionDataset(Dataset):
         split: str = "train",
         max_samples: Optional[int] = None,
         caption_prompt: str = "A photo of",
+        insert_image_placeholders: bool = False,
+        num_image_tokens: int = 64,
     ):
         super().__init__()
 
@@ -131,6 +133,8 @@ class LaionDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.caption_prompt = caption_prompt
+        self.insert_image_placeholders = insert_image_placeholders
+        self.num_image_tokens = num_image_tokens
 
         # Set up image transform
         self.transform = get_image_transform(
@@ -143,9 +147,75 @@ class LaionDataset(Dataset):
             tokenizer=tokenizer,
             max_length=max_length,
         )
+        self.image_placeholder_token_id = self._resolve_placeholder_token_id(tokenizer)
 
         # Load data index
         self.samples = self._load_samples(data_path, max_samples)
+
+    def _resolve_placeholder_token_id(self, tokenizer):
+        if not self.insert_image_placeholders:
+            return None
+        vocab = tokenizer.get_vocab()
+        if "<|reserved_special_token_0|>" in vocab:
+            return vocab["<|reserved_special_token_0|>"]
+        if "<|image|>" in vocab:
+            return vocab["<|image|>"]
+        raise ValueError(
+            "insert_image_placeholders=True but tokenizer has no image placeholder token. "
+            "Initialize model placeholder token before creating the dataset."
+        )
+
+    def _prepend_image_placeholders(
+        self,
+        encoding: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """Prepend fixed-size image placeholder block for strict v2 splice."""
+        if not self.insert_image_placeholders:
+            return encoding
+
+        input_ids = encoding["input_ids"]
+        attention_mask = encoding["attention_mask"]
+        labels = encoding["labels"]
+
+        placeholder_block = torch.full(
+            (self.num_image_tokens,),
+            self.image_placeholder_token_id,
+            dtype=input_ids.dtype,
+        )
+        placeholder_mask = torch.ones(self.num_image_tokens, dtype=attention_mask.dtype)
+        placeholder_labels = torch.full((self.num_image_tokens,), -100, dtype=labels.dtype)
+
+        input_ids = torch.cat([placeholder_block, input_ids], dim=0)
+        attention_mask = torch.cat([placeholder_mask, attention_mask], dim=0)
+        labels = torch.cat([placeholder_labels, labels], dim=0)
+
+        if input_ids.shape[0] > self.max_length:
+            input_ids = input_ids[: self.max_length]
+            attention_mask = attention_mask[: self.max_length]
+            labels = labels[: self.max_length]
+        elif input_ids.shape[0] < self.max_length:
+            pad_len = self.max_length - input_ids.shape[0]
+            input_ids = torch.cat(
+                [
+                    input_ids,
+                    torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=input_ids.dtype),
+                ],
+                dim=0,
+            )
+            attention_mask = torch.cat(
+                [attention_mask, torch.zeros(pad_len, dtype=attention_mask.dtype)],
+                dim=0,
+            )
+            labels = torch.cat(
+                [labels, torch.full((pad_len,), -100, dtype=labels.dtype)],
+                dim=0,
+            )
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
 
     def _load_samples(
         self,
@@ -269,6 +339,7 @@ class LaionDataset(Dataset):
             full_text,
             response_start_idx=len(prompt) + 1,  # Start after prompt
         )
+        encoding = self._prepend_image_placeholders(encoding)
 
         return {
             "image": image_tensor,
@@ -310,6 +381,8 @@ class LaionStreamingDataset(IterableDataset):
         max_length: int = 256,
         buffer_size: int = 10000,
         caption_prompt: str = "A photo of",
+        insert_image_placeholders: bool = False,
+        num_image_tokens: int = 64,
     ):
         super().__init__()
 
@@ -318,6 +391,8 @@ class LaionStreamingDataset(IterableDataset):
         self.max_length = max_length
         self.buffer_size = buffer_size
         self.caption_prompt = caption_prompt
+        self.insert_image_placeholders = insert_image_placeholders
+        self.num_image_tokens = num_image_tokens
 
         self.transform = get_image_transform(
             image_size=image_size,
@@ -328,6 +403,70 @@ class LaionStreamingDataset(IterableDataset):
             tokenizer=tokenizer,
             max_length=max_length,
         )
+        self.image_placeholder_token_id = self._resolve_placeholder_token_id(tokenizer)
+
+    def _resolve_placeholder_token_id(self, tokenizer):
+        if not self.insert_image_placeholders:
+            return None
+        vocab = tokenizer.get_vocab()
+        if "<|reserved_special_token_0|>" in vocab:
+            return vocab["<|reserved_special_token_0|>"]
+        if "<|image|>" in vocab:
+            return vocab["<|image|>"]
+        raise ValueError(
+            "insert_image_placeholders=True but tokenizer has no image placeholder token."
+        )
+
+    def _prepend_image_placeholders(
+        self,
+        encoding: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        if not self.insert_image_placeholders:
+            return encoding
+
+        input_ids = encoding["input_ids"]
+        attention_mask = encoding["attention_mask"]
+        labels = encoding["labels"]
+
+        placeholder_block = torch.full(
+            (self.num_image_tokens,),
+            self.image_placeholder_token_id,
+            dtype=input_ids.dtype,
+        )
+        placeholder_mask = torch.ones(self.num_image_tokens, dtype=attention_mask.dtype)
+        placeholder_labels = torch.full((self.num_image_tokens,), -100, dtype=labels.dtype)
+
+        input_ids = torch.cat([placeholder_block, input_ids], dim=0)
+        attention_mask = torch.cat([placeholder_mask, attention_mask], dim=0)
+        labels = torch.cat([placeholder_labels, labels], dim=0)
+
+        if input_ids.shape[0] > self.max_length:
+            input_ids = input_ids[: self.max_length]
+            attention_mask = attention_mask[: self.max_length]
+            labels = labels[: self.max_length]
+        elif input_ids.shape[0] < self.max_length:
+            pad_len = self.max_length - input_ids.shape[0]
+            input_ids = torch.cat(
+                [
+                    input_ids,
+                    torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=input_ids.dtype),
+                ],
+                dim=0,
+            )
+            attention_mask = torch.cat(
+                [attention_mask, torch.zeros(pad_len, dtype=attention_mask.dtype)],
+                dim=0,
+            )
+            labels = torch.cat(
+                [labels, torch.full((pad_len,), -100, dtype=labels.dtype)],
+                dim=0,
+            )
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
 
     def _create_pipeline(self):
         """Create webdataset pipeline."""
@@ -392,6 +531,7 @@ class LaionStreamingDataset(IterableDataset):
             full_text,
             response_start_idx=len(self.caption_prompt) + 1,
         )
+        encoding = self._prepend_image_placeholders(encoding)
 
         return {
             "image": image_tensor,

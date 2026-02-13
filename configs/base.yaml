@@ -3,6 +3,7 @@
 
 # Model Architecture
 model:
+  architecture: "anymal_v1"  # anymal_v1 | anymal_v2
   # LLM settings
   # Use local path if downloaded, or HuggingFace model name
   llm_model_name: "./checkpoints/llama3-8b-instruct"  # or "meta-llama/Meta-Llama-3-8B-Instruct"

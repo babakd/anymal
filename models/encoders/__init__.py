@@ -11,5 +11,6 @@ Future extensions:
 """
 
 from .image_encoder import ImageEncoder
+from .siglip2_encoder import SigLIP2Encoder
 
-__all__ = ["ImageEncoder"]
+__all__ = ["ImageEncoder", "SigLIP2Encoder"]

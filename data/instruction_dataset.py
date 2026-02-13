@@ -43,6 +43,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from PIL import Image
 import json
 import os
+import random
 
 from .data_utils import get_image_transform, TextProcessor, CLIP_MEAN, CLIP_STD
 
@@ -89,6 +90,9 @@ class InstructionDataset(Dataset):
         image_size: int = 224,
         max_length: int = 2048,
         num_image_tokens: int = 64,
+        image_token_policy: str = "fixed",
+        min_image_tokens: Optional[int] = None,
+        max_image_tokens: Optional[int] = None,
         split: str = "train",
         system_prompt: Optional[str] = None,
         filter_to_available_images: bool = False,
@@ -100,7 +104,29 @@ class InstructionDataset(Dataset):
         self.max_length = max_length
         self.image_size = image_size
         self.num_image_tokens = num_image_tokens
+        self.image_token_policy = image_token_policy
+        self.min_image_tokens = min_image_tokens
+        self.max_image_tokens = max_image_tokens
         self.system_prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
+
+        if self.image_token_policy not in {"fixed", "uniform"}:
+            raise ValueError(
+                f"Unsupported image_token_policy '{self.image_token_policy}'. "
+                "Expected one of ['fixed', 'uniform']."
+            )
+
+        if self.image_token_policy == "uniform":
+            if self.min_image_tokens is None or self.max_image_tokens is None:
+                raise ValueError(
+                    "image_token_policy='uniform' requires min_image_tokens and max_image_tokens."
+                )
+            if self.min_image_tokens <= 0 or self.max_image_tokens <= 0:
+                raise ValueError("min_image_tokens and max_image_tokens must be > 0.")
+            if self.min_image_tokens > self.max_image_tokens:
+                raise ValueError(
+                    f"min_image_tokens ({self.min_image_tokens}) must be <= "
+                    f"max_image_tokens ({self.max_image_tokens})."
+                )
 
         # Resolve the image placeholder token ID (must match AnyMAL model)
         vocab = tokenizer.get_vocab()
@@ -195,11 +221,14 @@ class InstructionDataset(Dataset):
         # Format conversation for training
         formatted_text, response_indices, image_sentinel = self._format_conversation(conversations)
 
+        num_image_tokens = self._sample_num_image_tokens()
+
         # Encode text
         encoding = self._encode_with_response_masking(
             formatted_text,
             response_indices,
             image_sentinel=image_sentinel,
+            num_image_tokens=num_image_tokens,
         )
 
         return {
@@ -207,7 +236,17 @@ class InstructionDataset(Dataset):
             "input_ids": encoding["input_ids"],
             "attention_mask": encoding["attention_mask"],
             "labels": encoding["labels"],
+            "num_image_tokens": torch.tensor(num_image_tokens, dtype=torch.long),
         }
+
+    def _sample_num_image_tokens(self) -> int:
+        """Sample per-sample image placeholder length from policy."""
+        if self.image_token_policy == "fixed":
+            if self.max_image_tokens is not None:
+                return int(self.max_image_tokens)
+            return int(self.num_image_tokens)
+
+        return random.randint(int(self.min_image_tokens), int(self.max_image_tokens))
 
     def _load_image(self, sample: Dict) -> torch.Tensor:
         """
@@ -320,6 +359,7 @@ class InstructionDataset(Dataset):
         text: str,
         response_indices: List[Tuple[int, int]],
         image_sentinel: str = "",
+        num_image_tokens: Optional[int] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Encode text and create labels with response masking.
@@ -331,6 +371,9 @@ class InstructionDataset(Dataset):
         token ID, the sentinel tokens are replaced with placeholder IDs
         (N copies of the placeholder token, where N = num_image_tokens).
         """
+        if num_image_tokens is None:
+            num_image_tokens = self.num_image_tokens
+
         # Tokenize the full text
         encoding = self.tokenizer(
             text,
@@ -367,7 +410,7 @@ class InstructionDataset(Dataset):
                 before = input_ids[:first_idx]
                 after = input_ids[first_idx + num_sentinel_tokens:]
                 placeholder_block = torch.full(
-                    (self.num_image_tokens,), self.image_placeholder_token_id,
+                    (num_image_tokens,), self.image_placeholder_token_id,
                     dtype=input_ids.dtype
                 )
                 input_ids = torch.cat([before, placeholder_block, after])
@@ -375,14 +418,14 @@ class InstructionDataset(Dataset):
                 # Rebuild attention mask
                 mask_before = attention_mask[:first_idx]
                 mask_after = attention_mask[first_idx + num_sentinel_tokens:]
-                mask_placeholder = torch.ones(self.num_image_tokens, dtype=attention_mask.dtype)
+                mask_placeholder = torch.ones(num_image_tokens, dtype=attention_mask.dtype)
                 attention_mask = torch.cat([mask_before, mask_placeholder, mask_after])
 
                 # Rebuild offset_mapping for label computation
                 offsets_before = offset_mapping[:first_idx]
                 offsets_after = offset_mapping[first_idx + num_sentinel_tokens:]
                 # Placeholder tokens get zero offsets (they'll be masked in labels)
-                offsets_placeholder = torch.zeros(self.num_image_tokens, 2, dtype=offset_mapping.dtype)
+                offsets_placeholder = torch.zeros(num_image_tokens, 2, dtype=offset_mapping.dtype)
                 offset_mapping = torch.cat([offsets_before, offsets_placeholder, offsets_after])
 
                 # Truncate or pad to max_length

@@ -10,5 +10,12 @@ Available projectors:
 
 from .perceiver_resampler import PerceiverResampler
 from .linear_projector import LinearProjector
+from .mlp_bottleneck_projector import MLPBottleneckProjector
+from .token_compressor import TokenCompressor
 
-__all__ = ["PerceiverResampler", "LinearProjector"]
+__all__ = [
+    "PerceiverResampler",
+    "LinearProjector",
+    "MLPBottleneckProjector",
+    "TokenCompressor",
+]

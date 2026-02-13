@@ -474,6 +474,126 @@ class TestDummyImageDistribution:
         assert normalized.max() < 4.0, f"Max too high: {normalized.max()}"
 
 
+class TestAnyMALv2CoreModules:
+    """Unit tests for AnyMALv2 core modules."""
+
+    def test_mlp_bottleneck_projector_shape_and_grad(self):
+        """Projector should preserve batch/tokens and support gradient flow."""
+        from models.projectors.mlp_bottleneck_projector import MLPBottleneckProjector
+
+        projector = MLPBottleneckProjector(
+            input_dim=128,
+            output_dim=256,
+            bottleneck_dim=64,
+        )
+        x = torch.randn(2, 11, 128, requires_grad=True)
+        y = projector(x)
+        assert y.shape == (2, 11, 256)
+
+        loss = y.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert any(p.grad is not None for p in projector.parameters())
+
+    def test_token_compressor_learned_shape_mask_and_grad(self):
+        """Compressor should return bounded token tensor + per-sample mask."""
+        from models.projectors.token_compressor import TokenCompressor
+
+        compressor = TokenCompressor(
+            input_dim=96,
+            max_tokens=12,
+            compressor_type="learned",
+            num_heads=8,
+        )
+        x = torch.randn(3, 33, 96, requires_grad=True)
+        target_counts = torch.tensor([12, 7, 3], dtype=torch.long)
+        y, mask, counts = compressor(x, target_num_tokens=target_counts)
+
+        assert y.shape == (3, 12, 96)
+        assert mask.shape == (3, 12)
+        assert counts.tolist() == [12, 7, 3]
+        assert mask[0].sum().item() == 12
+        assert mask[1].sum().item() == 7
+        assert mask[2].sum().item() == 3
+
+        loss = y.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert any(p.grad is not None for p in compressor.parameters() if p.requires_grad)
+
+    def test_v2_strict_splice_detects_mismatch(self):
+        """Strict splice should fail fast when placeholder and image token counts differ."""
+        from models.anymal_v2 import AnyMALv2
+
+        class DummyLLM(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embedding = nn.Embedding(512, 16)
+
+            def get_input_embeddings(self):
+                return self.embedding
+
+        model = AnyMALv2.__new__(AnyMALv2)
+        nn.Module.__init__(model)
+        model.llm = DummyLLM()
+        model.image_placeholder_token_id = 7
+
+        input_ids = torch.tensor([[11, 7, 7, 7, 12]], dtype=torch.long)
+        attention_mask = torch.ones_like(input_ids)
+        labels = input_ids.clone()
+        image_tokens = torch.randn(1, 4, 16)
+        image_token_mask = torch.tensor([[True, True, False, False]])
+
+        with pytest.raises(ValueError, match="Placeholder/token mismatch"):
+            model._splice_image_tokens_strict(
+                input_ids=input_ids,
+                image_tokens=image_tokens,
+                image_token_mask=image_token_mask,
+                attention_mask=attention_mask,
+                labels=labels,
+            )
+
+
+class TestModelFactory:
+    """Tests for architecture-routing model factory."""
+
+    def test_factory_routes_by_architecture(self, monkeypatch):
+        """Factory should dispatch anymal_v1 and anymal_v2 to the right constructor."""
+        from models import factory
+
+        class DummyV1:
+            def __init__(self, **kwargs):
+                self.kind = "v1"
+                self.kwargs = kwargs
+
+        class DummyV2:
+            def __init__(self, **kwargs):
+                self.kind = "v2"
+                self.kwargs = kwargs
+
+        monkeypatch.setattr(factory, "AnyMAL", DummyV1)
+        monkeypatch.setattr(factory, "AnyMALv2", DummyV2)
+
+        model_v1 = factory.create_model("anymal_v1", llm_model_name="a")
+        model_v2 = factory.create_model("anymal_v2", llm_model_name="b")
+
+        assert model_v1.kind == "v1"
+        assert model_v2.kind == "v2"
+
+    def test_factory_from_config_uses_model_architecture(self, monkeypatch):
+        """Config-driven factory should route by config['model']['architecture']."""
+        from models import factory
+
+        class DummyV2:
+            def __init__(self, llm_model_name=None, **kwargs):
+                self.kwargs = {"llm_model_name": llm_model_name, **kwargs}
+
+        monkeypatch.setattr(factory, "AnyMALv2", DummyV2)
+        config = {"model": {"architecture": "anymal_v2", "llm_model_name": "foo"}}
+        model = factory.create_model_from_config(config)
+        assert model.kwargs["llm_model_name"] == "foo"
+
+
 # Integration tests (require more resources)
 @pytest.mark.slow
 class TestIntegration:

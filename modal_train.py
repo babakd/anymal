@@ -54,7 +54,7 @@ image = (
 @app.cls(
     image=image,
     gpu="A100-80GB",  # Use A100 80GB for large models
-    timeout=7200,  # 2 hour timeout
+    timeout=14400,  # 4 hour timeout
     volumes={"/checkpoints": volume},
     secrets=[
         modal.Secret.from_name("huggingface"),
@@ -109,13 +109,12 @@ class Trainer:
 
         # Pre-import heavy modules
         print("Pre-importing modules...")
-        from models import AnyMAL
+        from models import create_model_from_config
         from data import build_dataloader, ImageTextCollator
         from training import FinetuneTrainer, PretrainTrainer
 
-        # Store model class for later instantiation
-        # (We don't create the model here because finetune vs pretrain have different configs)
-        self.AnyMAL = AnyMAL
+        # Store factory for later instantiation.
+        self.create_model_from_config = create_model_from_config
         self._model_loaded = True
         print("Container setup complete!")
 
@@ -140,6 +139,25 @@ class Trainer:
             print(f"Saved to {instruct_json}")
         else:
             print(f"Using cached LLaVA-Instruct JSON from {instruct_json}")
+
+        # LLaVA-1.5 Mix-665K for multi-task Stage 2
+        mix665k_json = os.path.join(cache_dir, "llava_v1_5_mix665k.json")
+        if not os.path.exists(mix665k_json):
+            print("Downloading LLaVA-1.5 Mix-665K JSON...")
+            try:
+                hf_hub_download(
+                    repo_id="liuhaotian/LLaVA-Instruct-150K",
+                    filename="llava_v1_5_mix665k.json",
+                    repo_type="dataset",
+                    local_dir=cache_dir,
+                )
+                volume.commit()
+                print(f"Saved to {mix665k_json}")
+            except Exception as e:
+                print(f"Warning: Could not download Mix-665K JSON: {e}")
+                print("mix_665k dataset option will not be available.")
+        else:
+            print(f"Using cached LLaVA-1.5 Mix-665K JSON from {mix665k_json}")
 
         # LLaVA-Pretrain for Stage 1 (CC3M subset)
         pretrain_json = os.path.join(cache_dir, "blip_laion_cc_sbu_558k.json")
@@ -367,7 +385,9 @@ class Trainer:
         self,
         max_steps: int = 100,
         stage: str = "finetune",
+        architecture: str = "anymal_v1",
         learning_rate: float = None,
+        lora_learning_rate: float = None,
         batch_size: int = 4,
         use_wandb: bool = False,
         use_dummy_data: bool = False,
@@ -375,6 +395,8 @@ class Trainer:
         track_per_layer_grad_norms: bool = True,
         run_eval_benchmarks: bool = True,
         pretrain_checkpoint: str = None,
+        resume_checkpoint: str = None,
+        dataset: str = "instruct_150k",
     ):
         """
         Run AnyMAL training on Modal.
@@ -382,12 +404,15 @@ class Trainer:
         Args:
             max_steps: Number of training steps
             stage: "pretrain" for Stage 1, "finetune" for Stage 2
-            learning_rate: Learning rate (default: 1e-5 for finetune, 2e-4 for pretrain)
+            learning_rate: Learning rate (default: 2e-5 for finetune, 2e-4 for pretrain)
+            lora_learning_rate: Separate LR for LoRA params (default: 2e-4 for finetune)
             batch_size: Per-device batch size
             use_wandb: Enable Weights & Biases logging
             use_dummy_data: Use dummy data instead of real dataset (for testing)
             wandb_api_key: Weights & Biases API key (optional, pass directly)
             pretrain_checkpoint: Path to Stage 1 checkpoint for Stage 2 (auto-discovered if None)
+            resume_checkpoint: Path to checkpoint to resume training from
+            dataset: Dataset to use for finetune ("instruct_150k" or "mix_665k")
         """
         import sys
         sys.path.insert(0, "/root/anymal")
@@ -414,22 +439,28 @@ class Trainer:
         print_rank_0("=" * 60)
 
         if stage == "finetune":
-            lr = learning_rate or 1e-5
+            lr = learning_rate or 2e-5
+            lora_lr = lora_learning_rate or 2e-4
             run_finetune(
                 llama_path=self.llama_path,
+                architecture=architecture,
                 max_steps=max_steps,
                 learning_rate=lr,
+                lora_learning_rate=lora_lr,
                 batch_size=batch_size,
                 use_wandb=use_wandb,
                 use_dummy_data=use_dummy_data,
                 track_per_layer_grad_norms=track_per_layer_grad_norms,
                 run_eval_benchmarks=run_eval_benchmarks,
                 pretrain_checkpoint=pretrain_checkpoint,
+                resume_checkpoint=resume_checkpoint,
+                dataset=dataset,
             )
         else:
             lr = learning_rate or 2e-4
             run_pretrain(
                 llama_path=self.llama_path,
+                architecture=architecture,
                 max_steps=max_steps,
                 learning_rate=lr,
                 batch_size=batch_size,
@@ -563,12 +594,13 @@ def _diagnose_batch(batch, tokenizer, step_name="first batch"):
     print("---\n")
 
 
-def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, use_dummy_data,
+def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size, use_wandb, use_dummy_data,
                   track_per_layer_grad_norms=True, run_eval_benchmarks=True,
-                  pretrain_checkpoint=None):
+                  pretrain_checkpoint=None, resume_checkpoint=None,
+                  lora_learning_rate=None, dataset="instruct_150k"):
     """Run Stage 2 fine-tuning with real COCO images."""
     import torch
-    from models import AnyMAL
+    from models import create_model_from_config
     from data import build_dataloader, ImageTextCollator
     from data.dataset_splitter import deterministic_train_val_split
     from training import FinetuneTrainer
@@ -580,28 +612,65 @@ def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
 
     # Initialize model
     print("Initializing model...")
-    model = AnyMAL(
-        llm_model_name=llama_path,
-        vision_model_name="ViT-L-14",
-        vision_pretrained="openai",
-        projector_type="perceiver",
-        num_image_tokens=64,
-        use_qlora=True,
-        lora_r=64,
-        lora_alpha=16,
-        gradient_checkpointing=True,
-        use_flash_attention=False,  # Skip flash-attn, use SDPA instead
-    )
+    architecture = str(architecture).strip().lower()
+    model_cfg = {
+        "model": {
+            "architecture": architecture,
+            "llm_model_name": llama_path,
+            "use_qlora": True,
+            "lora_r": 64,
+            "lora_alpha": 16,
+            "gradient_checkpointing": True,
+            "use_flash_attention": False,  # Skip flash-attn, use SDPA instead
+        }
+    }
+    if architecture == "anymal_v1":
+        model_cfg["model"].update(
+            {
+                "vision_model_name": "ViT-L-14",
+                "vision_pretrained": "openai",
+                "projector_type": "perceiver",
+                "num_image_tokens": 64,
+            }
+        )
+        dataset_num_image_tokens = 64
+        dataset_policy = "fixed"
+        dataset_min_tokens = None
+        dataset_max_tokens = None
+    else:
+        model_cfg["model"].update(
+            {
+                "vision_encoder_type": "siglip2",
+                "vision_model_name": "google/siglip2-so400m-patch14-384",
+                "token_compressor_type": "learned",
+                "bottleneck_dim": 2048,
+                "max_image_tokens": 384,
+                "min_image_tokens": 384,
+            }
+        )
+        dataset_num_image_tokens = 384
+        dataset_policy = "fixed"
+        dataset_min_tokens = 384
+        dataset_max_tokens = 384
+
+    model = create_model_from_config(model_cfg)
 
     # Diagnose model
     _diagnose_model(model)
 
     # Always load real images - never use dummy data
-    print("Loading dataset with real COCO images...")
-    dataset = load_llava_instruct_dataset(model.tokenizer)
+    print(f"Loading dataset ({dataset}) with real COCO images...")
+    ft_dataset = load_finetune_dataset(
+        model.tokenizer,
+        dataset=dataset,
+        num_image_tokens=dataset_num_image_tokens,
+        image_token_policy=dataset_policy,
+        min_image_tokens=dataset_min_tokens,
+        max_image_tokens=dataset_max_tokens,
+    )
 
     # Split into train/val
-    train_dataset, val_dataset = deterministic_train_val_split(dataset, val_fraction=0.05)
+    train_dataset, val_dataset = deterministic_train_val_split(ft_dataset, val_fraction=0.05)
     print(f"Dataset split: {len(train_dataset):,} train / {len(val_dataset):,} val")
 
     # Diagnose dataset
@@ -609,7 +678,7 @@ def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
 
     collator = ImageTextCollator(
         tokenizer=model.tokenizer,
-        max_length=512,
+        max_length=1024,
     )
 
     train_dataloader = build_dataloader(
@@ -667,8 +736,9 @@ def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
     eval_steps = max(50, max_steps // 10)  # ~10 eval points during training
     config = FinetuneConfig(
         max_steps=max_steps,
-        gradient_accumulation_steps=4,
+        gradient_accumulation_steps=8,
         learning_rate=learning_rate,
+        lora_learning_rate=lora_learning_rate,
         warmup_steps=min(100, max_steps // 10),
         weight_decay=0.01,
         use_amp=True,
@@ -682,6 +752,7 @@ def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
         wandb_project="anymal-finetune",
         track_per_layer_grad_norms=track_per_layer_grad_norms,
         pretrain_checkpoint=pretrain_checkpoint,
+        resume_from_checkpoint=resume_checkpoint,
     )
 
     # Train
@@ -729,11 +800,11 @@ def run_finetune(llama_path, max_steps, learning_rate, batch_size, use_wandb, us
     print(f"\nTraining complete! Final metrics: {metrics}")
 
 
-def run_pretrain(llama_path, max_steps, learning_rate, batch_size, use_wandb,
+def run_pretrain(llama_path, architecture, max_steps, learning_rate, batch_size, use_wandb,
                   use_dummy_data=False, distributed=False, resume_checkpoint=None):
     """Run Stage 1 pretraining with real COCO images."""
     import torch
-    from models import AnyMAL
+    from models import create_model_from_config
     from data import build_dataloader, ImageTextCollator
     from data.dataset_splitter import deterministic_train_val_split
     from training import PretrainTrainer
@@ -747,15 +818,46 @@ def run_pretrain(llama_path, max_steps, learning_rate, batch_size, use_wandb,
     print("Initializing model...")
     # For DDP, disable device_map so each process places model on its own GPU
     device_map = None if distributed else "auto"
-    model = AnyMAL(
-        llm_model_name=llama_path,
-        vision_model_name="ViT-L-14",
-        vision_pretrained="openai",
-        projector_type="perceiver",
-        num_image_tokens=64,
-        use_qlora=False,  # No LoRA for Stage 1
-        gradient_checkpointing=True,
-        use_flash_attention=False,  # Skip flash-attn, use SDPA instead
+    architecture = str(architecture).strip().lower()
+    model_cfg = {
+        "model": {
+            "architecture": architecture,
+            "llm_model_name": llama_path,
+            "use_qlora": False,  # No LoRA for Stage 1
+            "use_lora": False,
+            "gradient_checkpointing": True,
+            "use_flash_attention": False,  # Skip flash-attn, use SDPA instead
+        }
+    }
+    if architecture == "anymal_v1":
+        model_cfg["model"].update(
+            {
+                "vision_model_name": "ViT-L-14",
+                "vision_pretrained": "openai",
+                "projector_type": "perceiver",
+                "num_image_tokens": 64,
+            }
+        )
+        pretrain_num_image_tokens = 64
+        insert_placeholders = False
+        pretrain_max_length = 256
+    else:
+        model_cfg["model"].update(
+            {
+                "vision_encoder_type": "siglip2",
+                "vision_model_name": "google/siglip2-so400m-patch14-384",
+                "token_compressor_type": "learned",
+                "bottleneck_dim": 2048,
+                "max_image_tokens": 256,
+                "min_image_tokens": 256,
+            }
+        )
+        pretrain_num_image_tokens = 256
+        insert_placeholders = True
+        pretrain_max_length = 640
+
+    model = create_model_from_config(
+        model_cfg,
         llm_device_map=device_map,
     )
 
@@ -769,7 +871,12 @@ def run_pretrain(llama_path, max_steps, learning_rate, batch_size, use_wandb,
 
     # Always load real images
     print("Loading dataset with real COCO images...")
-    dataset = load_llava_pretrain_dataset(model.tokenizer)
+    dataset = load_llava_pretrain_dataset(
+        model.tokenizer,
+        insert_image_placeholders=insert_placeholders,
+        num_image_tokens=pretrain_num_image_tokens,
+        max_length=pretrain_max_length,
+    )
 
     # Split into train/val
     train_dataset, val_dataset = deterministic_train_val_split(dataset, val_fraction=0.05)
@@ -845,36 +952,25 @@ def run_pretrain(llama_path, max_steps, learning_rate, batch_size, use_wandb,
     print(f"Training complete! Final metrics: {metrics}")
 
 
-def load_llava_instruct_dataset(tokenizer):
+def load_finetune_dataset(
+    tokenizer,
+    dataset="instruct_150k",
+    num_image_tokens: int = 64,
+    image_token_policy: str = "fixed",
+    min_image_tokens: int = None,
+    max_image_tokens: int = None,
+):
     """
-    Load LLaVA-Instruct-150K dataset using cached JSON from volume.
+    Load finetune dataset using cached JSON from volume.
 
-    Uses the existing InstructionDataset class with image_dir=None
-    (dummy images) since downloading all COCO images is impractical.
-
-    The JSON is pre-cached during container setup via @modal.enter().
+    Args:
+        tokenizer: LLaMA tokenizer
+        dataset: "instruct_150k" for LLaVA-Instruct-150K,
+                 "mix_665k" for LLaVA-1.5 Mix-665K (filtered to cached COCO images)
     """
+    import json as _json
     from data.instruction_dataset import InstructionDataset
 
-    # JSON should already be cached by Trainer.setup()
-    json_path = "/checkpoints/llava_data/llava_instruct_150k.json"
-
-    if not os.path.exists(json_path):
-        # Fallback: download now if not cached (shouldn't happen with lifecycle hooks)
-        print("Warning: LLaVA JSON not pre-cached, downloading now...")
-        from huggingface_hub import hf_hub_download
-        cache_dir = "/checkpoints/llava_data"
-        os.makedirs(cache_dir, exist_ok=True)
-        hf_hub_download(
-            repo_id="liuhaotian/LLaVA-Instruct-150K",
-            filename="llava_instruct_150k.json",
-            repo_type="dataset",
-            local_dir=cache_dir,
-        )
-
-    print(f"Loading LLaVA-Instruct-150K from {json_path}")
-
-    # Require real COCO images - no dummy image fallback
     image_dir = "/checkpoints/coco_images"
     if not os.path.exists(image_dir):
         raise RuntimeError(
@@ -888,25 +984,106 @@ def load_llava_instruct_dataset(tokenizer):
     if num_images == 0:
         raise RuntimeError(f"No JPEG images found in {image_dir}. Cannot train without real images.")
 
-    print("Filtering dataset to only samples with real images")
+    if dataset == "mix_665k":
+        json_path = "/checkpoints/llava_data/llava_v1_5_mix665k.json"
+        if not os.path.exists(json_path):
+            raise RuntimeError(
+                f"Mix-665K JSON not found at {json_path}. "
+                "It should have been downloaded during container setup."
+            )
 
-    dataset = InstructionDataset(
-        data_path=json_path,
-        image_dir=image_dir,
-        tokenizer=tokenizer,
-        image_size=224,
-        max_length=512,
-        filter_to_available_images=True,  # Only use samples with real images
-    )
+        print(f"Loading LLaVA-1.5 Mix-665K from {json_path}")
 
-    if len(dataset) == 0:
-        raise RuntimeError(
-            f"Dataset is empty after filtering. No LLaVA samples matched the "
-            f"{num_images} available COCO images. Check image filenames."
+        # The 665K JSON has image paths like "coco/train2017/000000123456.jpg",
+        # "gqa/images/xxxxx.jpg", "ocr_vqa/images/xxxxx.jpg", etc.
+        # We need to normalize these to just the filename to match our cached images.
+        available_images = set(f for f in os.listdir(image_dir) if f.endswith(('.jpg', '.jpeg', '.png')))
+
+        with open(json_path, "r") as f:
+            raw_data = _json.load(f)
+
+        print(f"Mix-665K total samples: {len(raw_data)}")
+
+        # Filter to samples whose image (by filename) exists in our cache
+        filtered = []
+        for sample in raw_data:
+            img_path = sample.get("image", "")
+            if not img_path:
+                continue  # Skip text-only samples
+            # Extract just the filename from paths like "coco/train2017/000000123456.jpg"
+            img_filename = os.path.basename(img_path)
+            if img_filename in available_images:
+                # Normalize the image field to just the filename
+                sample["image"] = img_filename
+                filtered.append(sample)
+
+        print(f"Mix-665K filtered to {len(filtered)}/{len(raw_data)} samples with cached COCO images")
+        if len(filtered) == 0:
+            raise RuntimeError(
+                "No Mix-665K samples matched available COCO images. "
+                "Check image filenames."
+            )
+
+        # Write filtered data to a temp file for InstructionDataset
+        filtered_path = "/checkpoints/llava_data/mix665k_filtered.json"
+        with open(filtered_path, "w") as f:
+            _json.dump(filtered, f)
+
+        ds = InstructionDataset(
+            data_path=filtered_path,
+            image_dir=image_dir,
+            tokenizer=tokenizer,
+            image_size=224,
+            max_length=1024,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            filter_to_available_images=True,
+        )
+        print(f"Loaded {len(ds)} multi-task instruction samples")
+        return ds
+
+    else:
+        # Default: LLaVA-Instruct-150K
+        json_path = "/checkpoints/llava_data/llava_instruct_150k.json"
+
+        if not os.path.exists(json_path):
+            print("Warning: LLaVA JSON not pre-cached, downloading now...")
+            from huggingface_hub import hf_hub_download
+            cache_dir = "/checkpoints/llava_data"
+            os.makedirs(cache_dir, exist_ok=True)
+            hf_hub_download(
+                repo_id="liuhaotian/LLaVA-Instruct-150K",
+                filename="llava_instruct_150k.json",
+                repo_type="dataset",
+                local_dir=cache_dir,
+            )
+
+        print(f"Loading LLaVA-Instruct-150K from {json_path}")
+        print("Filtering dataset to only samples with real images")
+
+        ds = InstructionDataset(
+            data_path=json_path,
+            image_dir=image_dir,
+            tokenizer=tokenizer,
+            image_size=224,
+            max_length=1024,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            filter_to_available_images=True,
         )
 
-    print(f"Loaded {len(dataset)} instruction samples with real images")
-    return dataset
+        if len(ds) == 0:
+            raise RuntimeError(
+                f"Dataset is empty after filtering. No LLaVA samples matched the "
+                f"{num_images} available COCO images. Check image filenames."
+            )
+
+        print(f"Loaded {len(ds)} instruction samples with real images")
+        return ds
 
 
 class COCOCaptionDataset:
@@ -915,19 +1092,44 @@ class COCOCaptionDataset:
     Defined at module level so it can be pickled by DataLoader workers.
     """
 
-    def __init__(self, samples, image_dir, tokenizer):
+    def __init__(
+        self,
+        samples,
+        image_dir,
+        tokenizer,
+        insert_image_placeholders: bool = False,
+        num_image_tokens: int = 64,
+        max_length: int = 256,
+    ):
         from data.data_utils import get_image_transform, TextProcessor
         self.samples = samples
         self.image_dir = image_dir
         self.tokenizer = tokenizer
         self.transform = get_image_transform(image_size=224, is_train=True)
-        self.text_processor = TextProcessor(tokenizer, max_length=256)
+        self.max_length = max_length
+        self.text_processor = TextProcessor(tokenizer, max_length=max_length)
+        self.insert_image_placeholders = insert_image_placeholders
+        self.num_image_tokens = num_image_tokens
+        self.image_placeholder_token_id = self._resolve_placeholder_token_id()
+
+    def _resolve_placeholder_token_id(self):
+        if not self.insert_image_placeholders:
+            return None
+        vocab = self.tokenizer.get_vocab()
+        if "<|reserved_special_token_0|>" in vocab:
+            return vocab["<|reserved_special_token_0|>"]
+        if "<|image|>" in vocab:
+            return vocab["<|image|>"]
+        raise ValueError(
+            "insert_image_placeholders=True but tokenizer has no placeholder token."
+        )
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
         from PIL import Image
+        import torch
         item = self.samples[idx]
 
         # Load real image
@@ -942,15 +1144,59 @@ class COCOCaptionDataset:
         labels = encoding["input_ids"].clone()
         labels[labels == self.tokenizer.pad_token_id] = -100
 
+        if self.insert_image_placeholders:
+            placeholder_block = torch.full(
+                (self.num_image_tokens,),
+                self.image_placeholder_token_id,
+                dtype=encoding["input_ids"].dtype,
+            )
+            placeholder_mask = torch.ones(self.num_image_tokens, dtype=encoding["attention_mask"].dtype)
+            placeholder_labels = torch.full((self.num_image_tokens,), -100, dtype=labels.dtype)
+
+            input_ids = torch.cat([placeholder_block, encoding["input_ids"]], dim=0)
+            attention_mask = torch.cat([placeholder_mask, encoding["attention_mask"]], dim=0)
+            labels = torch.cat([placeholder_labels, labels], dim=0)
+
+            max_len = self.max_length
+            if input_ids.shape[0] > max_len:
+                input_ids = input_ids[:max_len]
+                attention_mask = attention_mask[:max_len]
+                labels = labels[:max_len]
+            elif input_ids.shape[0] < max_len:
+                pad_len = max_len - input_ids.shape[0]
+                input_ids = torch.cat(
+                    [
+                        input_ids,
+                        torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=input_ids.dtype),
+                    ],
+                    dim=0,
+                )
+                attention_mask = torch.cat(
+                    [attention_mask, torch.zeros(pad_len, dtype=attention_mask.dtype)],
+                    dim=0,
+                )
+                labels = torch.cat(
+                    [labels, torch.full((pad_len,), -100, dtype=labels.dtype)],
+                    dim=0,
+                )
+        else:
+            input_ids = encoding["input_ids"]
+            attention_mask = encoding["attention_mask"]
+
         return {
             "image": image,
-            "input_ids": encoding["input_ids"],
-            "attention_mask": encoding["attention_mask"],
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
             "labels": labels,
         }
 
 
-def load_llava_pretrain_dataset(tokenizer):
+def load_llava_pretrain_dataset(
+    tokenizer,
+    insert_image_placeholders: bool = False,
+    num_image_tokens: int = 64,
+    max_length: int = 256,
+):
     """
     Load captioning dataset for Stage 1 alignment using real COCO images.
 
@@ -1004,7 +1250,14 @@ def load_llava_pretrain_dataset(tokenizer):
     if len(samples) == 0:
         raise RuntimeError("No pretrain samples matched available COCO images.")
 
-    dataset = COCOCaptionDataset(samples, image_dir, tokenizer)
+    dataset = COCOCaptionDataset(
+        samples=samples,
+        image_dir=image_dir,
+        tokenizer=tokenizer,
+        insert_image_placeholders=insert_image_placeholders,
+        num_image_tokens=num_image_tokens,
+        max_length=max_length,
+    )
     print(f"Loaded {len(dataset)} pretrain samples with real COCO images")
     return dataset
 
@@ -1102,6 +1355,7 @@ def _pretrain_worker(local_rank, world_size, config):
     try:
         run_pretrain(
             llama_path=config["llama_path"],
+            architecture=config.get("architecture", "anymal_v1"),
             max_steps=config["max_steps"],
             learning_rate=config["learning_rate"],
             batch_size=config["batch_size"],
@@ -1123,7 +1377,15 @@ def _pretrain_worker(local_rank, world_size, config):
         modal.Secret.from_name("wandb"),
     ],
 )
-def pretrain_distributed(max_steps, learning_rate, batch_size, use_wandb, wandb_api_key=None, resume_checkpoint=None):
+def pretrain_distributed(
+    max_steps,
+    learning_rate,
+    batch_size,
+    use_wandb,
+    architecture="anymal_v1",
+    wandb_api_key=None,
+    resume_checkpoint=None,
+):
     """Run Stage 1 pretraining on 4 GPUs using DDP."""
     import sys
     sys.path.insert(0, "/root/anymal")
@@ -1161,6 +1423,7 @@ def pretrain_distributed(max_steps, learning_rate, batch_size, use_wandb, wandb_
         "learning_rate": learning_rate,
         "batch_size": batch_size,
         "use_wandb": use_wandb,
+        "architecture": architecture,
         "resume_checkpoint": resume_checkpoint,
     }
 
@@ -1174,7 +1437,9 @@ def pretrain_distributed(max_steps, learning_rate, batch_size, use_wandb, wandb_
 def main(
     max_steps: int = 100,
     stage: str = "finetune",
+    architecture: str = "anymal_v1",
     learning_rate: float = None,
+    lora_learning_rate: float = None,
     batch_size: int = 4,
     use_wandb: bool = False,
     use_dummy_data: bool = False,
@@ -1183,6 +1448,7 @@ def main(
     run_eval_benchmarks: bool = True,
     pretrain_checkpoint: str = None,
     resume_checkpoint: str = None,
+    dataset: str = "instruct_150k",
 ):
     """
     Entry point for Modal training.
@@ -1195,15 +1461,22 @@ def main(
         modal run modal_train.py --stage finetune             # Stage 2 (auto-discovers pretrain ckpt)
         modal run modal_train.py --use-wandb --wandb-api-key YOUR_KEY  # With W&B
         modal run modal_train.py --stage pretrain --resume-checkpoint /checkpoints/pretrain-output/checkpoint-250
+        modal run modal_train.py --stage finetune --learning-rate 2e-5 --lora-learning-rate 2e-4 --dataset mix_665k
     """
     print(f"Starting AnyMAL training on Modal...")
     print(f"  Stage: {stage}")
+    print(f"  Architecture: {architecture}")
     print(f"  Max steps: {max_steps}")
     print(f"  Batch size: {batch_size}")
     print(f"  Data: {'dummy' if use_dummy_data else 'LLaVA'}")
+    print(f"  Dataset: {dataset}")
     print(f"  W&B: {'enabled' if use_wandb else 'disabled'}")
     print(f"  Per-layer grad norms: {track_per_layer_grad_norms}")
     print(f"  Eval benchmarks: {run_eval_benchmarks}")
+    if learning_rate:
+        print(f"  Learning rate: {learning_rate}")
+    if lora_learning_rate:
+        print(f"  LoRA learning rate: {lora_learning_rate}")
     if pretrain_checkpoint:
         print(f"  Pretrain checkpoint: {pretrain_checkpoint}")
     if resume_checkpoint:
@@ -1217,6 +1490,7 @@ def main(
             learning_rate=lr,
             batch_size=batch_size,
             use_wandb=use_wandb,
+            architecture=architecture,
             wandb_api_key=wandb_api_key,
             resume_checkpoint=resume_checkpoint,
         )
@@ -1226,7 +1500,9 @@ def main(
         trainer.train.remote(
             max_steps=max_steps,
             stage=stage,
+            architecture=architecture,
             learning_rate=learning_rate,
+            lora_learning_rate=lora_learning_rate,
             batch_size=batch_size,
             use_wandb=use_wandb,
             use_dummy_data=use_dummy_data,
@@ -1234,4 +1510,6 @@ def main(
             track_per_layer_grad_norms=track_per_layer_grad_norms,
             run_eval_benchmarks=run_eval_benchmarks,
             pretrain_checkpoint=pretrain_checkpoint,
+            resume_checkpoint=resume_checkpoint,
+            dataset=dataset,
         )

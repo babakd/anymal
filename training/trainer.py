@@ -50,6 +50,7 @@ from typing import Optional, Dict, Any, Callable
 from dataclasses import dataclass, field
 from tqdm import tqdm
 import json
+from model_metadata import validate_checkpoint_architecture
 
 from .distributed import (
     is_main_process,
@@ -76,6 +77,7 @@ class TrainerConfig:
     max_grad_norm: float = 1.0
     warmup_steps: int = 1000
     lr_scheduler_type: str = "cosine"
+    min_lr_ratio: float = 0.1  # Cosine scheduler floors at this fraction of peak LR
 
     # Mixed precision
     use_amp: bool = True
@@ -252,17 +254,17 @@ class Trainer:
 
         optimizer_groups = []
         if projector_decay:
-            optimizer_groups.append({"params": projector_decay, "weight_decay": self.config.weight_decay, "lr": self.config.learning_rate})
+            optimizer_groups.append({"params": projector_decay, "weight_decay": self.config.weight_decay, "lr": self.config.learning_rate, "label": "projector"})
         if projector_no_decay:
-            optimizer_groups.append({"params": projector_no_decay, "weight_decay": 0.0, "lr": self.config.learning_rate})
+            optimizer_groups.append({"params": projector_no_decay, "weight_decay": 0.0, "lr": self.config.learning_rate, "label": "projector"})
         if lora_decay:
-            optimizer_groups.append({"params": lora_decay, "weight_decay": self.config.weight_decay, "lr": lora_lr})
+            optimizer_groups.append({"params": lora_decay, "weight_decay": self.config.weight_decay, "lr": lora_lr, "label": "lora"})
         if lora_no_decay:
-            optimizer_groups.append({"params": lora_no_decay, "weight_decay": 0.0, "lr": lora_lr})
+            optimizer_groups.append({"params": lora_no_decay, "weight_decay": 0.0, "lr": lora_lr, "label": "lora"})
         if other_decay:
-            optimizer_groups.append({"params": other_decay, "weight_decay": self.config.weight_decay, "lr": self.config.learning_rate})
+            optimizer_groups.append({"params": other_decay, "weight_decay": self.config.weight_decay, "lr": self.config.learning_rate, "label": "other"})
         if other_no_decay:
-            optimizer_groups.append({"params": other_no_decay, "weight_decay": 0.0, "lr": self.config.learning_rate})
+            optimizer_groups.append({"params": other_no_decay, "weight_decay": 0.0, "lr": self.config.learning_rate, "label": "other"})
 
         return torch.optim.AdamW(
             optimizer_groups,
@@ -272,7 +274,8 @@ class Trainer:
 
     def _create_scheduler(self) -> torch.optim.lr_scheduler._LRScheduler:
         """Create learning rate scheduler with warmup support."""
-        from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+        import math
+        from torch.optim.lr_scheduler import LambdaLR, LinearLR, SequentialLR
 
         # Calculate total steps
         if self.config.max_steps is not None:
@@ -285,15 +288,21 @@ class Trainer:
 
         # Create main scheduler
         if self.config.lr_scheduler_type == "cosine":
-            main_scheduler = CosineAnnealingLR(
-                self.optimizer,
-                T_max=max(1, total_steps - warmup_steps),
-            )
+            # Cosine with floor: decays to min_lr_ratio * peak_lr (not zero)
+            # LambdaLR multiplies each param group's initial_lr by the lambda value,
+            # so this respects per-group LRs (projector vs LoRA).
+            min_ratio = self.config.min_lr_ratio
+            T = max(1, total_steps - warmup_steps)
+            def cosine_with_floor(step):
+                progress = min(step / T, 1.0)
+                return min_ratio + (1 - min_ratio) * 0.5 * (1 + math.cos(math.pi * progress))
+            main_scheduler = LambdaLR(self.optimizer, cosine_with_floor)
         elif self.config.lr_scheduler_type == "linear":
+            min_ratio = self.config.min_lr_ratio
             main_scheduler = LinearLR(
                 self.optimizer,
                 start_factor=1.0,
-                end_factor=0.0,
+                end_factor=min_ratio,
                 total_iters=max(1, total_steps - warmup_steps),
             )
         else:
@@ -614,6 +623,10 @@ class Trainer:
         avg_loss = total_loss / max(num_steps, 1)
         avg_loss = reduce_tensor(torch.tensor(avg_loss, device=self.device)).item()
 
+        print_rank_0(f"Eval: {num_steps} valid batches, avg_loss={avg_loss:.4f}")
+        if num_steps == 0:
+            print_rank_0("WARNING: Eval had 0 valid batches - eval loss is meaningless")
+
         self._log_metrics({"eval/loss": avg_loss})
 
         return avg_loss
@@ -667,6 +680,12 @@ class Trainer:
 
         print_rank_0(f"Resuming from checkpoint: {checkpoint_dir}")
 
+        expected_arch = getattr(self.unwrapped_model, "architecture", "anymal_v1")
+        validate_checkpoint_architecture(
+            checkpoint_dir=checkpoint_dir,
+            expected_architecture=expected_arch,
+        )
+
         # Load model weights (projector + optionally LoRA)
         projector_path = _os.path.join(checkpoint_dir, "projector.pt")
         if _os.path.exists(projector_path):
@@ -674,6 +693,13 @@ class Trainer:
                 torch.load(projector_path, map_location=self.device, weights_only=True)
             )
             print_rank_0("  Loaded projector weights")
+
+        compressor_path = _os.path.join(checkpoint_dir, "token_compressor.pt")
+        if _os.path.exists(compressor_path) and hasattr(self.unwrapped_model, "token_compressor"):
+            self.unwrapped_model.token_compressor.load_state_dict(
+                torch.load(compressor_path, map_location=self.device, weights_only=True)
+            )
+            print_rank_0("  Loaded token compressor weights")
 
         llm_path = _os.path.join(checkpoint_dir, "llm")
         if _os.path.exists(llm_path) and hasattr(self.unwrapped_model.llm, "model"):
@@ -805,7 +831,9 @@ class Trainer:
         print_rank_0("\n" + "=" * 60)
         print_rank_0("TRAINING CONFIGURATION")
         print_rank_0("=" * 60)
-        print_rank_0(f"  Learning rate: {self.config.learning_rate}")
+        print_rank_0(f"  Learning rate (projector): {self.config.learning_rate}")
+        print_rank_0(f"  LoRA learning rate: {self.config.lora_learning_rate or self.config.learning_rate}")
+        print_rank_0(f"  Min LR ratio: {self.config.min_lr_ratio}")
         print_rank_0(f"  LR scheduler: {self.config.lr_scheduler_type}")
         print_rank_0(f"  Warmup steps: {self.config.warmup_steps}")
         print_rank_0(f"  Max grad norm: {self.config.max_grad_norm}")
@@ -817,6 +845,9 @@ class Trainer:
         print_rank_0(f"  Per-layer grad norms: {self.config.track_per_layer_grad_norms}")
         print_rank_0(f"  Optimizer: {type(self.optimizer).__name__}")
         print_rank_0(f"  Num param groups: {len(self.optimizer.param_groups)}")
+        # Log per-group LRs
+        for i, group in enumerate(self.optimizer.param_groups):
+            print_rank_0(f"  Param group {i}: lr={group['lr']:.2e}, wd={group['weight_decay']}, params={len(group['params'])}")
         print_rank_0("=" * 60 + "\n")
 
         # Log to W&B config if available
@@ -829,6 +860,8 @@ class Trainer:
                     "weight_decay": self.config.weight_decay,
                     "health_monitoring_enabled": self.config.enable_health_monitoring,
                     "track_per_layer_grad_norms": self.config.track_per_layer_grad_norms,
+                    "lora_learning_rate": self.config.lora_learning_rate,
+                    "min_lr_ratio": self.config.min_lr_ratio,
                 }, allow_val_change=True)
             except Exception:
                 pass
@@ -841,6 +874,18 @@ class Trainer:
         metrics["train/lr"] = self._get_lr()
         metrics["train/step"] = self.global_step
         metrics["train/epoch"] = self.epoch
+
+        # Log per-group LRs (projector vs LoRA)
+        # Use the LR values directly — groups are ordered: projector_decay, projector_no_decay,
+        # lora_decay, lora_no_decay, other_decay, other_no_decay (from _create_optimizer)
+        seen_lrs = {}
+        for group in self.optimizer.param_groups:
+            lr_val = group["lr"]
+            label = group.get("label", "")
+            if label and label not in seen_lrs:
+                seen_lrs[label] = lr_val
+        for label, lr_val in seen_lrs.items():
+            metrics[f"train/lr_{label}"] = lr_val
 
         # Always print key metrics to console for monitoring
         loss_str = f"loss={metrics.get('train/loss', 0):.4f}"

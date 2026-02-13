@@ -43,13 +43,14 @@ from dataclasses import dataclass
 
 from .trainer import Trainer, TrainerConfig
 from .distributed import print_rank_0, is_main_process
+from model_metadata import validate_checkpoint_architecture
 
 
 @dataclass
 class FinetuneConfig(TrainerConfig):
     """Configuration for instruction fine-tuning."""
     # Stage 2 specific settings
-    learning_rate: float = 1e-5  # Lower than Stage 1
+    learning_rate: float = 2e-5  # Projector LR (LoRA uses lora_learning_rate)
     max_steps: int = 3000  # Much fewer steps
     warmup_steps: int = 100
     gradient_accumulation_steps: int = 2
@@ -60,6 +61,9 @@ class FinetuneConfig(TrainerConfig):
 
     # Continue from Stage 1 checkpoint
     pretrain_checkpoint: Optional[str] = None
+
+    # Projector warmup: freeze projector for N steps to let LoRA warm up first
+    projector_warmup_steps: int = 200
 
 
 class FinetuneTrainer(Trainer):
@@ -101,6 +105,16 @@ class FinetuneTrainer(Trainer):
         # Configure model for Stage 2
         model.set_training_stage(2)
 
+        # Projector warmup: freeze projector for the first N steps
+        self._projector_frozen = False
+        self._projector_warmup_steps = config.projector_warmup_steps
+        if config.projector_warmup_steps > 0:
+            for name, param in model.named_parameters():
+                if "projector" in name:
+                    param.requires_grad = False
+            self._projector_frozen = True
+            print_rank_0(f"Projector FROZEN for first {config.projector_warmup_steps} steps (LoRA warmup)")
+
         # Verify trainable params
         if is_main_process():
             self._verify_trainable_params(model)
@@ -114,6 +128,12 @@ class FinetuneTrainer(Trainer):
 
     def _load_pretrain_checkpoint(self, model, checkpoint_path: str):
         """Load pretrained projector weights from Stage 1."""
+        expected_arch = getattr(model, "architecture", "anymal_v1")
+        validate_checkpoint_architecture(
+            checkpoint_dir=checkpoint_path,
+            expected_architecture=expected_arch,
+        )
+
         projector_path = os.path.join(checkpoint_path, "projector.pt")
 
         if os.path.exists(projector_path):
@@ -122,6 +142,12 @@ class FinetuneTrainer(Trainer):
             model.projector.load_state_dict(state_dict)
         else:
             print_rank_0(f"WARNING: No projector weights found at {projector_path}")
+
+        compressor_path = os.path.join(checkpoint_path, "token_compressor.pt")
+        if hasattr(model, "token_compressor") and os.path.exists(compressor_path):
+            print_rank_0(f"Loading token compressor from {compressor_path}")
+            compressor_state = torch.load(compressor_path, map_location="cpu")
+            model.token_compressor.load_state_dict(compressor_state)
 
     def _verify_trainable_params(self, model):
         """Verify that projector + LoRA are trainable."""
@@ -164,6 +190,21 @@ class FinetuneTrainer(Trainer):
         - attention_mask: [B, seq_len]
         - labels: [B, seq_len] (with non-response parts masked as -100)
         """
+        # Unfreeze projector after warmup period
+        if (self._projector_frozen
+                and self.global_step >= self._projector_warmup_steps):
+            print_rank_0(f"\n[Step {self.global_step}] Unfreezing projector (warmup complete)")
+            for name, param in self.unwrapped_model.named_parameters():
+                if "projector" in name:
+                    param.requires_grad = True
+            self._projector_frozen = False
+            # Rebuild optimizer and scheduler to include projector params
+            self.optimizer = self._create_optimizer()
+            self.scheduler = self._create_scheduler()
+            print_rank_0("  Rebuilt optimizer and scheduler with projector params")
+            if is_main_process():
+                self._verify_trainable_params(self.unwrapped_model)
+
         # Move batch to device
         batch = {
             k: v.to(self.device) if isinstance(v, torch.Tensor) else v

@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from .encoders import ImageEncoder
 from .projectors import PerceiverResampler, LinearProjector
 from .llm import LlamaWrapper
+from model_metadata import validate_checkpoint_architecture, write_model_metadata
 
 
 @dataclass
@@ -89,6 +90,7 @@ class AnyMAL(nn.Module):
         ... )
         >>> loss = outputs.loss
     """
+    architecture = "anymal_v1"
 
     def __init__(
         self,
@@ -605,6 +607,15 @@ class AnyMAL(nn.Module):
         # Save LLM (LoRA weights)
         self.llm.save_pretrained(os.path.join(save_path, "llm"))
 
+        write_model_metadata(
+            save_path,
+            architecture=self.architecture,
+            extra={
+                "projector_type": type(self.projector).__name__,
+                "num_image_tokens": self.num_image_tokens,
+            },
+        )
+
         print(f"Model saved to {save_path}")
 
     @classmethod
@@ -626,6 +637,8 @@ class AnyMAL(nn.Module):
             Loaded AnyMAL model
         """
         import os
+
+        validate_checkpoint_architecture(save_path, expected_architecture=cls.architecture)
 
         # Initialize model
         model = cls(llm_model_name=llm_model_name, **kwargs)
