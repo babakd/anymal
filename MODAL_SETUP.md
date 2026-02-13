@@ -64,6 +64,16 @@ modal run modal_train.py --max-steps 500
 modal run modal_train.py --stage pretrain --max-steps 1000
 ```
 
+### Stage 1 Pretraining on H100
+```bash
+modal run modal_train.py --stage pretrain --gpu-type h100 --max-steps 1000
+```
+
+### Stage 2 Finetune on H100
+```bash
+modal run modal_train.py --stage finetune --gpu-type h100 --max-steps 500
+```
+
 ### Test Pipeline with Dummy Data (fastest)
 ```bash
 modal run modal_train.py --use-dummy-data --max-steps 50
@@ -77,6 +87,7 @@ modal run modal_train.py --help
 Options:
 - `--max-steps`: Number of training steps (default: 100)
 - `--stage`: "finetune" or "pretrain" (default: finetune)
+- `--gpu-type`: GPU family for Modal workers: `a100` or `h100` (default: a100)
 - `--learning-rate`: Learning rate (default: 1e-5 for finetune, 2e-4 for pretrain)
 - `--batch-size`: Per-device batch size (default: 4)
 - `--use-wandb`: Enable W&B logging

@@ -11,6 +11,7 @@ Options:
     modal run modal_train.py --max-steps 100    # Quick test
     modal run modal_train.py --max-steps 1000   # Longer run
     modal run modal_train.py --stage pretrain   # Stage 1 pretraining
+    modal run modal_train.py --stage pretrain --gpu-type h100  # Select H100
 """
 
 import modal
@@ -49,6 +50,37 @@ image = (
     # Mount local code - changes frequently but won't invalidate pip cache
     .add_local_dir(PROJECT_DIR, remote_path="/root/anymal", copy=False)
 )
+
+
+# Logical GPU families selectable via --gpu-type.
+GPU_TYPE_ALIASES = {
+    "a100": "a100",
+    "a100-80gb": "a100",
+    "a100_80gb": "a100",
+    "h100": "h100",
+}
+
+GPU_MODAL_RESOURCES = {
+    "a100": {"single": "A100-80GB", "distributed": "A100-80GB:4"},
+    "h100": {"single": "H100", "distributed": "H100:4"},
+}
+
+
+def _normalize_gpu_type(gpu_type: str) -> str:
+    """Normalize user-facing GPU type flag to known keys."""
+    key = str(gpu_type).strip().lower()
+    key = GPU_TYPE_ALIASES.get(key, key)
+    if key not in GPU_MODAL_RESOURCES:
+        supported = ", ".join(sorted(GPU_MODAL_RESOURCES.keys()))
+        raise ValueError(f"Unsupported gpu_type '{gpu_type}'. Supported values: {supported}")
+    return key
+
+
+def _resolve_modal_gpu(stage: str, gpu_type: str) -> str:
+    """Resolve selected stage + gpu_type to a concrete Modal GPU resource string."""
+    key = _normalize_gpu_type(gpu_type)
+    mode = "distributed" if stage == "pretrain" else "single"
+    return GPU_MODAL_RESOURCES[key][mode]
 
 
 @app.cls(
@@ -1367,17 +1399,7 @@ def _pretrain_worker(local_rank, world_size, config):
         cleanup_distributed()
 
 
-@app.function(
-    image=image,
-    gpu="A100-80GB:4",
-    timeout=14400,  # 4 hour timeout
-    volumes={"/checkpoints": volume},
-    secrets=[
-        modal.Secret.from_name("huggingface"),
-        modal.Secret.from_name("wandb"),
-    ],
-)
-def pretrain_distributed(
+def _run_pretrain_distributed(
     max_steps,
     learning_rate,
     batch_size,
@@ -1386,7 +1408,7 @@ def pretrain_distributed(
     wandb_api_key=None,
     resume_checkpoint=None,
 ):
-    """Run Stage 1 pretraining on 4 GPUs using DDP."""
+    """Shared implementation for Stage 1 distributed pretraining."""
     import sys
     sys.path.insert(0, "/root/anymal")
     import torch
@@ -1433,11 +1455,74 @@ def pretrain_distributed(
     print("Distributed pretraining complete! Outputs saved to volume.")
 
 
+@app.function(
+    image=image,
+    gpu="A100-80GB:4",
+    timeout=14400,  # 4 hour timeout
+    volumes={"/checkpoints": volume},
+    secrets=[
+        modal.Secret.from_name("huggingface"),
+        modal.Secret.from_name("wandb"),
+    ],
+)
+def pretrain_distributed(
+    max_steps,
+    learning_rate,
+    batch_size,
+    use_wandb,
+    architecture="anymal_v1",
+    wandb_api_key=None,
+    resume_checkpoint=None,
+):
+    """Run Stage 1 pretraining on 4x A100-80GB using DDP."""
+    return _run_pretrain_distributed(
+        max_steps=max_steps,
+        learning_rate=learning_rate,
+        batch_size=batch_size,
+        use_wandb=use_wandb,
+        architecture=architecture,
+        wandb_api_key=wandb_api_key,
+        resume_checkpoint=resume_checkpoint,
+    )
+
+
+@app.function(
+    image=image,
+    gpu="H100:4",
+    timeout=14400,  # 4 hour timeout
+    volumes={"/checkpoints": volume},
+    secrets=[
+        modal.Secret.from_name("huggingface"),
+        modal.Secret.from_name("wandb"),
+    ],
+)
+def pretrain_distributed_h100(
+    max_steps,
+    learning_rate,
+    batch_size,
+    use_wandb,
+    architecture="anymal_v1",
+    wandb_api_key=None,
+    resume_checkpoint=None,
+):
+    """Run Stage 1 pretraining on 4x H100 using DDP."""
+    return _run_pretrain_distributed(
+        max_steps=max_steps,
+        learning_rate=learning_rate,
+        batch_size=batch_size,
+        use_wandb=use_wandb,
+        architecture=architecture,
+        wandb_api_key=wandb_api_key,
+        resume_checkpoint=resume_checkpoint,
+    )
+
+
 @app.local_entrypoint()
 def main(
     max_steps: int = 100,
     stage: str = "finetune",
     architecture: str = "anymal_v1",
+    gpu_type: str = "a100",
     learning_rate: float = None,
     lora_learning_rate: float = None,
     batch_size: int = 4,
@@ -1458,14 +1543,19 @@ def main(
         modal run modal_train.py --use-dummy-data             # Test with dummy data
         modal run modal_train.py --max-steps 500              # Longer run
         modal run modal_train.py --stage pretrain             # Stage 1 (4 GPUs)
+        modal run modal_train.py --stage pretrain --gpu-type h100
         modal run modal_train.py --stage finetune             # Stage 2 (auto-discovers pretrain ckpt)
         modal run modal_train.py --use-wandb --wandb-api-key YOUR_KEY  # With W&B
         modal run modal_train.py --stage pretrain --resume-checkpoint /checkpoints/pretrain-output/checkpoint-250
         modal run modal_train.py --stage finetune --learning-rate 2e-5 --lora-learning-rate 2e-4 --dataset mix_665k
     """
+    selected_gpu = _resolve_modal_gpu(stage, gpu_type)
+
     print(f"Starting AnyMAL training on Modal...")
     print(f"  Stage: {stage}")
     print(f"  Architecture: {architecture}")
+    print(f"  GPU type: {gpu_type}")
+    print(f"  Modal GPU resource: {selected_gpu}")
     print(f"  Max steps: {max_steps}")
     print(f"  Batch size: {batch_size}")
     print(f"  Data: {'dummy' if use_dummy_data else 'LLaVA'}")
@@ -1485,7 +1575,11 @@ def main(
     if stage == "pretrain":
         # Stage 1 uses multi-GPU distributed pretraining
         lr = learning_rate or 2e-4
-        pretrain_distributed.remote(
+        gpu_key = _normalize_gpu_type(gpu_type)
+        pretrain_runner = (
+            pretrain_distributed_h100 if gpu_key == "h100" else pretrain_distributed
+        )
+        pretrain_runner.remote(
             max_steps=max_steps,
             learning_rate=lr,
             batch_size=batch_size,
@@ -1496,7 +1590,8 @@ def main(
         )
     else:
         # Stage 2 uses single-GPU with QLoRA
-        trainer = Trainer()
+        trainer_cls = Trainer.with_options(gpu=selected_gpu)
+        trainer = trainer_cls()
         trainer.train.remote(
             max_steps=max_steps,
             stage=stage,
