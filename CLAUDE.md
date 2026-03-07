@@ -23,6 +23,19 @@
 | VQA evaluation | Partial (fails on missing images, see Known Issues) |
 | Unit tests | 101 passing, 1 skipped |
 
+### Architecture Split (Mar 2026)
+
+Two architectures now exist and should be treated as separate runtime paths:
+
+- `anymal_v1`: CLIP + Perceiver Resampler. Stable default.
+- `anymal_v2`: SigLIP2 + token compressor + MLP projector.
+
+Important implications:
+
+- preprocessing is architecture-specific (`v1` CLIP transform, `v2` SigLIP2 processor)
+- projector warmup is now conceptually visual-bridge warmup
+- checkpoint loading and Modal inference are architecture-aware and should not mix `v1` and `v2` checkpoints
+
 ### Two-Stage Training Pipeline
 
 **Stage 1 -> Stage 2 flow**:

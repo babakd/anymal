@@ -2,6 +2,11 @@
 
 Modal is a serverless GPU platform - you only pay for actual compute seconds.
 
+This repo supports two architectures on Modal:
+
+- `anymal_v1`: CLIP + Perceiver Resampler. Stable baseline.
+- `anymal_v2`: SigLIP2 + learned token compressor + MLP projector. Alternate path with architecture-specific preprocessing.
+
 ## One-Time Setup (5 minutes)
 
 ### 1. Create Modal Account
@@ -59,25 +64,44 @@ modal run modal_train.py --use-wandb
 modal run modal_train.py --max-steps 500
 ```
 
-### Stage 1 Pretraining
+### Stage 1 Pretraining (`anymal_v1`)
 ```bash
 modal run modal_train.py --stage pretrain --max-steps 1000
 ```
 
-### Stage 1 Pretraining on H100
+### Stage 1 Pretraining on H100 (`anymal_v1`)
 ```bash
 modal run modal_train.py --stage pretrain --gpu-type h100 --max-steps 1000
 ```
 
-### Stage 2 Finetune on H100
+### Stage 1 Pretraining on H100 (`anymal_v2`)
+```bash
+modal run modal_train.py --stage pretrain --architecture anymal_v2 --gpu-type h100 --max-steps 1000
+```
+
+### Stage 2 Finetune on H100 (`anymal_v1`)
 ```bash
 modal run modal_train.py --stage finetune --gpu-type h100 --max-steps 500
 ```
 
-### Test Pipeline with Dummy Data (fastest)
+### Stage 2 Finetune on H100 (`anymal_v2`)
+```bash
+modal run modal_train.py --stage finetune --architecture anymal_v2 --gpu-type h100 --max-steps 500
+```
+
+### Inference Across Saved Checkpoints
+```bash
+modal run modal_inference.py --num-examples 20
+```
+
+`modal_inference.py` now groups checkpoints by saved architecture metadata and compares only within the same family. A run may therefore emit separate `anymal_v1` and `anymal_v2` progressions in the same output JSON.
+
+### About `--use-dummy-data`
 ```bash
 modal run modal_train.py --use-dummy-data --max-steps 50
 ```
+
+The flag is accepted for compatibility, but current Modal training paths always load real cached images and print a warning when dummy data is requested.
 
 ### All Options
 ```bash
@@ -87,12 +111,29 @@ modal run modal_train.py --help
 Options:
 - `--max-steps`: Number of training steps (default: 100)
 - `--stage`: "finetune" or "pretrain" (default: finetune)
+- `--architecture`: `anymal_v1` or `anymal_v2` (default: `anymal_v1`)
 - `--gpu-type`: GPU family for Modal workers: `a100` or `h100` (default: a100)
 - `--learning-rate`: Learning rate (default: 1e-5 for finetune, 2e-4 for pretrain)
+- `--lora-learning-rate`: Separate LoRA LR for finetune runs
 - `--batch-size`: Per-device batch size (default: 4)
 - `--use-wandb`: Enable W&B logging
 - `--wandb-api-key`: Your W&B API key (get from wandb.ai/settings)
-- `--use-dummy-data`: Use synthetic data instead of LLaVA (for testing)
+- `--dataset`: `instruct_150k` or `mix_665k` for finetune
+- `--use-dummy-data`: Accepted for compatibility, ignored by real-image Modal pipelines
+
+## Architecture Notes
+
+### `anymal_v1`
+
+- Vision preprocessing uses the CLIP transform path.
+- Stage 1 saves `projector.pt`.
+- Stage 2 loads the latest matching pretrain checkpoint automatically if available.
+
+### `anymal_v2`
+
+- Vision preprocessing uses the official SigLIP2 image processor at the model’s native size.
+- The trainable visual bridge is `token_compressor + projector`.
+- Stage 1 and Stage 2 checkpoint metadata records the architecture so inference and loading stay strict.
 
 ## Cost Estimates
 
@@ -144,3 +185,6 @@ Reduce `--batch-size` to 2 or 1
 
 ### Timeout
 Increase timeout in `modal_train.py` (line 47) or reduce `--max-steps`
+
+### Wrong architecture loaded
+If you switch between `v1` and `v2`, do not reuse checkpoints across architectures. The loaders now validate checkpoint metadata and reject cross-architecture loads.

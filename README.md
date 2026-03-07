@@ -1,183 +1,193 @@
 # AnyMAL: Multimodal LLM Replication
 
-An educational implementation of the AnyMAL paper (arXiv:2309.16058), focusing on the **image** modality using LLaMA-3-8B and CLIP.
+Educational image-first replication of the AnyMAL paper ([arXiv:2309.16058](https://arxiv.org/abs/2309.16058)) using LLaMA-3-8B as the language model.
 
-Note: The paper covers *any-modality* inputs (image/video/audio/IMU). This repo currently implements the image path end-to-end; other modalities are out of scope here.
+This repo currently implements the image path only. Video, audio, and IMU are out of scope here.
 
-## Overview
+## What Is In This Repo
 
-This project replicates the AnyMAL architecture with a focus on understanding how to convert visual inputs into tokens that a language model can understand.
+Two model families are implemented and intentionally kept separate:
 
-**Key Components:**
-- **Vision Encoder**: CLIP ViT-L/14 (frozen)
-- **Projector**: Perceiver Resampler with cross-attention
-- **LLM**: LLaMA-3-8B-Instruct with QLoRA
+| Architecture | Status | Vision stack | Visual bridge | Preprocessing |
+|-----------|-----------|-----------|-----------|-----------|
+| `anymal_v1` | Stable default | CLIP ViT-L/14 | Perceiver Resampler | CLIP transform (`224` or `336`) |
+| `anymal_v2` | Alternate architecture | SigLIP2 So400m | Learned token compressor + MLP bottleneck projector | Official SigLIP2 processor (`384` in current configs) |
 
-## Architecture
+`v1` is the baseline the repo grew around. `v2` is now wired through training, evaluation, checkpoint metadata, and Modal inference without reusing `v1` assumptions.
 
+## Architecture Overview
+
+### `anymal_v1`
+
+```text
+Image -> CLIP ViT-L/14 -> [257, 1024] -> Perceiver Resampler -> [64, 4096] -> LLaMA-3
 ```
-Image (224×224) → CLIP ViT → [257, 1024] → Perceiver Resampler → [64, 4096] → LLaMA-3 → Text
+
+- Frozen vision encoder
+- Frozen LLM base
+- Stage 1 trains the projector only
+- Stage 2 trains projector + LoRA adapters
+- Supports placeholder splice or prepend fallback
+
+### `anymal_v2`
+
+```text
+Image -> SigLIP2 -> visual tokens -> learned token compressor -> MLP projector -> LLaMA-3
 ```
 
-The key insight is that we only need to train the projection layer to bridge the modality gap. Both the vision encoder and LLM can remain frozen.
+- Frozen SigLIP2 encoder
+- Frozen LLM base
+- Stage 1 trains token compressor + projector
+- Stage 2 trains token compressor + projector + LoRA adapters
+- Requires explicit image placeholder tokens for strict splice behavior
+
+## Why The Split Matters
+
+The code paths for `v1` and `v2` now differ at the three places that were previously easiest to accidentally couple:
+
+- Preprocessing is architecture-driven instead of hard-coded to CLIP.
+- Trainer warmup and optimizer grouping operate on model-declared visual bridge modules.
+- Evaluation and Modal inference load checkpoints by architecture metadata and keep `v1`/`v2` runs separate.
+
+This keeps the repo educational: `v1` remains a compact reference implementation, while `v2` shows how to evolve the design without hiding differences behind conditionals scattered across the codebase.
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/babakd/anymal.git
 cd anymal
 
-# Create virtual environment
 python -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 
-# Install flash-attention (optional but recommended)
+# Optional
 pip install flash-attn --no-build-isolation
 ```
 
 ## Quick Start
 
-### 1. Download Checkpoints
+### 1. Download weights
 
 ```bash
-# Download CLIP (automatically cached)
-python scripts/download_checkpoints.py --clip
+# Vision backbones are pulled from their respective libraries / Hugging Face caches.
 
-# Download LLaMA (requires Meta approval via HuggingFace)
-# First: Accept license at https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct
-# Then: huggingface-cli login
+# LLaMA requires Meta license acceptance on Hugging Face.
 python scripts/download_checkpoints.py --llama
 ```
 
-### 2. Download Data
+### 2. Download data
 
 ```bash
-# Create a small sample dataset for testing
 python scripts/download_data.py --sample
-
-# For real training, download LAION and LLaVA-Instruct
 python scripts/download_data.py --laion --samples 1000000
 python scripts/download_data.py --llava
 python scripts/download_data.py --coco
 ```
 
-### 3. Training
+### 3. Train locally
 
-**Stage 1: Alignment Pretraining**
+`v1`:
+
 ```bash
-# Train the Perceiver Resampler on image-caption pairs
 torchrun --nproc_per_node=8 scripts/train_pretrain.py \
-    --config configs/pretrain_image.yaml
+  --config configs/pretrain_image.yaml
+
+torchrun --nproc_per_node=8 scripts/train_finetune.py \
+  --config configs/finetune.yaml \
+  --pretrain_checkpoint ./outputs/pretrain/checkpoint-100000
 ```
 
-**Stage 2: Instruction Fine-tuning**
+`v2`:
+
 ```bash
-# Fine-tune with LoRA on instruction data
+torchrun --nproc_per_node=8 scripts/train_pretrain.py \
+  --config configs/pretrain_v2_alignment.yaml
+
 torchrun --nproc_per_node=8 scripts/train_finetune.py \
-    --config configs/finetune.yaml \
-    --pretrain_checkpoint ./outputs/pretrain/checkpoint-100000
+  --config configs/finetune_v2.yaml \
+  --pretrain_checkpoint ./outputs/pretrain_v2/checkpoint-100000
 ```
+
+For Modal workflows, see [MODAL_SETUP.md](MODAL_SETUP.md).
+
+## Preprocessing Contracts
+
+The model defines the preprocessing family it expects:
+
+- `anymal_v1` uses CLIP-style resize/crop/normalize.
+- `anymal_v2` uses the Hugging Face SigLIP2 image processor at the encoder’s native size.
+
+Do not reuse `v1` transforms for `v2`. The training, eval, and inference entry points now derive transforms from the instantiated model.
 
 ## Project Structure
 
-```
+```text
 anymal/
-├── configs/                    # Training configurations
-│   ├── base.yaml              # Base settings
-│   ├── pretrain_image.yaml    # Stage 1 config
-│   └── finetune.yaml          # Stage 2 config
-├── data/                       # Data loading
-│   ├── laion_dataset.py       # LAION for pretraining
-│   ├── instruction_dataset.py # LLaVA for fine-tuning
-│   └── data_utils.py          # Utilities
-├── models/                     # Model components
-│   ├── anymal.py              # Main model
-│   ├── encoders/              # Vision encoders
-│   ├── projectors/            # Modality projectors
-│   └── llm/                   # LLM wrappers
-├── training/                   # Training loops
-│   ├── pretrain.py            # Stage 1 trainer
-│   ├── finetune.py            # Stage 2 trainer
-│   └── distributed.py         # Multi-GPU utilities
-├── evaluation/                 # Benchmarks
-├── scripts/                    # Entry points
-└── notebooks/                  # Educational notebooks
+├── configs/
+│   ├── pretrain_image.yaml
+│   ├── finetune.yaml
+│   ├── pretrain_v2_alignment.yaml
+│   └── finetune_v2.yaml
+├── data/
+│   ├── data_utils.py
+│   ├── instruction_dataset.py
+│   ├── laion_dataset.py
+│   └── multimodal_inputs.py
+├── models/
+│   ├── anymal.py
+│   ├── anymal_v2.py
+│   ├── factory.py
+│   ├── encoders/
+│   ├── llm/
+│   └── projectors/
+├── evaluation/
+├── training/
+├── scripts/
+├── modal_train.py
+├── modal_inference.py
+└── notebooks/
 ```
 
-## Training Details
+## Training Notes
 
-### Stage 1: Alignment Pretraining
+### Stage 1
 
-- **Goal**: Teach projector to convert CLIP features to LLM-compatible tokens
-- **Data**: LAION image-caption pairs (~10-200M)
-- **Trainable**: Only Perceiver Resampler
-- **Hyperparameters**:
-  - Batch size: 2048 (64 per GPU × 8 GPUs × 4 accumulation)
-  - Learning rate: 2e-4
-  - Steps: 100K
-  - Time: ~1.5-2 days on 8× A100
+- `v1`: trains the Perceiver Resampler only.
+- `v2`: trains the token compressor and projector only.
+- Modal Stage 1 currently uses COCO-backed caption data extracted from cached LLaVA assets.
 
-### Stage 2: Instruction Fine-tuning
+### Stage 2
 
-- **Goal**: Learn to follow multimodal instructions
-- **Data**: LLaVA-Instruct-150K
-- **Trainable**: Projector + LoRA adapters
-- **Hyperparameters**:
-  - Batch size: 256
-  - Learning rate: 1e-5
-  - Steps: 3K
-  - LoRA rank: 64
-  - Time: ~2-3 hours on 8× A100
+- `v1`: trains projector + LoRA.
+- `v2`: trains token compressor + projector + LoRA.
+- Warmup is defined over the full visual bridge, not only a module named `projector`.
 
-## Educational Resources
+### Evaluation and Inference
 
-Check out the Jupyter notebook in `notebooks/` for a deep dive into the architecture:
+- Shared prompt helpers now build placeholder-aware multimodal prompts.
+- `modal_inference.py` reads checkpoint metadata, loads the matching architecture, and compares checkpoints only within the same architecture family.
 
-- **01_understanding_architecture.ipynb**: Full architecture walkthrough
+## Educational Notes
 
-## Key Concepts
+### Why keep `v1`?
 
-### Why Freeze the Encoders?
+- It is the shortest path from paper idea to working code.
+- The Perceiver bridge makes the modality translation problem explicit.
+- It is still the easiest place to understand placeholder splice vs prepend behavior.
 
-- CLIP has learned excellent visual representations from 400M image-text pairs
-- LLaMA has strong language understanding from 15T tokens
-- We just need to learn the "translation" between them
+### Why add `v2`?
 
-### Why Perceiver Resampler?
-
-- Compresses 257 tokens to 64 tokens (4× reduction)
-- Cross-attention learns task-relevant compression
-- Fixed output size regardless of input resolution
-
-### Why QLoRA?
-
-- 8B model needs ~32GB in fp32, ~16GB in fp16
-- 4-bit quantization reduces to ~4GB
-- LoRA adds only ~0.1% trainable parameters
-- Enables training on consumer GPUs
-
-## Model Specifications
-
-| Component | Specification |
-|-----------|--------------|
-| LLM | LLaMA-3-8B-Instruct |
-| Hidden size | 4,096 |
-| Vision encoder | CLIP ViT-L/14 |
-| Vision dim | 1,024 |
-| Image tokens | 64 |
-| Projector layers | 6 |
-| LoRA rank | 64 |
+- Modern open multimodal models usually pair a stronger vision encoder with a lighter connector.
+- The `v2` bridge is much smaller and cheaper to tune than the `v1` Perceiver.
+- The repo now shows two different multimodal design choices without collapsing them into one ambiguous implementation.
 
 ## Requirements
 
 - Python 3.10+
 - PyTorch 2.0+
-- 8× A100 80GB (recommended) or 1× A100 (reduced batch size)
-- ~500GB disk for data and checkpoints
+- Enough GPU memory for LLaMA-3-8B + vision encoder + connector
+- Significant local disk or Modal volume storage for datasets and checkpoints
 
 ## References
 
