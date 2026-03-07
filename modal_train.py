@@ -152,6 +152,33 @@ def _collect_checkpoint_candidates(root_dir: str):
     return candidates
 
 
+def _resolve_finetune_pretrain_checkpoint(
+    pretrain_checkpoint: str = None,
+    resume_checkpoint: str = None,
+    pretrain_dir: str = "/checkpoints/pretrain-output",
+):
+    """
+    Resolve which Stage 1 checkpoint, if any, should seed finetuning.
+
+    Resume checkpoints already contain the full model and trainer state, so they
+    take precedence over any Stage 1 checkpoint input or auto-discovery.
+    """
+    if resume_checkpoint:
+        return None, "resume"
+
+    if pretrain_checkpoint is not None:
+        return pretrain_checkpoint, "explicit"
+
+    candidates = _collect_checkpoint_candidates(pretrain_dir)
+    if not candidates:
+        return None, "none"
+
+    # Choose most recently modified checkpoint, break ties by step.
+    candidates.sort(key=lambda x: (x[0], x[1]))
+    _mtime, _step, resolved_checkpoint = candidates[-1]
+    return resolved_checkpoint, "auto"
+
+
 @app.cls(
     image=image,
     gpu="A100-80GB",  # Use A100 80GB for large models
@@ -836,17 +863,17 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
     )
     print(f"Finetune checkpoints will be written to: {finetune_output_dir}")
 
-    # Auto-discover pretrain checkpoint if not explicitly provided
-    if pretrain_checkpoint is None:
-        pretrain_dir = "/checkpoints/pretrain-output"
-        candidates = _collect_checkpoint_candidates(pretrain_dir)
-        if candidates:
-            # Choose most recently modified checkpoint, break ties by step.
-            candidates.sort(key=lambda x: (x[0], x[1]))
-            _mtime, _step, pretrain_checkpoint = candidates[-1]
-            print(f"Auto-discovered pretrain checkpoint: {pretrain_checkpoint}")
+    pretrain_checkpoint, pretrain_checkpoint_source = _resolve_finetune_pretrain_checkpoint(
+        pretrain_checkpoint=pretrain_checkpoint,
+        resume_checkpoint=resume_checkpoint,
+    )
 
-    if pretrain_checkpoint:
+    if pretrain_checkpoint_source == "auto" and pretrain_checkpoint:
+        print(f"Auto-discovered pretrain checkpoint: {pretrain_checkpoint}")
+
+    if pretrain_checkpoint_source == "resume":
+        print("Skipping Stage 1 pretrain checkpoint loading because resume_checkpoint will restore model state.")
+    elif pretrain_checkpoint:
         print(f"Will load Stage 1 projector from: {pretrain_checkpoint}")
     else:
         print("WARNING: No pretrain checkpoint found. Perceiver resampler has random weights.")
