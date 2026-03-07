@@ -32,6 +32,7 @@ class AnyMALv2(nn.Module):
     """AnyMAL v2 multimodal model."""
 
     architecture = "anymal_v2"
+    preprocessing_family = "siglip2"
 
     def __init__(
         self,
@@ -70,6 +71,7 @@ class AnyMALv2(nn.Module):
         self.freeze_llm = freeze_llm
         self.max_image_tokens = max_image_tokens
         self.min_image_tokens = min_image_tokens or max_image_tokens
+        self.vision_model_name = vision_model_name
         # Keep this for compatibility with existing diagnostics/utilities.
         self.num_image_tokens = max_image_tokens
 
@@ -121,6 +123,38 @@ class AnyMALv2(nn.Module):
 
         self.tokenizer = self.llm.tokenizer
         self._setup_image_placeholder_token()
+
+    @property
+    def fixed_image_token_count(self) -> int:
+        """Return the fixed placeholder/image token count used by the model."""
+        return self.max_image_tokens
+
+    def get_visual_bridge_modules(self) -> Dict[str, nn.Module]:
+        """Return the trainable visual bridge modules for optimizer/warmup logic."""
+        return {
+            "token_compressor": self.token_compressor,
+            "projector": self.projector,
+        }
+
+    def freeze_visual_bridge(self) -> None:
+        """Freeze the visual bridge parameters."""
+        for module in self.get_visual_bridge_modules().values():
+            for param in module.parameters():
+                param.requires_grad = False
+
+    def unfreeze_visual_bridge(self) -> None:
+        """Unfreeze the visual bridge parameters."""
+        for module in self.get_visual_bridge_modules().values():
+            for param in module.parameters():
+                param.requires_grad = True
+
+    def get_preprocessing_config(self) -> Dict[str, Union[str, int]]:
+        """Describe the preprocessing contract expected by this architecture."""
+        return {
+            "family": self.preprocessing_family,
+            "model_name": self.vision_model_name,
+            "image_size": getattr(self.image_encoder, "image_size", 384),
+        }
 
     def _setup_image_placeholder_token(self):
         vocab = self.tokenizer.get_vocab()
@@ -434,18 +468,12 @@ class AnyMALv2(nn.Module):
             self.image_encoder.freeze()
             for param in self.llm.parameters():
                 param.requires_grad = False
-            for param in self.projector.parameters():
-                param.requires_grad = True
-            for param in self.token_compressor.parameters():
-                param.requires_grad = True
+            self.unfreeze_visual_bridge()
             print("Stage 1: Training token compressor + projector only")
         elif stage == 2:
             self.image_encoder.freeze()
             self.llm.freeze_base_model()
-            for param in self.projector.parameters():
-                param.requires_grad = True
-            for param in self.token_compressor.parameters():
-                param.requires_grad = True
+            self.unfreeze_visual_bridge()
             print("Stage 2: Training token compressor + projector + LoRA")
         else:
             raise ValueError(f"Unknown stage: {stage}")
@@ -501,8 +529,11 @@ class AnyMALv2(nn.Module):
             save_path,
             architecture=self.architecture,
             extra={
+                "preprocessing_family": self.preprocessing_family,
+                "vision_model_name": self.vision_model_name,
                 "vision_encoder_type": self.vision_encoder_type,
                 "token_compressor_type": self.token_compressor_type,
+                "bottleneck_dim": self.bottleneck_dim,
                 "max_image_tokens": self.max_image_tokens,
                 "min_image_tokens": self.min_image_tokens,
                 "llm_checkpoint_saved": llm_saved,

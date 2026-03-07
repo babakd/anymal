@@ -62,7 +62,7 @@ class FinetuneConfig(TrainerConfig):
     # Continue from Stage 1 checkpoint
     pretrain_checkpoint: Optional[str] = None
 
-    # Projector warmup: freeze projector for N steps to let LoRA warm up first
+    # Visual bridge warmup: freeze the architecture-defined visual bridge for N steps
     projector_warmup_steps: int = 200
 
 
@@ -105,15 +105,17 @@ class FinetuneTrainer(Trainer):
         # Configure model for Stage 2
         model.set_training_stage(2)
 
-        # Projector warmup: freeze projector for the first N steps
+        # Visual bridge warmup: freeze the architecture-defined visual bridge for the first N steps
         self._projector_frozen = False
         self._projector_warmup_steps = config.projector_warmup_steps
         if config.projector_warmup_steps > 0:
-            for name, param in model.named_parameters():
-                if "projector" in name:
-                    param.requires_grad = False
+            model.freeze_visual_bridge()
             self._projector_frozen = True
-            print_rank_0(f"Projector FROZEN for first {config.projector_warmup_steps} steps (LoRA warmup)")
+            frozen_components = ", ".join(model.get_visual_bridge_modules().keys())
+            print_rank_0(
+                f"Visual bridge FROZEN for first {config.projector_warmup_steps} steps "
+                f"(LoRA warmup): {frozen_components}"
+            )
 
         # Verify trainable params
         if is_main_process():
@@ -150,18 +152,22 @@ class FinetuneTrainer(Trainer):
             model.token_compressor.load_state_dict(compressor_state)
 
     def _verify_trainable_params(self, model):
-        """Verify that projector + LoRA are trainable."""
-        trainable_groups = {
-            "projector": 0,
-            "lora": 0,
-            "other": 0,
-        }
+        """Verify that visual bridge + LoRA are trainable."""
+        visual_bridge_modules = model.get_visual_bridge_modules()
+        visual_bridge_param_ids = {}
+        trainable_groups = {label: 0 for label in visual_bridge_modules.keys()}
+        trainable_groups.update({"lora": 0, "other": 0})
+
+        for label, module in visual_bridge_modules.items():
+            for param in module.parameters():
+                visual_bridge_param_ids[id(param)] = label
 
         for name, param in model.named_parameters():
             if not param.requires_grad:
                 continue
-            if "projector" in name:
-                trainable_groups["projector"] += param.numel()
+            label = visual_bridge_param_ids.get(id(param))
+            if label is not None:
+                trainable_groups[label] += param.numel()
             elif "lora" in name.lower():
                 trainable_groups["lora"] += param.numel()
             else:
@@ -190,18 +196,19 @@ class FinetuneTrainer(Trainer):
         - attention_mask: [B, seq_len]
         - labels: [B, seq_len] (with non-response parts masked as -100)
         """
-        # Unfreeze projector after warmup period
+        # Unfreeze visual bridge after warmup period
         if (self._projector_frozen
                 and self.global_step >= self._projector_warmup_steps):
-            print_rank_0(f"\n[Step {self.global_step}] Unfreezing projector (warmup complete)")
-            for name, param in self.unwrapped_model.named_parameters():
-                if "projector" in name:
-                    param.requires_grad = True
+            print_rank_0(
+                f"\n[Step {self.global_step}] Unfreezing visual bridge "
+                f"(warmup complete)"
+            )
+            self.unwrapped_model.unfreeze_visual_bridge()
             self._projector_frozen = False
-            # Rebuild optimizer and scheduler to include projector params
+            # Rebuild optimizer and scheduler to include visual bridge params
             self.optimizer = self._create_optimizer()
             self.scheduler = self._create_scheduler()
-            print_rank_0("  Rebuilt optimizer and scheduler with projector params")
+            print_rank_0("  Rebuilt optimizer and scheduler with visual bridge params")
             if is_main_process():
                 self._verify_trainable_params(self.unwrapped_model)
 

@@ -493,6 +493,26 @@ class TestCheckpointMetadataCompatibility:
                 expected_architecture="anymal_v2",
             )
 
+    def test_resolve_checkpoint_architecture_reads_metadata(self, tmp_path):
+        from model_metadata import (
+            read_model_metadata,
+            resolve_checkpoint_architecture,
+            write_model_metadata,
+        )
+
+        write_model_metadata(
+            str(tmp_path),
+            architecture="anymal_v2",
+            extra={"vision_model_name": "google/siglip2-so400m-patch14-384"},
+        )
+
+        architecture, has_metadata = resolve_checkpoint_architecture(str(tmp_path))
+        metadata = read_model_metadata(str(tmp_path))
+
+        assert architecture == "anymal_v2"
+        assert has_metadata is True
+        assert metadata["vision_model_name"] == "google/siglip2-so400m-patch14-384"
+
 
 class TestTrainingConfigs:
     """Tests for training configuration classes."""
@@ -517,6 +537,124 @@ class TestTrainingConfigs:
         assert config.learning_rate > 0
         assert config.lora_r > 0
         assert config.lora_alpha > 0
+
+
+class _DummyLossOutput:
+    def __init__(self, loss):
+        self.loss = loss
+
+
+class _DummyMultimodalModel(nn.Module):
+    architecture = "anymal_v2"
+    preprocessing_family = "siglip2"
+
+    def __init__(self):
+        super().__init__()
+        self.projector = nn.Linear(4, 4)
+        self.token_compressor = nn.Linear(4, 4)
+        self.lora_adapter = nn.Linear(4, 4)
+        self.other = nn.Linear(4, 4)
+        self.image_placeholder_token_id = 99
+        self.fixed_image_token_count = 8
+        self.tokenizer = type("Tokenizer", (), {"pad_token_id": 0})()
+
+    def get_visual_bridge_modules(self):
+        return {
+            "token_compressor": self.token_compressor,
+            "projector": self.projector,
+        }
+
+    def freeze_visual_bridge(self):
+        for module in self.get_visual_bridge_modules().values():
+            for param in module.parameters():
+                param.requires_grad = False
+
+    def unfreeze_visual_bridge(self):
+        for module in self.get_visual_bridge_modules().values():
+            for param in module.parameters():
+                param.requires_grad = True
+
+    def set_training_stage(self, stage: int):
+        for param in self.parameters():
+            param.requires_grad = False
+        for param in self.lora_adapter.parameters():
+            param.requires_grad = True
+        self.unfreeze_visual_bridge()
+
+    def forward(self, **_kwargs):
+        loss = (
+            self.projector.weight.sum() * 0
+            + self.token_compressor.weight.sum() * 0
+            + self.lora_adapter.weight.sum() * 0
+        )
+        return _DummyLossOutput(loss)
+
+
+class _DummyDataset(torch.utils.data.Dataset):
+    def __len__(self):
+        return 2
+
+    def __getitem__(self, _idx):
+        return {
+            "images": torch.randn(1, 3, 8, 8),
+            "input_ids": torch.ones(1, 4, dtype=torch.long),
+            "attention_mask": torch.ones(1, 4, dtype=torch.long),
+            "labels": torch.ones(1, 4, dtype=torch.long),
+        }
+
+
+class TestArchitectureAwareTrainerBehavior:
+    """Tests for architecture-aware optimizer grouping and warmup behavior."""
+
+    def test_optimizer_groups_include_token_compressor(self):
+        from training.trainer import Trainer, TrainerConfig
+
+        dataset = _DummyDataset()
+        dataloader = torch.utils.data.DataLoader(dataset, batch_size=1)
+        trainer = Trainer(
+            model=_DummyMultimodalModel(),
+            config=TrainerConfig(
+                max_steps=1,
+                use_amp=False,
+                logging_steps=1,
+            ),
+            train_dataloader=dataloader,
+        )
+
+        labels = [group.get("label") for group in trainer.optimizer.param_groups]
+        assert "token_compressor" in labels
+        assert "projector" in labels
+        assert "lora" in labels
+
+    def test_finetune_warmup_freezes_and_unfreezes_full_visual_bridge(self):
+        from training.finetune import FinetuneConfig, FinetuneTrainer
+
+        dataset = _DummyDataset()
+        dataloader = torch.utils.data.DataLoader(dataset, batch_size=1)
+        model = _DummyMultimodalModel()
+
+        trainer = FinetuneTrainer(
+            model=model,
+            config=FinetuneConfig(
+                max_steps=2,
+                use_amp=False,
+                projector_warmup_steps=1,
+                learning_rate=1e-4,
+                lora_learning_rate=2e-4,
+            ),
+            train_dataloader=dataloader,
+        )
+
+        assert not any(p.requires_grad for p in trainer.unwrapped_model.projector.parameters())
+        assert not any(p.requires_grad for p in trainer.unwrapped_model.token_compressor.parameters())
+        assert any(p.requires_grad for p in trainer.unwrapped_model.lora_adapter.parameters())
+
+        trainer.global_step = 1
+        batch = next(iter(dataloader))
+        trainer._train_step(batch)
+
+        assert all(p.requires_grad for p in trainer.unwrapped_model.projector.parameters())
+        assert all(p.requires_grad for p in trainer.unwrapped_model.token_compressor.parameters())
 
 
 class TestTrainingLoop:

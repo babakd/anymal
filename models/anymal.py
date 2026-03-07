@@ -91,6 +91,7 @@ class AnyMAL(nn.Module):
         >>> loss = outputs.loss
     """
     architecture = "anymal_v1"
+    preprocessing_family = "clip"
 
     def __init__(
         self,
@@ -121,6 +122,8 @@ class AnyMAL(nn.Module):
         self.num_image_tokens = num_image_tokens
         self.freeze_vision = freeze_vision
         self.freeze_llm = freeze_llm
+        self.vision_model_name = vision_model_name
+        self.vision_pretrained = vision_pretrained
 
         # Initialize vision encoder (frozen by default)
         self.image_encoder = ImageEncoder(
@@ -183,6 +186,36 @@ class AnyMAL(nn.Module):
         # add one. The dataset puts N copies of this token where <image> appears,
         # and the forward pass replaces their embeddings with projected image tokens.
         self._setup_image_placeholder_token()
+
+    @property
+    def fixed_image_token_count(self) -> int:
+        """Return the fixed placeholder/image token count used by the model."""
+        return self.num_image_tokens
+
+    def get_visual_bridge_modules(self) -> Dict[str, nn.Module]:
+        """Return the trainable visual bridge modules for optimizer/warmup logic."""
+        return {"projector": self.projector}
+
+    def freeze_visual_bridge(self) -> None:
+        """Freeze the visual bridge parameters."""
+        for module in self.get_visual_bridge_modules().values():
+            for param in module.parameters():
+                param.requires_grad = False
+
+    def unfreeze_visual_bridge(self) -> None:
+        """Unfreeze the visual bridge parameters."""
+        for module in self.get_visual_bridge_modules().values():
+            for param in module.parameters():
+                param.requires_grad = True
+
+    def get_preprocessing_config(self) -> Dict[str, Any]:
+        """Describe the preprocessing contract expected by this architecture."""
+        image_size = 336 if "336" in self.vision_model_name else 224
+        return {
+            "family": self.preprocessing_family,
+            "model_name": self.vision_model_name,
+            "image_size": image_size,
+        }
 
     def _setup_image_placeholder_token(self):
         """Set up a dedicated token ID used as the image placeholder in input_ids."""
@@ -540,9 +573,7 @@ class AnyMAL(nn.Module):
             for param in self.llm.parameters():
                 param.requires_grad = False
 
-            # Unfreeze projector
-            for param in self.projector.parameters():
-                param.requires_grad = True
+            self.unfreeze_visual_bridge()
 
             print("Stage 1: Training projector only")
 
@@ -553,9 +584,7 @@ class AnyMAL(nn.Module):
             # Freeze LLM base, unfreeze LoRA
             self.llm.freeze_base_model()
 
-            # Unfreeze projector
-            for param in self.projector.parameters():
-                param.requires_grad = True
+            self.unfreeze_visual_bridge()
 
             print("Stage 2: Training projector + LoRA")
 
@@ -625,6 +654,9 @@ class AnyMAL(nn.Module):
             save_path,
             architecture=self.architecture,
             extra={
+                "preprocessing_family": self.preprocessing_family,
+                "vision_model_name": self.vision_model_name,
+                "vision_pretrained": self.vision_pretrained,
                 "projector_type": type(self.projector).__name__,
                 "num_image_tokens": self.num_image_tokens,
                 "llm_checkpoint_saved": llm_saved,

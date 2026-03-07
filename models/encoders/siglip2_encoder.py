@@ -55,6 +55,16 @@ class SigLIP2Encoder(nn.Module):
         self.model = getattr(loaded_model, "vision_model", loaded_model)
 
         config = getattr(self.model, "config", None)
+        self.image_size = 384
+        if config is not None:
+            size = getattr(config, "image_size", None)
+            if isinstance(size, int):
+                self.image_size = size
+            elif hasattr(config, "vision_config"):
+                vision_cfg = getattr(config, "vision_config")
+                size = getattr(vision_cfg, "image_size", None)
+                if isinstance(size, int):
+                    self.image_size = size
         self.hidden_dim = getattr(config, "hidden_size", None)
         if self.hidden_dim is None:
             self.hidden_dim = getattr(config, "vision_hidden_size", None)

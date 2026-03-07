@@ -230,43 +230,92 @@ class Trainer:
         if config.resume_from_checkpoint:
             self._load_checkpoint(config.resume_from_checkpoint)
 
+    def _get_named_visual_bridge_modules(self) -> Dict[str, nn.Module]:
+        """Return architecture-defined visual bridge modules."""
+        getter = getattr(self.unwrapped_model, "get_visual_bridge_modules", None)
+        if callable(getter):
+            return dict(getter())
+        return {}
+
+    def _get_component_label_by_param_id(self) -> Dict[int, str]:
+        """Map parameter identity to component label for optimizer grouping and logging."""
+        label_by_param_id = {}
+        for label, module in self._get_named_visual_bridge_modules().items():
+            for param in module.parameters():
+                label_by_param_id[id(param)] = label
+        return label_by_param_id
+
     def _create_optimizer(self) -> torch.optim.Optimizer:
         """Create optimizer with weight decay and optional per-component learning rates."""
         lora_lr = self.config.lora_learning_rate or self.config.learning_rate
-
-        # Separate parameters by component and weight decay
-        projector_decay = []
-        projector_no_decay = []
-        lora_decay = []
-        lora_no_decay = []
-        other_decay = []
-        other_no_decay = []
+        component_param_labels = self._get_component_label_by_param_id()
+        bridge_modules = self._get_named_visual_bridge_modules()
+        component_order = list(bridge_modules.keys()) + ["lora", "other"]
+        optimizer_buckets = {
+            label: {"decay": [], "no_decay": []}
+            for label in component_order
+        }
 
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
             is_no_decay = "bias" in name or "norm" in name or "layernorm" in name
+            component_label = component_param_labels.get(id(param))
+            if component_label is None and "lora" in name.lower():
+                component_label = "lora"
+            if component_label is None:
+                component_label = "other"
 
-            if "lora" in name.lower():
-                (lora_no_decay if is_no_decay else lora_decay).append(param)
-            elif "projector" in name:
-                (projector_no_decay if is_no_decay else projector_decay).append(param)
-            else:
-                (other_no_decay if is_no_decay else other_decay).append(param)
+            optimizer_buckets.setdefault(component_label, {"decay": [], "no_decay": []})
+            bucket = "no_decay" if is_no_decay else "decay"
+            optimizer_buckets[component_label][bucket].append(param)
 
         optimizer_groups = []
-        if projector_decay:
-            optimizer_groups.append({"params": projector_decay, "weight_decay": self.config.weight_decay, "lr": self.config.learning_rate, "label": "projector"})
-        if projector_no_decay:
-            optimizer_groups.append({"params": projector_no_decay, "weight_decay": 0.0, "lr": self.config.learning_rate, "label": "projector"})
-        if lora_decay:
-            optimizer_groups.append({"params": lora_decay, "weight_decay": self.config.weight_decay, "lr": lora_lr, "label": "lora"})
-        if lora_no_decay:
-            optimizer_groups.append({"params": lora_no_decay, "weight_decay": 0.0, "lr": lora_lr, "label": "lora"})
-        if other_decay:
-            optimizer_groups.append({"params": other_decay, "weight_decay": self.config.weight_decay, "lr": self.config.learning_rate, "label": "other"})
-        if other_no_decay:
-            optimizer_groups.append({"params": other_no_decay, "weight_decay": 0.0, "lr": self.config.learning_rate, "label": "other"})
+        component_lrs = {label: self.config.learning_rate for label in optimizer_buckets}
+        component_lrs["lora"] = lora_lr
+
+        for label in component_order:
+            buckets = optimizer_buckets.get(label, {})
+            if buckets.get("decay"):
+                optimizer_groups.append(
+                    {
+                        "params": buckets["decay"],
+                        "weight_decay": self.config.weight_decay,
+                        "lr": component_lrs.get(label, self.config.learning_rate),
+                        "label": label,
+                    }
+                )
+            if buckets.get("no_decay"):
+                optimizer_groups.append(
+                    {
+                        "params": buckets["no_decay"],
+                        "weight_decay": 0.0,
+                        "lr": component_lrs.get(label, self.config.learning_rate),
+                        "label": label,
+                    }
+                )
+
+        for label, buckets in optimizer_buckets.items():
+            if label in component_order:
+                continue
+            if buckets.get("decay"):
+                optimizer_groups.append(
+                    {
+                        "params": buckets["decay"],
+                        "weight_decay": self.config.weight_decay,
+                        "lr": component_lrs.get(label, self.config.learning_rate),
+                        "label": label,
+                    }
+                )
+            if buckets.get("no_decay"):
+                optimizer_groups.append(
+                    {
+                        "params": buckets["no_decay"],
+                        "weight_decay": 0.0,
+                        "lr": component_lrs.get(label, self.config.learning_rate),
+                        "label": label,
+                    }
+                )
 
         return torch.optim.AdamW(
             optimizer_groups,
@@ -775,22 +824,25 @@ class Trainer:
 
     def _compute_component_grad_norms(self) -> Dict[str, float]:
         """Compute gradient norms per model component for diagnostics."""
-        norms = {"projector": 0.0, "lora": 0.0, "other": 0.0}
-        counts = {"projector": 0, "lora": 0, "other": 0}
+        component_label_by_param_id = self._get_component_label_by_param_id()
+        component_labels = list(self._get_named_visual_bridge_modules().keys()) + ["lora", "other"]
+        norms = {label: 0.0 for label in component_labels}
+        counts = {label: 0 for label in component_labels}
 
         for name, param in self.model.named_parameters():
             if param.grad is None:
                 continue
             pnorm = param.grad.data.norm(2).item() ** 2
-            if "projector" in name:
-                norms["projector"] += pnorm
-                counts["projector"] += 1
-            elif "lora" in name.lower():
-                norms["lora"] += pnorm
-                counts["lora"] += 1
-            else:
-                norms["other"] += pnorm
-                counts["other"] += 1
+            component_label = component_label_by_param_id.get(id(param))
+            if component_label is None and "lora" in name.lower():
+                component_label = "lora"
+            if component_label is None:
+                component_label = "other"
+            if component_label not in norms:
+                norms[component_label] = 0.0
+                counts[component_label] = 0
+            norms[component_label] += pnorm
+            counts[component_label] += 1
 
         result = {}
         for comp in norms:
@@ -841,7 +893,7 @@ class Trainer:
         print_rank_0("\n" + "=" * 60)
         print_rank_0("TRAINING CONFIGURATION")
         print_rank_0("=" * 60)
-        print_rank_0(f"  Learning rate (projector): {self.config.learning_rate}")
+        print_rank_0(f"  Learning rate (visual bridge default): {self.config.learning_rate}")
         print_rank_0(f"  LoRA learning rate: {self.config.lora_learning_rate or self.config.learning_rate}")
         print_rank_0(f"  Min LR ratio: {self.config.min_lr_ratio}")
         print_rank_0(f"  LR scheduler: {self.config.lr_scheduler_type}")
@@ -885,9 +937,7 @@ class Trainer:
         metrics["train/step"] = self.global_step
         metrics["train/epoch"] = self.epoch
 
-        # Log per-group LRs (projector vs LoRA)
-        # Use the LR values directly — groups are ordered: projector_decay, projector_no_decay,
-        # lora_decay, lora_no_decay, other_decay, other_no_decay (from _create_optimizer)
+        # Log per-group LRs using the component labels assigned in _create_optimizer().
         seen_lrs = {}
         for group in self.optimizer.param_groups:
             lr_val = group["lr"]
@@ -904,11 +954,9 @@ class Trainer:
         parts = [f"[step {self.global_step}]", loss_str, lr_str]
         if gn_str:
             parts.append(gn_str)
-        # Component grad norms
-        for comp in ["projector", "lora", "other"]:
-            key = f"train/grad_norm_{comp}"
-            if key in metrics:
-                parts.append(f"gn_{comp}={metrics[key]:.4f}")
+        for key in sorted(k for k in metrics if k.startswith("train/grad_norm_")):
+            comp = key.removeprefix("train/grad_norm_")
+            parts.append(f"gn_{comp}={metrics[key]:.4f}")
         print_rank_0("  ".join(parts))
 
         if self.logger is not None:

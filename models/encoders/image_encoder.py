@@ -77,6 +77,7 @@ class ImageEncoder(nn.Module):
 
         self.model_name = model_name
         self.pretrained = pretrained
+        self.image_size = 336 if "336" in model_name else 224
 
         # Load CLIP model using open_clip
         # open_clip provides access to both OpenAI and LAION trained models
