@@ -594,6 +594,210 @@ class TestModelFactory:
         assert model.kwargs["llm_model_name"] == "foo"
 
 
+class TestArchitectureContracts:
+    """Tests for explicit v1/v2 architecture contracts."""
+
+    def test_anymal_v1_contracts(self):
+        from models.anymal import AnyMAL
+
+        model = AnyMAL.__new__(AnyMAL)
+        nn.Module.__init__(model)
+        model.projector = nn.Linear(4, 4)
+        model.num_image_tokens = 64
+        model.vision_model_name = "ViT-L-14"
+
+        assert model.fixed_image_token_count == 64
+        assert list(model.get_visual_bridge_modules().keys()) == ["projector"]
+        assert model.get_preprocessing_config()["family"] == "clip"
+
+    def test_anymal_v2_contracts(self):
+        from models.anymal_v2 import AnyMALv2
+
+        model = AnyMALv2.__new__(AnyMALv2)
+        nn.Module.__init__(model)
+        model.projector = nn.Linear(4, 4)
+        model.token_compressor = nn.Linear(4, 4)
+        model.max_image_tokens = 256
+        model.vision_model_name = "google/siglip2-so400m-patch14-384"
+        model.image_encoder = type("Encoder", (), {"image_size": 384})()
+
+        assert model.fixed_image_token_count == 256
+        assert list(model.get_visual_bridge_modules().keys()) == [
+            "token_compressor",
+            "projector",
+        ]
+        assert model.get_preprocessing_config()["family"] == "siglip2"
+
+
+class TestImagePreprocessingContracts:
+    """Tests for architecture-specific preprocessing builders."""
+
+    def test_clip_preprocessing_spec_keeps_v1_shape(self):
+        from data.data_utils import build_image_transform_for_spec, build_preprocessing_spec
+        from PIL import Image
+        import numpy as np
+
+        spec = build_preprocessing_spec("clip", "ViT-L-14")
+        transform = build_image_transform_for_spec(spec, is_train=False, use_augmentation=False)
+        image = Image.fromarray(np.random.randint(0, 255, (320, 320, 3), dtype=np.uint8))
+        tensor = transform(image)
+
+        assert spec.image_size == 224
+        assert tensor.shape == (3, 224, 224)
+
+    def test_siglip2_preprocessing_uses_processor_size(self):
+        from data.data_utils import build_image_transform_for_spec, build_preprocessing_spec
+        from PIL import Image
+        import numpy as np
+
+        spec = build_preprocessing_spec(
+            "siglip2",
+            "google/siglip2-so400m-patch14-384",
+        )
+        transform = build_image_transform_for_spec(spec, is_train=False, use_augmentation=False)
+        image = Image.fromarray(np.random.randint(0, 255, (512, 512, 3), dtype=np.uint8))
+        tensor = transform(image)
+
+        assert spec.image_size == 384
+        assert tensor.shape == (3, 384, 384)
+
+
+class TestSharedMultimodalInputs:
+    """Tests for shared placeholder-aware prompt builders."""
+
+    def test_chat_prompt_inserts_expected_placeholder_block(self):
+        from data.multimodal_inputs import build_multimodal_chat_input
+        from transformers import AutoTokenizer
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("gpt2", trust_remote_code=True)
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.add_special_tokens({"additional_special_tokens": ["<|image|>"]})
+        except Exception:
+            pytest.skip("Tokenizer not available")
+
+        placeholder_id = tokenizer.convert_tokens_to_ids("<|image|>")
+        prompt = build_multimodal_chat_input(
+            tokenizer=tokenizer,
+            user_text="What is in the image?",
+            image_placeholder_token_id=placeholder_id,
+            num_image_tokens=6,
+        )
+
+        assert int((prompt["input_ids"] == placeholder_id).sum().item()) == 6
+
+
+class TestEvaluationPromptBuilders:
+    """Tests for placeholder-aware evaluation datasets."""
+
+    def test_vqa_dataset_uses_shared_placeholder_prompt(self, tmp_path):
+        import json
+        import numpy as np
+        from PIL import Image
+        from evaluation.vqa_eval import VQADataset
+        from transformers import AutoTokenizer
+
+        questions_path = tmp_path / "questions.json"
+        annotations_path = tmp_path / "annotations.json"
+        image_dir = tmp_path / "images"
+        image_dir.mkdir()
+
+        image = Image.fromarray(np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8))
+        image.save(image_dir / "COCO_val2014_000000000001.jpg")
+
+        with open(questions_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "questions": [
+                        {
+                            "question_id": 7,
+                            "image_id": 1,
+                            "question": "What animal is shown?",
+                        }
+                    ]
+                },
+                f,
+            )
+        with open(annotations_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "annotations": [
+                        {
+                            "question_id": 7,
+                            "answers": [{"answer": "cat"}],
+                        }
+                    ]
+                },
+                f,
+            )
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("gpt2", trust_remote_code=True)
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.add_special_tokens({"additional_special_tokens": ["<|image|>"]})
+        except Exception:
+            pytest.skip("Tokenizer not available")
+
+        placeholder_id = tokenizer.convert_tokens_to_ids("<|image|>")
+        dataset = VQADataset(
+            questions_file=str(questions_path),
+            annotations_file=str(annotations_path),
+            image_dir=str(image_dir),
+            transform=lambda _image: torch.zeros(3, 224, 224),
+            tokenizer=tokenizer,
+            image_placeholder_token_id=placeholder_id,
+            num_image_tokens=5,
+        )
+
+        sample = dataset[0]
+        assert int((sample["input_ids"] == placeholder_id).sum().item()) == 5
+        assert sample["answers"] == ["cat"]
+
+    def test_caption_dataset_uses_shared_placeholder_prompt(self, tmp_path):
+        import json
+        import numpy as np
+        from PIL import Image
+        from evaluation.captioning_eval import COCOCaptionDataset
+        from transformers import AutoTokenizer
+
+        annotations_path = tmp_path / "captions.json"
+        image_dir = tmp_path / "images"
+        image_dir.mkdir()
+
+        image = Image.fromarray(np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8))
+        image.save(image_dir / "example.jpg")
+
+        with open(annotations_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "images": [{"id": 9, "file_name": "example.jpg"}],
+                    "annotations": [{"image_id": 9, "caption": "A test caption."}],
+                },
+                f,
+            )
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("gpt2", trust_remote_code=True)
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.add_special_tokens({"additional_special_tokens": ["<|image|>"]})
+        except Exception:
+            pytest.skip("Tokenizer not available")
+
+        placeholder_id = tokenizer.convert_tokens_to_ids("<|image|>")
+        dataset = COCOCaptionDataset(
+            annotations_file=str(annotations_path),
+            image_dir=str(image_dir),
+            transform=lambda _image: torch.zeros(3, 224, 224),
+            tokenizer=tokenizer,
+            image_placeholder_token_id=placeholder_id,
+            num_image_tokens=4,
+        )
+
+        sample = dataset[0]
+        assert int((sample["input_ids"] == placeholder_id).sum().item()) == 4
+        assert sample["captions"] == ["A test caption."]
+
+
 # Integration tests (require more resources)
 @pytest.mark.slow
 class TestIntegration:
