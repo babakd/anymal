@@ -605,13 +605,20 @@ def _diagnose_model(model):
         print("  image_placeholder_token_id: None (will prepend image tokens)")
 
     # Parameter counts by component
-    groups = {"projector": [0, 0], "lora": [0, 0], "vision": [0, 0], "other": [0, 0]}
+    visual_bridge_param_ids = {}
+    groups = {"lora": [0, 0], "vision": [0, 0], "other": [0, 0]}
+    if hasattr(model, "get_visual_bridge_modules"):
+        for label, module in model.get_visual_bridge_modules().items():
+            groups[label] = [0, 0]
+            for param in module.parameters():
+                visual_bridge_param_ids[id(param)] = label
     for name, param in model.named_parameters():
         total = param.numel()
         trainable = total if param.requires_grad else 0
-        if "projector" in name:
-            groups["projector"][0] += total
-            groups["projector"][1] += trainable
+        label = visual_bridge_param_ids.get(id(param))
+        if label is not None:
+            groups[label][0] += total
+            groups[label][1] += trainable
         elif "lora" in name.lower():
             groups["lora"][0] += total
             groups["lora"][1] += trainable
@@ -710,6 +717,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
     import torch
     from models import create_model_from_config
     from data import build_dataloader, ImageTextCollator
+    from data.data_utils import build_image_transform_from_model
     from data.dataset_splitter import deterministic_train_val_split
     from training import FinetuneTrainer
     from training.finetune import FinetuneConfig
@@ -741,10 +749,6 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                 "num_image_tokens": 64,
             }
         )
-        dataset_num_image_tokens = 64
-        dataset_policy = "fixed"
-        dataset_min_tokens = None
-        dataset_max_tokens = None
     else:
         model_cfg["model"].update(
             {
@@ -756,12 +760,19 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                 "min_image_tokens": 384,
             }
         )
-        dataset_num_image_tokens = 384
-        dataset_policy = "fixed"
-        dataset_min_tokens = 384
-        dataset_max_tokens = 384
 
     model = create_model_from_config(model_cfg)
+    fixed_image_token_count = getattr(
+        model,
+        "fixed_image_token_count",
+        model_cfg["model"].get(
+            "max_image_tokens",
+            model_cfg["model"].get("num_image_tokens", 64),
+        ),
+    )
+    image_token_policy = "fixed"
+    min_image_tokens = fixed_image_token_count
+    max_image_tokens = fixed_image_token_count
 
     # Diagnose model
     _diagnose_model(model)
@@ -771,10 +782,15 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
     ft_dataset = load_finetune_dataset(
         model.tokenizer,
         dataset=dataset,
-        num_image_tokens=dataset_num_image_tokens,
-        image_token_policy=dataset_policy,
-        min_image_tokens=dataset_min_tokens,
-        max_image_tokens=dataset_max_tokens,
+        num_image_tokens=fixed_image_token_count,
+        image_token_policy=image_token_policy,
+        min_image_tokens=min_image_tokens,
+        max_image_tokens=max_image_tokens,
+        image_transform=build_image_transform_from_model(
+            model,
+            is_train=True,
+            use_augmentation=False,
+        ),
     )
 
     # Split into train/val
@@ -922,6 +938,7 @@ def run_pretrain(
     import torch
     from models import create_model_from_config
     from data import build_dataloader, ImageTextCollator
+    from data.data_utils import build_image_transform_from_model
     from data.dataset_splitter import deterministic_train_val_split
     from training import PretrainTrainer
     from training.pretrain import PretrainConfig
@@ -955,8 +972,6 @@ def run_pretrain(
                 "num_image_tokens": 64,
             }
         )
-        pretrain_num_image_tokens = 64
-        insert_placeholders = False
         pretrain_max_length = 256
     else:
         model_cfg["model"].update(
@@ -969,14 +984,21 @@ def run_pretrain(
                 "min_image_tokens": 256,
             }
         )
-        pretrain_num_image_tokens = 256
-        insert_placeholders = True
         pretrain_max_length = 640
 
     model = create_model_from_config(
         model_cfg,
         llm_device_map=device_map,
     )
+    pretrain_num_image_tokens = getattr(
+        model,
+        "fixed_image_token_count",
+        model_cfg["model"].get(
+            "max_image_tokens",
+            model_cfg["model"].get("num_image_tokens", 64),
+        ),
+    )
+    insert_placeholders = getattr(model, "architecture", "anymal_v1") == "anymal_v2"
 
     # Configure for Stage 1: only train projector
     model.set_training_stage(1)
@@ -993,6 +1015,11 @@ def run_pretrain(
         insert_image_placeholders=insert_placeholders,
         num_image_tokens=pretrain_num_image_tokens,
         max_length=pretrain_max_length,
+        image_transform=build_image_transform_from_model(
+            model,
+            is_train=True,
+            use_augmentation=True,
+        ),
     )
 
     # Split into train/val
@@ -1078,6 +1105,7 @@ def load_finetune_dataset(
     image_token_policy: str = "fixed",
     min_image_tokens: int = None,
     max_image_tokens: int = None,
+    image_transform=None,
 ):
     """
     Load finetune dataset using cached JSON from volume.
@@ -1159,6 +1187,7 @@ def load_finetune_dataset(
             min_image_tokens=min_image_tokens,
             max_image_tokens=max_image_tokens,
             filter_to_available_images=True,
+            image_transform=image_transform,
         )
         print(f"Loaded {len(ds)} multi-task instruction samples")
         return ds
@@ -1193,6 +1222,7 @@ def load_finetune_dataset(
             min_image_tokens=min_image_tokens,
             max_image_tokens=max_image_tokens,
             filter_to_available_images=True,
+            image_transform=image_transform,
         )
 
         if len(ds) == 0:
@@ -1219,26 +1249,31 @@ class COCOCaptionDataset:
         insert_image_placeholders: bool = False,
         num_image_tokens: int = 64,
         max_length: int = 256,
+        image_transform=None,
     ):
         from data.data_utils import get_image_transform, TextProcessor
+        from data.multimodal_inputs import (
+            build_image_placeholder_block,
+            resolve_image_placeholder_token_id,
+        )
         self.samples = samples
         self.image_dir = image_dir
         self.tokenizer = tokenizer
-        self.transform = get_image_transform(image_size=224, is_train=True)
+        self.transform = image_transform or get_image_transform(image_size=224, is_train=True)
         self.max_length = max_length
         self.text_processor = TextProcessor(tokenizer, max_length=max_length)
         self.insert_image_placeholders = insert_image_placeholders
         self.num_image_tokens = num_image_tokens
+        self._build_image_placeholder_block = build_image_placeholder_block
+        self._resolve_placeholder_token_id_fn = resolve_image_placeholder_token_id
         self.image_placeholder_token_id = self._resolve_placeholder_token_id()
 
     def _resolve_placeholder_token_id(self):
         if not self.insert_image_placeholders:
             return None
-        vocab = self.tokenizer.get_vocab()
-        if "<|reserved_special_token_0|>" in vocab:
-            return vocab["<|reserved_special_token_0|>"]
-        if "<|image|>" in vocab:
-            return vocab["<|image|>"]
+        placeholder_id = self._resolve_placeholder_token_id_fn(self.tokenizer)
+        if placeholder_id is not None:
+            return placeholder_id
         raise ValueError(
             "insert_image_placeholders=True but tokenizer has no placeholder token."
         )
@@ -1264,9 +1299,9 @@ class COCOCaptionDataset:
         labels[labels == self.tokenizer.pad_token_id] = -100
 
         if self.insert_image_placeholders:
-            placeholder_block = torch.full(
-                (self.num_image_tokens,),
-                self.image_placeholder_token_id,
+            placeholder_block = self._build_image_placeholder_block(
+                image_placeholder_token_id=self.image_placeholder_token_id,
+                num_image_tokens=self.num_image_tokens,
                 dtype=encoding["input_ids"].dtype,
             )
             placeholder_mask = torch.ones(self.num_image_tokens, dtype=encoding["attention_mask"].dtype)
@@ -1315,6 +1350,7 @@ def load_llava_pretrain_dataset(
     insert_image_placeholders: bool = False,
     num_image_tokens: int = 64,
     max_length: int = 256,
+    image_transform=None,
 ):
     """
     Load captioning dataset for Stage 1 alignment using real COCO images.
@@ -1376,6 +1412,7 @@ def load_llava_pretrain_dataset(
         insert_image_placeholders=insert_image_placeholders,
         num_image_tokens=num_image_tokens,
         max_length=max_length,
+        image_transform=image_transform,
     )
     print(f"Loaded {len(dataset)} pretrain samples with real COCO images")
     return dataset

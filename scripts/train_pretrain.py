@@ -34,6 +34,7 @@ sys.path.insert(0, str(project_root))
 
 from models import create_model_from_config
 from data import create_laion_dataset, build_dataloader, ImageTextCollator
+from data.data_utils import build_image_transform_from_model
 from data.dataset_splitter import deterministic_train_val_split
 from training import PretrainTrainer
 from training.pretrain import PretrainConfig
@@ -189,6 +190,11 @@ def main():
     )
     architecture = config["model"].get("architecture", "anymal_v1")
     print_rank_0(f"Model architecture: {architecture}")
+    fixed_image_token_count = getattr(
+        model,
+        "fixed_image_token_count",
+        config["model"].get("max_image_tokens", config["model"].get("num_image_tokens", 64)),
+    )
 
     # Initialize dataset
     print_rank_0("\nLoading dataset...")
@@ -197,10 +203,15 @@ def main():
         "image_size": config["data"].get("image_size", 224),
         "max_length": config["data"].get("max_length", 256),
         "caption_prompt": config["data"].get("caption_prompt", "A photo of"),
+        "image_transform": build_image_transform_from_model(
+            model,
+            is_train=True,
+            use_augmentation=True,
+        ),
     }
     if architecture == "anymal_v2":
         dataset_kwargs["insert_image_placeholders"] = True
-        dataset_kwargs["num_image_tokens"] = config["model"].get("max_image_tokens", 256)
+        dataset_kwargs["num_image_tokens"] = fixed_image_token_count
     if streaming:
         dataset_kwargs["buffer_size"] = config["data"].get("shuffle_buffer_size", 10000)
 

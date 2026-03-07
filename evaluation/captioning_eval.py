@@ -37,6 +37,11 @@ from torch.utils.data import Dataset, DataLoader
 from typing import Optional, Dict, Any, List
 from tqdm import tqdm
 
+from data.multimodal_inputs import (
+    DEFAULT_MULTIMODAL_SYSTEM_PROMPT,
+    build_multimodal_chat_input,
+)
+
 
 class COCOCaptionDataset(Dataset):
     """
@@ -57,11 +62,17 @@ class COCOCaptionDataset(Dataset):
         transform,
         tokenizer,
         split: str = "val",
+        image_placeholder_token_id: Optional[int] = None,
+        num_image_tokens: Optional[int] = None,
+        system_prompt: str = DEFAULT_MULTIMODAL_SYSTEM_PROMPT,
     ):
         self.image_dir = image_dir
         self.transform = transform
         self.tokenizer = tokenizer
         self.split = split
+        self.image_placeholder_token_id = image_placeholder_token_id
+        self.num_image_tokens = num_image_tokens
+        self.system_prompt = system_prompt
 
         # Load annotations
         with open(annotations_file, "r") as f:
@@ -91,17 +102,23 @@ class COCOCaptionDataset(Dataset):
         image = Image.open(image_path).convert("RGB")
         image_tensor = self.transform(image)
 
-        # Create prompt for captioning
-        prompt = "Describe this image in detail:"
-
-        # Tokenize
-        encoding = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            padding=False,
-            truncation=True,
-            max_length=64,
-        )
+        prompt = "Describe this image in detail."
+        if self.image_placeholder_token_id is not None and self.num_image_tokens is not None:
+            encoding = build_multimodal_chat_input(
+                tokenizer=self.tokenizer,
+                user_text=prompt,
+                image_placeholder_token_id=self.image_placeholder_token_id,
+                num_image_tokens=self.num_image_tokens,
+                system_prompt=self.system_prompt,
+            )
+        else:
+            encoding = self.tokenizer(
+                f"{prompt}:",
+                return_tensors="pt",
+                padding=False,
+                truncation=True,
+                max_length=64,
+            )
 
         # Get ground truth captions
         captions = self.annotations.get(image_id, [])
@@ -361,15 +378,21 @@ def evaluate_coco_captioning(
     Returns:
         Evaluation metrics
     """
-    from data import get_image_transform
+    from data.data_utils import build_image_transform_from_model
 
-    transform = get_image_transform(image_size=224, is_train=False)
+    transform = build_image_transform_from_model(
+        model,
+        is_train=False,
+        use_augmentation=False,
+    )
 
     dataset = COCOCaptionDataset(
         annotations_file=annotations_file,
         image_dir=image_dir,
         transform=transform,
         tokenizer=model.tokenizer,
+        image_placeholder_token_id=getattr(model, "image_placeholder_token_id", None),
+        num_image_tokens=getattr(model, "fixed_image_token_count", None),
     )
 
     pad_token_id = model.tokenizer.pad_token_id or model.tokenizer.eos_token_id

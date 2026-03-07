@@ -38,11 +38,144 @@ from torchvision import transforms
 from typing import Optional, Dict, Any, List, Tuple, Callable
 from PIL import Image
 import io
+from dataclasses import dataclass
+
+from transformers import AutoImageProcessor
 
 
 # CLIP normalization statistics
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
+
+
+@dataclass(frozen=True)
+class ImagePreprocessingSpec:
+    """Architecture-specific preprocessing contract."""
+    family: str
+    model_name: str
+    image_size: int
+
+
+class HFImageProcessorTransform:
+    """Callable wrapper around a Hugging Face image processor."""
+
+    def __init__(
+        self,
+        processor_name: str,
+        cache_dir: Optional[str] = None,
+    ):
+        self.processor_name = processor_name
+        self.cache_dir = cache_dir
+        self._processor = None
+
+    def _get_processor(self):
+        if self._processor is None:
+            self._processor = AutoImageProcessor.from_pretrained(
+                self.processor_name,
+                cache_dir=self.cache_dir,
+                use_fast=False,
+            )
+        return self._processor
+
+    def __call__(self, image: Image.Image) -> torch.Tensor:
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        processor = self._get_processor()
+        pixel_values = processor(images=image, return_tensors="pt")["pixel_values"]
+        return pixel_values.squeeze(0)
+
+
+def _resolve_processor_image_size(size_config: Any) -> int:
+    """Resolve a scalar image size from a processor `size` payload."""
+    if isinstance(size_config, int):
+        return size_config
+    if isinstance(size_config, dict):
+        if "height" in size_config and "width" in size_config:
+            return int(size_config["height"])
+        if "shortest_edge" in size_config:
+            return int(size_config["shortest_edge"])
+    raise ValueError(f"Unsupported processor size config: {size_config}")
+
+
+def build_preprocessing_spec(
+    preprocessing_family: str,
+    model_name: str,
+    image_size: Optional[int] = None,
+    cache_dir: Optional[str] = None,
+) -> ImagePreprocessingSpec:
+    """Build an architecture-specific preprocessing spec."""
+    if preprocessing_family == "clip":
+        resolved_size = int(image_size or (336 if "336" in model_name else 224))
+        return ImagePreprocessingSpec(
+            family=preprocessing_family,
+            model_name=model_name,
+            image_size=resolved_size,
+        )
+
+    if preprocessing_family == "siglip2":
+        processor = AutoImageProcessor.from_pretrained(
+            model_name,
+            cache_dir=cache_dir,
+            use_fast=False,
+        )
+        resolved_size = int(image_size or _resolve_processor_image_size(processor.size))
+        return ImagePreprocessingSpec(
+            family=preprocessing_family,
+            model_name=model_name,
+            image_size=resolved_size,
+        )
+
+    raise ValueError(
+        f"Unsupported preprocessing family '{preprocessing_family}'. "
+        "Expected one of ['clip', 'siglip2']."
+    )
+
+
+def build_image_transform_for_spec(
+    spec: ImagePreprocessingSpec,
+    is_train: bool = True,
+    use_augmentation: bool = True,
+    cache_dir: Optional[str] = None,
+):
+    """Build a preprocessing transform from an architecture spec."""
+    if spec.family == "clip":
+        return get_image_transform(
+            image_size=spec.image_size,
+            is_train=is_train,
+            use_augmentation=use_augmentation,
+        )
+    if spec.family == "siglip2":
+        # Keep SigLIP2 on its official processor path to avoid CLIP-specific assumptions.
+        return HFImageProcessorTransform(
+            processor_name=spec.model_name,
+            cache_dir=cache_dir,
+        )
+    raise ValueError(f"Unsupported preprocessing family: {spec.family}")
+
+
+def build_image_transform_from_model(
+    model,
+    is_train: bool = True,
+    use_augmentation: bool = True,
+    cache_dir: Optional[str] = None,
+):
+    """Build an image transform from a model's architecture contract."""
+    if not hasattr(model, "get_preprocessing_config"):
+        raise ValueError("Model does not expose get_preprocessing_config().")
+
+    config = model.get_preprocessing_config()
+    spec = build_preprocessing_spec(
+        preprocessing_family=config["family"],
+        model_name=config["model_name"],
+        image_size=config.get("image_size"),
+        cache_dir=cache_dir,
+    )
+    return build_image_transform_for_spec(
+        spec=spec,
+        is_train=is_train,
+        use_augmentation=use_augmentation,
+        cache_dir=cache_dir,
+    )
 
 
 def get_image_transform(

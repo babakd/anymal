@@ -36,6 +36,11 @@ from typing import Optional, Dict, Any, List
 from tqdm import tqdm
 from collections import Counter
 
+from data.multimodal_inputs import (
+    DEFAULT_MULTIMODAL_SYSTEM_PROMPT,
+    build_multimodal_chat_input,
+)
+
 
 class VQADataset(Dataset):
     """
@@ -57,10 +62,16 @@ class VQADataset(Dataset):
         transform,
         tokenizer,
         filter_to_available_images: bool = True,
+        image_placeholder_token_id: Optional[int] = None,
+        num_image_tokens: Optional[int] = None,
+        system_prompt: str = DEFAULT_MULTIMODAL_SYSTEM_PROMPT,
     ):
         self.image_dir = image_dir
         self.transform = transform
         self.tokenizer = tokenizer
+        self.image_placeholder_token_id = image_placeholder_token_id
+        self.num_image_tokens = num_image_tokens
+        self.system_prompt = system_prompt
 
         # Load questions
         with open(questions_file, "r") as f:
@@ -111,16 +122,23 @@ class VQADataset(Dataset):
         question_id = q["question_id"]
 
         # Format prompt
-        prompt = f"Question: {question}\nAnswer:"
-
-        # Tokenize
-        encoding = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            padding=False,
-            truncation=True,
-            max_length=256,
-        )
+        if self.image_placeholder_token_id is not None and self.num_image_tokens is not None:
+            encoding = build_multimodal_chat_input(
+                tokenizer=self.tokenizer,
+                user_text=question,
+                image_placeholder_token_id=self.image_placeholder_token_id,
+                num_image_tokens=self.num_image_tokens,
+                system_prompt=self.system_prompt,
+            )
+        else:
+            prompt = f"Question: {question}\nAnswer:"
+            encoding = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                padding=False,
+                truncation=True,
+                max_length=256,
+            )
 
         # Get ground truth if available
         answers = []
@@ -358,9 +376,13 @@ def evaluate_vqav2(
     Returns:
         Evaluation metrics
     """
-    from data import get_image_transform
+    from data.data_utils import build_image_transform_from_model
 
-    transform = get_image_transform(image_size=224, is_train=False)
+    transform = build_image_transform_from_model(
+        model,
+        is_train=False,
+        use_augmentation=False,
+    )
 
     dataset = VQADataset(
         questions_file=questions_file,
@@ -368,6 +390,8 @@ def evaluate_vqav2(
         image_dir=image_dir,
         transform=transform,
         tokenizer=model.tokenizer,
+        image_placeholder_token_id=getattr(model, "image_placeholder_token_id", None),
+        num_image_tokens=getattr(model, "fixed_image_token_count", None),
     )
 
     pad_token_id = model.tokenizer.pad_token_id or model.tokenizer.eos_token_id

@@ -44,6 +44,10 @@ import glob
 import re
 
 from .data_utils import get_image_transform, TextProcessor
+from .multimodal_inputs import (
+    build_image_placeholder_block,
+    resolve_image_placeholder_token_id,
+)
 
 
 def _expand_brace_pattern(pattern: str) -> Optional[List[str]]:
@@ -126,6 +130,7 @@ class LaionDataset(Dataset):
         caption_prompt: str = "A photo of",
         insert_image_placeholders: bool = False,
         num_image_tokens: int = 64,
+        image_transform=None,
     ):
         super().__init__()
 
@@ -137,7 +142,7 @@ class LaionDataset(Dataset):
         self.num_image_tokens = num_image_tokens
 
         # Set up image transform
-        self.transform = get_image_transform(
+        self.transform = image_transform or get_image_transform(
             image_size=image_size,
             is_train=(split == "train"),
         )
@@ -155,11 +160,9 @@ class LaionDataset(Dataset):
     def _resolve_placeholder_token_id(self, tokenizer):
         if not self.insert_image_placeholders:
             return None
-        vocab = tokenizer.get_vocab()
-        if "<|reserved_special_token_0|>" in vocab:
-            return vocab["<|reserved_special_token_0|>"]
-        if "<|image|>" in vocab:
-            return vocab["<|image|>"]
+        placeholder_id = resolve_image_placeholder_token_id(tokenizer)
+        if placeholder_id is not None:
+            return placeholder_id
         raise ValueError(
             "insert_image_placeholders=True but tokenizer has no image placeholder token. "
             "Initialize model placeholder token before creating the dataset."
@@ -177,9 +180,9 @@ class LaionDataset(Dataset):
         attention_mask = encoding["attention_mask"]
         labels = encoding["labels"]
 
-        placeholder_block = torch.full(
-            (self.num_image_tokens,),
-            self.image_placeholder_token_id,
+        placeholder_block = build_image_placeholder_block(
+            image_placeholder_token_id=self.image_placeholder_token_id,
+            num_image_tokens=self.num_image_tokens,
             dtype=input_ids.dtype,
         )
         placeholder_mask = torch.ones(self.num_image_tokens, dtype=attention_mask.dtype)
@@ -383,6 +386,7 @@ class LaionStreamingDataset(IterableDataset):
         caption_prompt: str = "A photo of",
         insert_image_placeholders: bool = False,
         num_image_tokens: int = 64,
+        image_transform=None,
     ):
         super().__init__()
 
@@ -394,7 +398,7 @@ class LaionStreamingDataset(IterableDataset):
         self.insert_image_placeholders = insert_image_placeholders
         self.num_image_tokens = num_image_tokens
 
-        self.transform = get_image_transform(
+        self.transform = image_transform or get_image_transform(
             image_size=image_size,
             is_train=True,
         )
@@ -408,11 +412,9 @@ class LaionStreamingDataset(IterableDataset):
     def _resolve_placeholder_token_id(self, tokenizer):
         if not self.insert_image_placeholders:
             return None
-        vocab = tokenizer.get_vocab()
-        if "<|reserved_special_token_0|>" in vocab:
-            return vocab["<|reserved_special_token_0|>"]
-        if "<|image|>" in vocab:
-            return vocab["<|image|>"]
+        placeholder_id = resolve_image_placeholder_token_id(tokenizer)
+        if placeholder_id is not None:
+            return placeholder_id
         raise ValueError(
             "insert_image_placeholders=True but tokenizer has no image placeholder token."
         )
@@ -428,9 +430,9 @@ class LaionStreamingDataset(IterableDataset):
         attention_mask = encoding["attention_mask"]
         labels = encoding["labels"]
 
-        placeholder_block = torch.full(
-            (self.num_image_tokens,),
-            self.image_placeholder_token_id,
+        placeholder_block = build_image_placeholder_block(
+            image_placeholder_token_id=self.image_placeholder_token_id,
+            num_image_tokens=self.num_image_tokens,
             dtype=input_ids.dtype,
         )
         placeholder_mask = torch.ones(self.num_image_tokens, dtype=attention_mask.dtype)

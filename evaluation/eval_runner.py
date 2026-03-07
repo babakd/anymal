@@ -60,7 +60,7 @@ class EvalRunner:
         try:
             import os
             from evaluation.vqa_eval import VQADataset, vqa_collate_fn
-            from data.data_utils import get_image_transform
+            from data.data_utils import build_image_transform_from_model
 
             # Check files exist
             if not os.path.exists(self.vqa_questions_file):
@@ -73,7 +73,11 @@ class EvalRunner:
                 print(f"EvalRunner: VQA image dir not found: {self.vqa_image_dir}")
                 return None
 
-            transform = get_image_transform(image_size=224, is_train=False)
+            transform = build_image_transform_from_model(
+                self.model,
+                is_train=False,
+                use_augmentation=False,
+            )
 
             dataset = VQADataset(
                 questions_file=self.vqa_questions_file,
@@ -82,6 +86,8 @@ class EvalRunner:
                 transform=transform,
                 tokenizer=self.model.tokenizer,
                 filter_to_available_images=True,
+                image_placeholder_token_id=getattr(self.model, "image_placeholder_token_id", None),
+                num_image_tokens=getattr(self.model, "fixed_image_token_count", None),
             )
 
             # Take a subset for speed

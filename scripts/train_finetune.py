@@ -32,6 +32,7 @@ sys.path.insert(0, str(project_root))
 
 from models import create_model_from_config
 from data import InstructionDataset, build_dataloader, ImageTextCollator
+from data.data_utils import build_image_transform_from_model
 from data.dataset_splitter import deterministic_train_val_split
 from training import FinetuneTrainer
 from training.finetune import FinetuneConfig
@@ -175,6 +176,17 @@ def main():
     )
     architecture = config["model"].get("architecture", "anymal_v1")
     print_rank_0(f"Model architecture: {architecture}")
+    fixed_image_token_count = getattr(
+        model,
+        "fixed_image_token_count",
+        config["model"].get("max_image_tokens", config["model"].get("num_image_tokens", 64)),
+    )
+    image_token_policy = config["data"].get("image_token_policy", "fixed")
+    min_image_tokens = config["model"].get("min_image_tokens")
+    max_image_tokens = config["model"].get("max_image_tokens")
+    if image_token_policy == "fixed":
+        min_image_tokens = fixed_image_token_count
+        max_image_tokens = fixed_image_token_count
 
     # Initialize dataset
     print_rank_0("\nLoading dataset...")
@@ -184,14 +196,16 @@ def main():
         tokenizer=model.tokenizer,
         image_size=config["data"].get("image_size", 224),
         max_length=config["data"].get("max_length", 2048),
-        num_image_tokens=config["model"].get(
-            "max_image_tokens",
-            config["model"].get("num_image_tokens", 64),
-        ),
-        image_token_policy=config["data"].get("image_token_policy", "fixed"),
-        min_image_tokens=config["model"].get("min_image_tokens"),
-        max_image_tokens=config["model"].get("max_image_tokens"),
+        num_image_tokens=fixed_image_token_count,
+        image_token_policy=image_token_policy,
+        min_image_tokens=min_image_tokens,
+        max_image_tokens=max_image_tokens,
         system_prompt=config["data"].get("system_prompt"),
+        image_transform=build_image_transform_from_model(
+            model,
+            is_train=True,
+            use_augmentation=False,
+        ),
     )
 
     print_rank_0(f"Dataset size: {len(train_dataset):,}")
@@ -270,14 +284,16 @@ def main():
                 tokenizer=model.tokenizer,
                 image_size=config["data"].get("image_size", 224),
                 max_length=config["data"].get("max_length", 2048),
-                num_image_tokens=config["model"].get(
-                    "max_image_tokens",
-                    config["model"].get("num_image_tokens", 64),
-                ),
-                image_token_policy=config["data"].get("image_token_policy", "fixed"),
-                min_image_tokens=config["model"].get("min_image_tokens"),
-                max_image_tokens=config["model"].get("max_image_tokens"),
+                num_image_tokens=fixed_image_token_count,
+                image_token_policy=image_token_policy,
+                min_image_tokens=min_image_tokens,
+                max_image_tokens=max_image_tokens,
                 system_prompt=config["data"].get("system_prompt"),
+                image_transform=build_image_transform_from_model(
+                    model,
+                    is_train=False,
+                    use_augmentation=False,
+                ),
             )
         else:
             # Split train dataset into train/val
