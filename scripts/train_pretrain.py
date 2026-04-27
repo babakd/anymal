@@ -33,6 +33,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from models import create_model_from_config
+from model_metadata import normalize_architecture_name
 from data import create_laion_dataset, build_dataloader, ImageTextCollator
 from data.dataset_splitter import deterministic_train_val_split
 from training import PretrainTrainer
@@ -187,7 +188,7 @@ def main():
         llm_device_map=llm_device_map,
         llm_torch_dtype=llm_torch_dtype,
     )
-    architecture = config["model"].get("architecture", "anymal_v1")
+    architecture = normalize_architecture_name(config["model"].get("architecture", "anymal_v1"))
     print_rank_0(f"Model architecture: {architecture}")
 
     # Initialize dataset
@@ -197,6 +198,8 @@ def main():
         "image_size": config["data"].get("image_size", 224),
         "max_length": config["data"].get("max_length", 256),
         "caption_prompt": config["data"].get("caption_prompt", "A photo of"),
+        "vision_encoder_type": "siglip2" if architecture == "anymal_v2" else "clip",
+        "vision_model_name": config["model"].get("vision_model_name"),
     }
     if architecture == "anymal_v2":
         dataset_kwargs["insert_image_placeholders"] = True

@@ -119,20 +119,26 @@ class PretrainTrainer(Trainer):
 
         print_rank_0(f"Stage 1 trainable modules: {trainable_modules}")
 
-        # Count parameters
-        proj_params = sum(
-            p.numel() for p in model.projector.parameters() if p.requires_grad
+        # Count expected Stage 1 adapter parameters.
+        adapter_modules = [model.projector]
+        if hasattr(model, "token_compressor"):
+            adapter_modules.append(model.token_compressor)
+        adapter_params = sum(
+            p.numel()
+            for module in adapter_modules
+            for p in module.parameters()
+            if p.requires_grad
         )
         total_trainable = sum(
             p.numel() for p in model.parameters() if p.requires_grad
         )
 
-        print_rank_0(f"Projector trainable params: {proj_params:,}")
+        print_rank_0(f"Stage 1 adapter trainable params: {adapter_params:,}")
         print_rank_0(f"Total trainable params: {total_trainable:,}")
 
-        if proj_params != total_trainable:
+        if adapter_params != total_trainable:
             print_rank_0(
-                "WARNING: Non-projector parameters are trainable. "
+                "WARNING: Unexpected non-adapter parameters are trainable. "
                 "This may not be intended for Stage 1."
             )
 

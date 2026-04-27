@@ -31,6 +31,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from models import create_model_from_config
+from model_metadata import normalize_architecture_name
 from data import InstructionDataset, build_dataloader, ImageTextCollator
 from data.dataset_splitter import deterministic_train_val_split
 from training import FinetuneTrainer
@@ -173,7 +174,7 @@ def main():
         llm_device_map=llm_device_map,
         llm_torch_dtype=llm_torch_dtype,
     )
-    architecture = config["model"].get("architecture", "anymal_v1")
+    architecture = normalize_architecture_name(config["model"].get("architecture", "anymal_v1"))
     print_rank_0(f"Model architecture: {architecture}")
 
     # Initialize dataset
@@ -191,6 +192,8 @@ def main():
         image_token_policy=config["data"].get("image_token_policy", "fixed"),
         min_image_tokens=config["model"].get("min_image_tokens"),
         max_image_tokens=config["model"].get("max_image_tokens"),
+        vision_encoder_type="siglip2" if architecture == "anymal_v2" else "clip",
+        vision_model_name=config["model"].get("vision_model_name"),
         system_prompt=config["data"].get("system_prompt"),
     )
 
@@ -255,6 +258,10 @@ def main():
         eval_steps=eval_config.get("eval_steps"),
         eval_strategy=eval_config.get("eval_strategy", "steps"),
         max_eval_batches=eval_config.get("max_eval_batches"),
+        projector_warmup_steps=config["training"].get(
+            "projector_warmup_steps",
+            0 if architecture == "anymal_v2" else 200,
+        ),
     )
 
     # Create eval dataloader if eval config is present
@@ -277,6 +284,8 @@ def main():
                 image_token_policy=config["data"].get("image_token_policy", "fixed"),
                 min_image_tokens=config["model"].get("min_image_tokens"),
                 max_image_tokens=config["model"].get("max_image_tokens"),
+                vision_encoder_type="siglip2" if architecture == "anymal_v2" else "clip",
+                vision_model_name=config["model"].get("vision_model_name"),
                 system_prompt=config["data"].get("system_prompt"),
             )
         else:

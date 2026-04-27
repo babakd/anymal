@@ -60,7 +60,7 @@ class EvalRunner:
         try:
             import os
             from evaluation.vqa_eval import VQADataset, vqa_collate_fn
-            from data.data_utils import get_image_transform
+            from data.data_utils import get_vision_transform
 
             # Check files exist
             if not os.path.exists(self.vqa_questions_file):
@@ -73,7 +73,19 @@ class EvalRunner:
                 print(f"EvalRunner: VQA image dir not found: {self.vqa_image_dir}")
                 return None
 
-            transform = get_image_transform(image_size=224, is_train=False)
+            is_v2 = getattr(self.model, "architecture", "") == "anymal_v2"
+            vision_type = getattr(self.model, "vision_encoder_type", "clip")
+            vision_model = getattr(getattr(self.model, "image_encoder", None), "model_name", None)
+            image_size = 384 if is_v2 else 224
+            transform = get_vision_transform(
+                vision_encoder_type=vision_type,
+                vision_model_name=vision_model,
+                image_size=image_size,
+                is_train=False,
+                use_augmentation=False,
+            )
+            placeholder_id = getattr(self.model, "image_placeholder_token_id", None)
+            num_image_tokens = getattr(self.model, "num_image_tokens", 0) if is_v2 else 0
 
             dataset = VQADataset(
                 questions_file=self.vqa_questions_file,
@@ -82,6 +94,8 @@ class EvalRunner:
                 transform=transform,
                 tokenizer=self.model.tokenizer,
                 filter_to_available_images=True,
+                image_placeholder_token_id=placeholder_id,
+                num_image_tokens=num_image_tokens,
             )
 
             # Take a subset for speed
@@ -173,6 +187,8 @@ class EvalRunner:
             return {
                 "eval/vqa_accuracy": eval_results["accuracy"],
                 "eval/vqa_num_samples": eval_results["num_samples"],
+                "eval/vqa_avg_generated_tokens": eval_results.get("avg_generated_tokens", 0.0),
+                "eval/vqa_eos_rate": eval_results.get("eos_rate", 0.0),
                 "eval/vqa_time_sec": elapsed,
             }
 

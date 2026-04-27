@@ -1,14 +1,14 @@
 # CLAUDE.md - AnyMAL Project Context
 
-## Project Status (Last Updated: Feb 2026)
+## Project Status (Last Updated: Apr 2026)
 
-**Current State**: Two-stage training pipeline working end-to-end on Modal. Stage 1 pretrain completed on 4x A100-80GB (2500 steps, loss 12 -> 1.5, checkpoint-2500 saved). Stage 2 finetune verified on 1x A100-80GB (500 steps, loss 7.5 -> 1.4). Checkpoint resume and `--detach` mode working for long runs. Inference script produces predictions across checkpoints.
+**Current State**: V2 is now the active training path; V1 is legacy. The V2 architecture is SigLIP2 -> learned token compressor -> MLP bottleneck projector -> LLaMA-3-8B-Instruct. V2 Stage 1 and Stage 2 smoke runs both completed on Modal after the preprocessing/eval/optimizer fixes below. The older V1 Stage 1 checkpoint (`/checkpoints/pretrain-output/checkpoint-2500`) is intentionally guarded as legacy and must not be auto-loaded into V2.
 
 | Component | Status |
 |-----------|--------|
-| Model architecture | Complete |
-| Stage 1 pretrain (Modal, 4 GPU DDP) | Complete (2500 steps, loss 12 -> 1.5, checkpoint-2500) |
-| Stage 2 finetune (Modal, 1 GPU QLoRA) | Verified (500-step run, real COCO images) |
+| Model architecture | V2 active; V1 legacy |
+| Stage 1 pretrain (Modal, 4 GPU DDP) | V2 smoke verified; V1 full checkpoint exists but is legacy |
+| Stage 2 finetune (Modal, 1 GPU QLoRA) | V2 smoke verified; V1 500-step runs exist but are legacy |
 | Inference / prediction viewer | Working (`modal_inference.py` + `prediction_viewer.html`) |
 | W&B integration | Working (both stages) |
 | LLaVA dataset loader | Working (InstructionDataset with real images) |
@@ -20,8 +20,24 @@
 | In-training eval | Working (clipped to 200 batches, both stages) |
 | Pretrain checkpoint auto-discovery | Working (Stage 2 auto-loads Stage 1 projector) |
 | Checkpoint resume | Working (restores optimizer, scheduler, scaler, RNG states) |
-| VQA evaluation | Partial (fails on missing images, see Known Issues) |
-| Unit tests | 101 passing, 1 skipped |
+| VQA evaluation | V2 placeholder-aware; still limited by partial val image coverage |
+| Unit tests | 110 passing, 1 skipped |
+
+### V2 Handoff Notes (Apr 2026)
+
+Use `--architecture anymal_v2` for current work. V2 uses SigLIP2 preprocessing at 384px through `get_vision_transform()` / `get_siglip_image_transform()`; do not feed V2 CLIP-normalized 224px images. Both local scripts and Modal now route V2 datasets through SigLIP-compatible transforms.
+
+V2 strict image insertion requires a contiguous block of placeholder tokens whose count exactly matches the compressed image-token count. Stage 1 uses 256 image tokens; Stage 2 currently uses 384 image tokens. VQA eval now inserts the same placeholder block for V2, so eval no longer silently exercises the old V1 prepend fallback.
+
+Stage 1 V2 trains `token_compressor + projector` with the vision tower and LLM frozen. Stage 2 V2 trains `token_compressor + projector + LoRA`. Optimizer grouping treats `token_compressor` as part of the multimodal adapter, not as `other`. Stage 2 V2 defaults `projector_warmup_steps=0`; the old optimizer/scheduler rebuild warmup path should not be reintroduced.
+
+Pretrain checkpoint auto-discovery is architecture-aware. Legacy V1 checkpoints without `model_meta.json` are refused for V2. If no V2 checkpoint exists, Modal Stage 2 will warn and train from random V2 adapter weights rather than loading the V1 projector.
+
+Verified Modal smoke runs:
+- V2 Stage 2 finetune smoke: `v2-smoke-20260427-codex-2`, app run `ap-SLiGhwZe4E5UQlcXm4cE5i`
+- V2 Stage 1 pretrain smoke: `v2-pretrain-smoke-20260427-codex`, app run `ap-WK9FApkcZviH9IgaWYfGHZ`
+
+Recommended next real experiment: run V2 Stage 1 for a meaningful checkpoint first, then V2 Stage 2 from that checkpoint. Do not compare V2 Stage 2 numbers against V1 Stage 1-loaded runs.
 
 ### Two-Stage Training Pipeline
 

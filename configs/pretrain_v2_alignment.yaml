@@ -25,7 +25,7 @@ data:
   eval_data_path: null
   streaming: false
   caption_prompt: "A photo of"
-  image_size: 224
+  image_size: 384
   max_length: 640
   per_device_batch_size: 16
   gradient_accumulation_steps: 4

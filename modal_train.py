@@ -36,6 +36,7 @@ image = (
     .apt_install("git")  # Stable - rarely changes
     .pip_install(  # Stable - changes weekly at most
         "torch>=2.0.0",
+        "torchvision>=0.15.0",
         "transformers>=4.36.0",
         "accelerate>=0.25.0",
         "peft>=0.7.0",
@@ -46,6 +47,7 @@ image = (
         "tqdm>=4.66.0",
         "wandb>=0.16.0",
         "datasets>=2.15.0",
+        "requests>=2.31.0",
         "sentencepiece>=0.1.99",
         "huggingface_hub>=0.19.0",
     )
@@ -329,9 +331,13 @@ class Trainer:
         if os.path.exists(manifest_path):
             with open(manifest_path) as f:
                 manifest = json.load(f)
-            existing = manifest.get("downloaded", 0) + manifest.get("skipped", 0)
-            if existing >= num_images:
-                print(f"Using cached COCO images ({existing} images in {image_dir})")
+            existing_files = len([
+                f for f in os.listdir(image_dir)
+                if f.endswith((".jpg", ".jpeg", ".png"))
+            ])
+            required = min(num_images, manifest.get("total", num_images))
+            if existing_files >= required:
+                print(f"Using cached COCO images ({existing_files} images in {image_dir})")
                 return
 
         os.makedirs(image_dir, exist_ok=True)
@@ -642,13 +648,16 @@ def _diagnose_model(model):
         print("  image_placeholder_token_id: None (will prepend image tokens)")
 
     # Parameter counts by component
-    groups = {"projector": [0, 0], "lora": [0, 0], "vision": [0, 0], "other": [0, 0]}
+    groups = {"projector": [0, 0], "token_compressor": [0, 0], "lora": [0, 0], "vision": [0, 0], "other": [0, 0]}
     for name, param in model.named_parameters():
         total = param.numel()
         trainable = total if param.requires_grad else 0
         if "projector" in name:
             groups["projector"][0] += total
             groups["projector"][1] += trainable
+        elif "token_compressor" in name:
+            groups["token_compressor"][0] += total
+            groups["token_compressor"][1] += trainable
         elif "lora" in name.lower():
             groups["lora"][0] += total
             groups["lora"][1] += trainable
@@ -759,9 +768,10 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
     # Initialize model
     print("Initializing model...")
     architecture = str(architecture).strip().lower()
+    arch_key = "anymal_v2" if architecture in {"v2", "anymal_v2", "anymalv2"} else "anymal_v1"
     model_cfg = {
         "model": {
-            "architecture": architecture,
+            "architecture": arch_key,
             "llm_model_name": llama_path,
             "use_qlora": True,
             "lora_r": 64,
@@ -770,7 +780,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
             "use_flash_attention": False,  # Skip flash-attn, use SDPA instead
         }
     }
-    if architecture == "anymal_v1":
+    if arch_key == "anymal_v1":
         model_cfg["model"].update(
             {
                 "vision_model_name": "ViT-L-14",
@@ -783,6 +793,10 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         dataset_policy = "fixed"
         dataset_min_tokens = None
         dataset_max_tokens = None
+        dataset_image_size = 224
+        dataset_vision_type = "clip"
+        dataset_vision_model = "ViT-L-14"
+        dataset_max_length = 1024
     else:
         model_cfg["model"].update(
             {
@@ -798,6 +812,10 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         dataset_policy = "fixed"
         dataset_min_tokens = 384
         dataset_max_tokens = 384
+        dataset_image_size = 384
+        dataset_vision_type = "siglip2"
+        dataset_vision_model = "google/siglip2-so400m-patch14-384"
+        dataset_max_length = 2304
 
     model = create_model_from_config(model_cfg)
 
@@ -813,6 +831,10 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         image_token_policy=dataset_policy,
         min_image_tokens=dataset_min_tokens,
         max_image_tokens=dataset_max_tokens,
+        image_size=dataset_image_size,
+        max_length=dataset_max_length,
+        vision_encoder_type=dataset_vision_type,
+        vision_model_name=dataset_vision_model,
     )
 
     # Split into train/val
@@ -863,6 +885,18 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
     if pretrain_checkpoint is None:
         pretrain_dir = "/checkpoints/pretrain-output"
         candidates = _collect_checkpoint_candidates(pretrain_dir)
+        from model_metadata import validate_checkpoint_architecture
+        compatible_candidates = []
+        for mtime, step, path in candidates:
+            try:
+                validate_checkpoint_architecture(
+                    checkpoint_dir=path,
+                    expected_architecture=arch_key,
+                )
+                compatible_candidates.append((mtime, step, path))
+            except RuntimeError:
+                continue
+        candidates = compatible_candidates
         if candidates:
             # Choose most recently modified checkpoint, break ties by step.
             candidates.sort(key=lambda x: (x[0], x[1]))
@@ -898,6 +932,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         track_per_layer_grad_norms=track_per_layer_grad_norms,
         pretrain_checkpoint=pretrain_checkpoint,
         resume_from_checkpoint=resume_checkpoint,
+        projector_warmup_steps=0 if arch_key == "anymal_v2" else 200,
     )
 
     # Train
@@ -975,9 +1010,10 @@ def run_pretrain(
     # For DDP, disable device_map so each process places model on its own GPU
     device_map = None if distributed else "auto"
     architecture = str(architecture).strip().lower()
+    arch_key = "anymal_v2" if architecture in {"v2", "anymal_v2", "anymalv2"} else "anymal_v1"
     model_cfg = {
         "model": {
-            "architecture": architecture,
+            "architecture": arch_key,
             "llm_model_name": llama_path,
             "use_qlora": False,  # No LoRA for Stage 1
             "use_lora": False,
@@ -985,7 +1021,7 @@ def run_pretrain(
             "use_flash_attention": False,  # Skip flash-attn, use SDPA instead
         }
     }
-    if architecture == "anymal_v1":
+    if arch_key == "anymal_v1":
         model_cfg["model"].update(
             {
                 "vision_model_name": "ViT-L-14",
@@ -997,6 +1033,9 @@ def run_pretrain(
         pretrain_num_image_tokens = 64
         insert_placeholders = False
         pretrain_max_length = 256
+        pretrain_image_size = 224
+        pretrain_vision_type = "clip"
+        pretrain_vision_model = "ViT-L-14"
     else:
         model_cfg["model"].update(
             {
@@ -1011,6 +1050,9 @@ def run_pretrain(
         pretrain_num_image_tokens = 256
         insert_placeholders = True
         pretrain_max_length = 640
+        pretrain_image_size = 384
+        pretrain_vision_type = "siglip2"
+        pretrain_vision_model = "google/siglip2-so400m-patch14-384"
 
     model = create_model_from_config(
         model_cfg,
@@ -1032,6 +1074,9 @@ def run_pretrain(
         insert_image_placeholders=insert_placeholders,
         num_image_tokens=pretrain_num_image_tokens,
         max_length=pretrain_max_length,
+        image_size=pretrain_image_size,
+        vision_encoder_type=pretrain_vision_type,
+        vision_model_name=pretrain_vision_model,
     )
 
     # Split into train/val
@@ -1117,6 +1162,10 @@ def load_finetune_dataset(
     image_token_policy: str = "fixed",
     min_image_tokens: int = None,
     max_image_tokens: int = None,
+    image_size: int = 224,
+    max_length: int = 1024,
+    vision_encoder_type: str = "clip",
+    vision_model_name: str = None,
 ):
     """
     Load finetune dataset using cached JSON from volume.
@@ -1191,12 +1240,14 @@ def load_finetune_dataset(
             data_path=filtered_path,
             image_dir=image_dir,
             tokenizer=tokenizer,
-            image_size=224,
-            max_length=1024,
+            image_size=image_size,
+            max_length=max_length,
             num_image_tokens=num_image_tokens,
             image_token_policy=image_token_policy,
             min_image_tokens=min_image_tokens,
             max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
             filter_to_available_images=True,
         )
         print(f"Loaded {len(ds)} multi-task instruction samples")
@@ -1225,12 +1276,14 @@ def load_finetune_dataset(
             data_path=json_path,
             image_dir=image_dir,
             tokenizer=tokenizer,
-            image_size=224,
-            max_length=1024,
+            image_size=image_size,
+            max_length=max_length,
             num_image_tokens=num_image_tokens,
             image_token_policy=image_token_policy,
             min_image_tokens=min_image_tokens,
             max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
             filter_to_available_images=True,
         )
 
@@ -1258,12 +1311,20 @@ class COCOCaptionDataset:
         insert_image_placeholders: bool = False,
         num_image_tokens: int = 64,
         max_length: int = 256,
+        image_size: int = 224,
+        vision_encoder_type: str = "clip",
+        vision_model_name: str = None,
     ):
-        from data.data_utils import get_image_transform, TextProcessor
+        from data.data_utils import get_vision_transform, TextProcessor
         self.samples = samples
         self.image_dir = image_dir
         self.tokenizer = tokenizer
-        self.transform = get_image_transform(image_size=224, is_train=True)
+        self.transform = get_vision_transform(
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+            image_size=image_size,
+            is_train=True,
+        )
         self.max_length = max_length
         self.text_processor = TextProcessor(tokenizer, max_length=max_length)
         self.insert_image_placeholders = insert_image_placeholders
@@ -1354,6 +1415,9 @@ def load_llava_pretrain_dataset(
     insert_image_placeholders: bool = False,
     num_image_tokens: int = 64,
     max_length: int = 256,
+    image_size: int = 224,
+    vision_encoder_type: str = "clip",
+    vision_model_name: str = None,
 ):
     """
     Load captioning dataset for Stage 1 alignment using real COCO images.
@@ -1415,6 +1479,9 @@ def load_llava_pretrain_dataset(
         insert_image_placeholders=insert_image_placeholders,
         num_image_tokens=num_image_tokens,
         max_length=max_length,
+        image_size=image_size,
+        vision_encoder_type=vision_encoder_type,
+        vision_model_name=vision_model_name,
     )
     print(f"Loaded {len(dataset)} pretrain samples with real COCO images")
     return dataset

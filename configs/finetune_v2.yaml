@@ -35,7 +35,7 @@ data:
   train_data_path: "./data/llava_instruct_150k.json"
   image_dir: "./data/coco/train2017"
   eval_data_path: null
-  image_size: 224
+  image_size: 384
   max_length: 2304
   image_token_policy: "fixed"
   per_device_batch_size: 6
@@ -52,6 +52,7 @@ training:
   max_steps: 3000
   num_epochs: null
   train_projector_only: false
+  projector_warmup_steps: 0
   use_amp: true
   amp_dtype: "bfloat16"
   seed: 42

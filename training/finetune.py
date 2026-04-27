@@ -62,7 +62,7 @@ class FinetuneConfig(TrainerConfig):
     # Continue from Stage 1 checkpoint
     pretrain_checkpoint: Optional[str] = None
 
-    # Projector warmup: freeze projector for N steps to let LoRA warm up first
+    # Adapter warmup: zero multimodal adapter grads for N steps to let LoRA warm up first
     projector_warmup_steps: int = 200
 
 
@@ -105,15 +105,17 @@ class FinetuneTrainer(Trainer):
         # Configure model for Stage 2
         model.set_training_stage(2)
 
-        # Projector warmup: freeze projector for the first N steps
-        self._projector_frozen = False
+        # Adapter warmup keeps adapter params in the optimizer from step 0, then
+        # zeroes their gradients during warmup. This avoids rebuilding optimizer
+        # and scheduler state mid-run.
+        self._adapter_warmup_active = False
         self._projector_warmup_steps = config.projector_warmup_steps
         if config.projector_warmup_steps > 0:
-            for name, param in model.named_parameters():
-                if "projector" in name:
-                    param.requires_grad = False
-            self._projector_frozen = True
-            print_rank_0(f"Projector FROZEN for first {config.projector_warmup_steps} steps (LoRA warmup)")
+            self._adapter_warmup_active = True
+            print_rank_0(
+                f"Multimodal adapter gradients zeroed for first "
+                f"{config.projector_warmup_steps} steps (LoRA warmup)"
+            )
 
         # Verify trainable params
         if is_main_process():
@@ -152,7 +154,7 @@ class FinetuneTrainer(Trainer):
     def _verify_trainable_params(self, model):
         """Verify that projector + LoRA are trainable."""
         trainable_groups = {
-            "projector": 0,
+            "adapter": 0,
             "lora": 0,
             "other": 0,
         }
@@ -160,8 +162,8 @@ class FinetuneTrainer(Trainer):
         for name, param in model.named_parameters():
             if not param.requires_grad:
                 continue
-            if "projector" in name:
-                trainable_groups["projector"] += param.numel()
+            if self._is_adapter_param_name(name):
+                trainable_groups["adapter"] += param.numel()
             elif "lora" in name.lower():
                 trainable_groups["lora"] += param.numel()
             else:
@@ -190,20 +192,12 @@ class FinetuneTrainer(Trainer):
         - attention_mask: [B, seq_len]
         - labels: [B, seq_len] (with non-response parts masked as -100)
         """
-        # Unfreeze projector after warmup period
-        if (self._projector_frozen
-                and self.global_step >= self._projector_warmup_steps):
-            print_rank_0(f"\n[Step {self.global_step}] Unfreezing projector (warmup complete)")
-            for name, param in self.unwrapped_model.named_parameters():
-                if "projector" in name:
-                    param.requires_grad = True
-            self._projector_frozen = False
-            # Rebuild optimizer and scheduler to include projector params
-            self.optimizer = self._create_optimizer()
-            self.scheduler = self._create_scheduler()
-            print_rank_0("  Rebuilt optimizer and scheduler with projector params")
-            if is_main_process():
-                self._verify_trainable_params(self.unwrapped_model)
+        if (
+            self._adapter_warmup_active
+            and self.global_step >= self._projector_warmup_steps
+        ):
+            print_rank_0(f"\n[Step {self.global_step}] Multimodal adapter warmup complete")
+            self._adapter_warmup_active = False
 
         # Move batch to device
         batch = {
@@ -234,6 +228,20 @@ class FinetuneTrainer(Trainer):
                 print_rank_0(f"  image placeholder tokens in input_ids: {n_ph}")
             print_rank_0(f"---\n")
 
+        supervised_tokens = int((labels != -100).sum().item())
+        active_tokens = int(attention_mask.sum().item())
+        placeholder_id = getattr(self.unwrapped_model, "image_placeholder_token_id", None)
+        placeholder_tokens = (
+            int((input_ids == placeholder_id).sum().item())
+            if placeholder_id is not None else 0
+        )
+        self._last_batch_metrics = {
+            "train/supervised_tokens": supervised_tokens,
+            "train/active_tokens": active_tokens,
+            "train/supervised_token_ratio": supervised_tokens / max(active_tokens, 1),
+            "train/image_placeholder_tokens": placeholder_tokens,
+        }
+
         # Forward pass with mixed precision
         device_type = "cuda" if torch.cuda.is_available() else "cpu"
         with torch.amp.autocast(
@@ -262,8 +270,20 @@ class FinetuneTrainer(Trainer):
         else:
             loss.backward()
 
+        if self._adapter_warmup_active:
+            self._zero_adapter_grads()
+
         # Return unscaled loss for logging
         return loss.item() * self.config.gradient_accumulation_steps
+
+    @staticmethod
+    def _is_adapter_param_name(name: str) -> bool:
+        return "projector" in name or "token_compressor" in name
+
+    def _zero_adapter_grads(self) -> None:
+        for name, param in self.unwrapped_model.named_parameters():
+            if self._is_adapter_param_name(name) and param.grad is not None:
+                param.grad = None
 
 
 def run_finetuning(

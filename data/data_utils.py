@@ -44,6 +44,97 @@ import io
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 
+# SigLIP/SigLIP2 checkpoints in HuggingFace use processor-provided image
+# statistics. These defaults match the common SigLIP processor and are used
+# only if the processor config cannot be loaded.
+SIGLIP_MEAN = (0.5, 0.5, 0.5)
+SIGLIP_STD = (0.5, 0.5, 0.5)
+
+
+def _infer_hf_image_size(processor, fallback: int) -> int:
+    """Infer a square image size from a HuggingFace image processor."""
+    for attr in ("crop_size", "size"):
+        value = getattr(processor, attr, None)
+        if isinstance(value, dict):
+            for key in ("height", "shortest_edge", "width"):
+                if key in value:
+                    return int(value[key])
+        elif isinstance(value, int):
+            return int(value)
+    return int(fallback)
+
+
+def get_siglip_image_transform(
+    model_name: str = "google/siglip2-so400m-patch14-384",
+    image_size: Optional[int] = None,
+    is_train: bool = True,
+    use_augmentation: bool = True,
+) -> transforms.Compose:
+    """Get preprocessing for SigLIP/SigLIP2 vision towers."""
+    mean = SIGLIP_MEAN
+    std = SIGLIP_STD
+    resolved_size = image_size
+
+    try:
+        from transformers import AutoImageProcessor
+
+        processor = AutoImageProcessor.from_pretrained(model_name)
+        mean = tuple(getattr(processor, "image_mean", mean))
+        std = tuple(getattr(processor, "image_std", std))
+        if resolved_size is None:
+            resolved_size = _infer_hf_image_size(processor, 384)
+    except Exception as e:
+        print(f"Warning: could not load image processor for {model_name}: {e}. "
+              "Using SigLIP fallback preprocessing.")
+
+    if resolved_size is None:
+        resolved_size = 384
+
+    if is_train and use_augmentation:
+        return transforms.Compose([
+            transforms.RandomResizedCrop(
+                resolved_size,
+                scale=(0.9, 1.0),
+                interpolation=transforms.InterpolationMode.BICUBIC,
+            ),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean, std=std),
+        ])
+
+    return transforms.Compose([
+        transforms.Resize(
+            resolved_size,
+            interpolation=transforms.InterpolationMode.BICUBIC,
+        ),
+        transforms.CenterCrop(resolved_size),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=mean, std=std),
+    ])
+
+
+def get_vision_transform(
+    vision_encoder_type: str = "clip",
+    vision_model_name: Optional[str] = None,
+    image_size: Optional[int] = 224,
+    is_train: bool = True,
+    use_augmentation: bool = True,
+) -> transforms.Compose:
+    """Route image preprocessing by vision tower family."""
+    encoder = str(vision_encoder_type or "clip").lower()
+    if encoder in {"siglip", "siglip2"}:
+        return get_siglip_image_transform(
+            model_name=vision_model_name or "google/siglip2-so400m-patch14-384",
+            image_size=image_size,
+            is_train=is_train,
+            use_augmentation=use_augmentation,
+        )
+    return get_image_transform(
+        image_size=image_size or 224,
+        is_train=is_train,
+        use_augmentation=use_augmentation,
+    )
+
 
 def get_image_transform(
     image_size: int = 224,

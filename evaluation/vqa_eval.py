@@ -57,10 +57,14 @@ class VQADataset(Dataset):
         transform,
         tokenizer,
         filter_to_available_images: bool = True,
+        image_placeholder_token_id: Optional[int] = None,
+        num_image_tokens: int = 0,
     ):
         self.image_dir = image_dir
         self.transform = transform
         self.tokenizer = tokenizer
+        self.image_placeholder_token_id = image_placeholder_token_id
+        self.num_image_tokens = int(num_image_tokens or 0)
 
         # Load questions
         with open(questions_file, "r") as f:
@@ -121,6 +125,18 @@ class VQADataset(Dataset):
             truncation=True,
             max_length=256,
         )
+        input_ids = encoding["input_ids"].squeeze(0)
+        attention_mask = encoding["attention_mask"].squeeze(0)
+
+        if self.image_placeholder_token_id is not None and self.num_image_tokens > 0:
+            placeholders = torch.full(
+                (self.num_image_tokens,),
+                self.image_placeholder_token_id,
+                dtype=input_ids.dtype,
+            )
+            placeholder_mask = torch.ones(self.num_image_tokens, dtype=attention_mask.dtype)
+            input_ids = torch.cat([placeholders, input_ids], dim=0)
+            attention_mask = torch.cat([placeholder_mask, attention_mask], dim=0)
 
         # Get ground truth if available
         answers = []
@@ -130,8 +146,8 @@ class VQADataset(Dataset):
 
         return {
             "image": image_tensor,
-            "input_ids": encoding["input_ids"].squeeze(0),
-            "attention_mask": encoding["attention_mask"].squeeze(0),
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
             "question_id": question_id,
             "question": question,
             "answers": answers,
@@ -180,6 +196,8 @@ class VQAEvaluator:
         predictions = []
         total_score = 0.0
         num_samples = 0
+        generated_token_counts = []
+        clean_eos_count = 0
 
         for batch in tqdm(dataloader, desc="Evaluating VQA"):
             # Move to device
@@ -203,6 +221,9 @@ class VQAEvaluator:
                 # When generating from `inputs_embeds` (multimodal), HF may return only new tokens.
                 seq = generated_ids[i]
                 generated = seq[prompt_len:] if seq.shape[0] > prompt_len else seq
+                generated_token_counts.append(int(generated.shape[0]))
+                if generated.numel() > 0 and generated[-1].item() == self.model.tokenizer.eos_token_id:
+                    clean_eos_count += 1
 
                 # Decode
                 pred_answer = self.model.tokenizer.decode(
@@ -237,9 +258,17 @@ class VQAEvaluator:
             with open(output_file, "w") as f:
                 json.dump(predictions, f, indent=2)
 
+        avg_generated_tokens = (
+            sum(generated_token_counts) / len(generated_token_counts)
+            if generated_token_counts else 0.0
+        )
+        eos_rate = clean_eos_count / len(generated_token_counts) if generated_token_counts else 0.0
+
         return {
             "accuracy": accuracy * 100,  # Percentage
             "num_samples": num_samples,
+            "avg_generated_tokens": avg_generated_tokens,
+            "eos_rate": eos_rate,
         }
 
     def _process_answer(self, answer: str) -> str:
@@ -358,9 +387,18 @@ def evaluate_vqav2(
     Returns:
         Evaluation metrics
     """
-    from data import get_image_transform
+    from data import get_vision_transform
 
-    transform = get_image_transform(image_size=224, is_train=False)
+    is_v2 = getattr(model, "architecture", "") == "anymal_v2"
+    vision_type = getattr(model, "vision_encoder_type", "clip")
+    vision_model = getattr(getattr(model, "image_encoder", None), "model_name", None)
+    transform = get_vision_transform(
+        vision_encoder_type=vision_type,
+        vision_model_name=vision_model,
+        image_size=384 if is_v2 else 224,
+        is_train=False,
+        use_augmentation=False,
+    )
 
     dataset = VQADataset(
         questions_file=questions_file,
@@ -368,6 +406,8 @@ def evaluate_vqav2(
         image_dir=image_dir,
         transform=transform,
         tokenizer=model.tokenizer,
+        image_placeholder_token_id=getattr(model, "image_placeholder_token_id", None),
+        num_image_tokens=getattr(model, "num_image_tokens", 0) if is_v2 else 0,
     )
 
     pad_token_id = model.tokenizer.pad_token_id or model.tokenizer.eos_token_id

@@ -45,7 +45,7 @@ import json
 import os
 import random
 
-from .data_utils import get_image_transform, TextProcessor, CLIP_MEAN, CLIP_STD
+from .data_utils import get_image_transform, get_vision_transform, TextProcessor, CLIP_MEAN, CLIP_STD
 
 
 class InstructionDataset(Dataset):
@@ -93,6 +93,8 @@ class InstructionDataset(Dataset):
         image_token_policy: str = "fixed",
         min_image_tokens: Optional[int] = None,
         max_image_tokens: Optional[int] = None,
+        vision_encoder_type: str = "clip",
+        vision_model_name: Optional[str] = None,
         split: str = "train",
         system_prompt: Optional[str] = None,
         filter_to_available_images: bool = False,
@@ -107,6 +109,8 @@ class InstructionDataset(Dataset):
         self.image_token_policy = image_token_policy
         self.min_image_tokens = min_image_tokens
         self.max_image_tokens = max_image_tokens
+        self.vision_encoder_type = vision_encoder_type
+        self.vision_model_name = vision_model_name
         self.system_prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
 
         if self.image_token_policy not in {"fixed", "uniform"}:
@@ -138,7 +142,9 @@ class InstructionDataset(Dataset):
             self.image_placeholder_token_id = None  # fallback: strip <image>
 
         # Image transform
-        self.transform = get_image_transform(
+        self.transform = get_vision_transform(
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
             image_size=image_size,
             is_train=(split == "train"),
             use_augmentation=False,  # Less augmentation for instruction tuning

@@ -249,7 +249,7 @@ class Trainer:
 
             if "lora" in name.lower():
                 (lora_no_decay if is_no_decay else lora_decay).append(param)
-            elif "projector" in name:
+            elif "projector" in name or "token_compressor" in name:
                 (projector_no_decay if is_no_decay else projector_decay).append(param)
             else:
                 (other_no_decay if is_no_decay else other_decay).append(param)
@@ -499,6 +499,9 @@ class Trainer:
                 # Logging
                 if self.global_step % self.config.logging_steps == 0:
                     metrics = {"train/loss": loss}
+                    last_batch_metrics = getattr(self, "_last_batch_metrics", None)
+                    if last_batch_metrics:
+                        metrics.update(last_batch_metrics)
                     if grad_norm is not None:
                         gn = grad_norm.item() if hasattr(grad_norm, 'item') else float(grad_norm)
                         metrics["train/grad_norm"] = gn
@@ -782,7 +785,7 @@ class Trainer:
             if param.grad is None:
                 continue
             pnorm = param.grad.data.norm(2).item() ** 2
-            if "projector" in name:
+            if "projector" in name or "token_compressor" in name:
                 norms["projector"] += pnorm
                 counts["projector"] += 1
             elif "lora" in name.lower():
@@ -824,6 +827,9 @@ class Trainer:
                     layer_idx = parts[1].split(".")[0]
                     key = f"grad_norm/perceiver_layer_{layer_idx}"
                     layer_norms[key] = layer_norms.get(key, 0.0) + pnorm_sq
+            elif "token_compressor" in name:
+                key = "grad_norm/token_compressor"
+                layer_norms[key] = layer_norms.get(key, 0.0) + pnorm_sq
             # Group by LoRA layer index
             elif "lora" in name.lower():
                 # Extract layer index from names like "...layers.0...lora_A..."

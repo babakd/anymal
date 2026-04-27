@@ -43,7 +43,7 @@ import os
 import glob
 import re
 
-from .data_utils import get_image_transform, TextProcessor
+from .data_utils import get_vision_transform, TextProcessor
 
 
 def _expand_brace_pattern(pattern: str) -> Optional[List[str]]:
@@ -126,6 +126,8 @@ class LaionDataset(Dataset):
         caption_prompt: str = "A photo of",
         insert_image_placeholders: bool = False,
         num_image_tokens: int = 64,
+        vision_encoder_type: str = "clip",
+        vision_model_name: Optional[str] = None,
     ):
         super().__init__()
 
@@ -135,9 +137,13 @@ class LaionDataset(Dataset):
         self.caption_prompt = caption_prompt
         self.insert_image_placeholders = insert_image_placeholders
         self.num_image_tokens = num_image_tokens
+        self.vision_encoder_type = vision_encoder_type
+        self.vision_model_name = vision_model_name
 
         # Set up image transform
-        self.transform = get_image_transform(
+        self.transform = get_vision_transform(
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
             image_size=image_size,
             is_train=(split == "train"),
         )
@@ -383,6 +389,8 @@ class LaionStreamingDataset(IterableDataset):
         caption_prompt: str = "A photo of",
         insert_image_placeholders: bool = False,
         num_image_tokens: int = 64,
+        vision_encoder_type: str = "clip",
+        vision_model_name: Optional[str] = None,
     ):
         super().__init__()
 
@@ -393,8 +401,12 @@ class LaionStreamingDataset(IterableDataset):
         self.caption_prompt = caption_prompt
         self.insert_image_placeholders = insert_image_placeholders
         self.num_image_tokens = num_image_tokens
+        self.vision_encoder_type = vision_encoder_type
+        self.vision_model_name = vision_model_name
 
-        self.transform = get_image_transform(
+        self.transform = get_vision_transform(
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
             image_size=image_size,
             is_train=True,
         )

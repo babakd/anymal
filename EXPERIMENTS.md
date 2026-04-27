@@ -120,6 +120,36 @@ At 500 steps, **Stage 2 is a stylistic adjustment, not a capability gain.** The 
 
 ---
 
+## V2 hardening pass — SigLIP2 preprocessing, strict eval, and Modal smokes (2026-04-27)
+
+**Goal:** make V2 the active training path and remove silent V1 assumptions before starting longer V2 experiments.
+
+### Code changes
+
+- Added SigLIP/SigLIP2 image preprocessing via `get_vision_transform()` and routed V2 local scripts, Modal datasets, and VQA eval through it.
+- Updated V2 configs and Modal V2 runs to use 384px images.
+- Made VQA eval insert V2 image placeholders, so strict splice is exercised consistently at eval time.
+- Treated `token_compressor` as part of the multimodal adapter in optimizer groups and gradient diagnostics.
+- Disabled Stage 2 V2 adapter warmup by default (`projector_warmup_steps=0`) and removed the old optimizer/scheduler rebuild behavior from warmup.
+- Made pretrain checkpoint auto-discovery architecture-aware so V2 refuses legacy V1 checkpoints.
+- Added supervised-token, active-token, placeholder-token, generated-token, and EOS-rate metrics.
+- Fixed Modal runtime dependencies and COCO cache detection.
+
+### Validation
+
+- Local tests: `python3 -m pytest tests/test_model.py tests/test_training.py tests/test_health_monitor.py -q` -> 110 passed, 1 skipped.
+- Static checks: `python3 -m compileall ...` and `git diff --check` passed.
+- Modal V2 Stage 2 smoke: `v2-smoke-20260427-codex-2`, run `ap-SLiGhwZe4E5UQlcXm4cE5i`, 2 optimizer steps completed.
+- Modal V2 Stage 1 smoke: `v2-pretrain-smoke-20260427-codex`, run `ap-WK9FApkcZviH9IgaWYfGHZ`, 2 optimizer steps completed on 4x A100.
+
+### Notes for future agents
+
+- The old `/checkpoints/pretrain-output/checkpoint-2500` checkpoint is V1/legacy. V2 must train or load a V2 checkpoint with metadata.
+- V2 Stage 2 can run without a V2 pretrain checkpoint for smoke testing, but real experiments should start from a V2 Stage 1 checkpoint.
+- VQA metrics are now V2-path compatible, but image coverage is still partial, so use them as smoke/relative signals until the VQA cache is expanded.
+
+---
+
 ## Infra notes
 
 - **Monitoring**: `Monitor` tool (tails Modal logs via `perl alarm` snapshots) worked better than `CronCreate` for training runs — crons only fire when REPL is idle, which fails when actively chatting.
