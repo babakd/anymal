@@ -200,6 +200,9 @@ class VQAEvaluator:
         clean_eos_count = 0
 
         for batch in tqdm(dataloader, desc="Evaluating VQA"):
+            if batch is None:
+                continue
+
             # Move to device
             images = batch["image"].to(self.device)
             input_ids = batch["input_ids"].to(self.device)

@@ -1176,7 +1176,7 @@ def load_finetune_dataset(
                  "mix_665k" for LLaVA-1.5 Mix-665K (filtered to cached COCO images)
     """
     import json as _json
-    from data.instruction_dataset import InstructionDataset
+    from data.instruction_dataset import InstructionDataset, create_instruction_dataset
 
     image_dir = "/checkpoints/coco_images"
     if not os.path.exists(image_dir):
@@ -1191,53 +1191,9 @@ def load_finetune_dataset(
     if num_images == 0:
         raise RuntimeError(f"No JPEG images found in {image_dir}. Cannot train without real images.")
 
-    if dataset == "mix_665k":
-        json_path = "/checkpoints/llava_data/llava_v1_5_mix665k.json"
-        if not os.path.exists(json_path):
-            raise RuntimeError(
-                f"Mix-665K JSON not found at {json_path}. "
-                "It should have been downloaded during container setup."
-            )
-
-        print(f"Loading LLaVA-1.5 Mix-665K from {json_path}")
-
-        # The 665K JSON has image paths like "coco/train2017/000000123456.jpg",
-        # "gqa/images/xxxxx.jpg", "ocr_vqa/images/xxxxx.jpg", etc.
-        # We need to normalize these to just the filename to match our cached images.
-        available_images = set(f for f in os.listdir(image_dir) if f.endswith(('.jpg', '.jpeg', '.png')))
-
-        with open(json_path, "r") as f:
-            raw_data = _json.load(f)
-
-        print(f"Mix-665K total samples: {len(raw_data)}")
-
-        # Filter to samples whose image (by filename) exists in our cache
-        filtered = []
-        for sample in raw_data:
-            img_path = sample.get("image", "")
-            if not img_path:
-                continue  # Skip text-only samples
-            # Extract just the filename from paths like "coco/train2017/000000123456.jpg"
-            img_filename = os.path.basename(img_path)
-            if img_filename in available_images:
-                # Normalize the image field to just the filename
-                sample["image"] = img_filename
-                filtered.append(sample)
-
-        print(f"Mix-665K filtered to {len(filtered)}/{len(raw_data)} samples with cached COCO images")
-        if len(filtered) == 0:
-            raise RuntimeError(
-                "No Mix-665K samples matched available COCO images. "
-                "Check image filenames."
-            )
-
-        # Write filtered data to a temp file for InstructionDataset
-        filtered_path = "/checkpoints/llava_data/mix665k_filtered.json"
-        with open(filtered_path, "w") as f:
-            _json.dump(filtered, f)
-
-        ds = InstructionDataset(
-            data_path=filtered_path,
+    def _build_instruction_dataset(json_path):
+        return InstructionDataset(
+            data_path=json_path,
             image_dir=image_dir,
             tokenizer=tokenizer,
             image_size=image_size,
@@ -1250,6 +1206,93 @@ def load_finetune_dataset(
             vision_model_name=vision_model_name,
             filter_to_available_images=True,
         )
+
+    def _filtered_mix665k_path():
+        json_path = "/checkpoints/llava_data/llava_v1_5_mix665k.json"
+        if not os.path.exists(json_path):
+            raise RuntimeError(
+                f"Mix-665K JSON not found at {json_path}. "
+                "It should have been downloaded during container setup."
+            )
+
+        print(f"Loading LLaVA-1.5 Mix-665K from {json_path}")
+
+        # The 665K JSON has image paths like "coco/train2017/000000123456.jpg",
+        # "gqa/images/xxxxx.jpg", "ocr_vqa/images/xxxxx.jpg", etc.
+        # Normalize to filenames to match our cached COCO image subset.
+        available_images = set(
+            f for f in os.listdir(image_dir)
+            if f.endswith((".jpg", ".jpeg", ".png"))
+        )
+
+        with open(json_path, "r") as f:
+            raw_data = _json.load(f)
+
+        print(f"Mix-665K total samples: {len(raw_data)}")
+
+        filtered = []
+        for sample in raw_data:
+            img_path = sample.get("image", "")
+            if not img_path:
+                continue
+            img_filename = os.path.basename(img_path)
+            if img_filename in available_images:
+                sample["image"] = img_filename
+                filtered.append(sample)
+
+        print(f"Mix-665K filtered to {len(filtered)}/{len(raw_data)} samples with cached COCO images")
+        if len(filtered) == 0:
+            raise RuntimeError(
+                "No Mix-665K samples matched available COCO images. "
+                "Check image filenames."
+            )
+
+        filtered_path = "/checkpoints/llava_data/mix665k_filtered.json"
+        with open(filtered_path, "w") as f:
+            _json.dump(filtered, f)
+        return filtered_path
+
+    if dataset in {"balanced_mix", "balanced_mixture", "mixture"}:
+        instruct_path = "/checkpoints/llava_data/llava_instruct_150k.json"
+        if not os.path.exists(instruct_path):
+            print("Warning: LLaVA JSON not pre-cached, downloading now...")
+            from huggingface_hub import hf_hub_download
+            cache_dir = "/checkpoints/llava_data"
+            os.makedirs(cache_dir, exist_ok=True)
+            hf_hub_download(
+                repo_id="liuhaotian/LLaVA-Instruct-150K",
+                filename="llava_instruct_150k.json",
+                repo_type="dataset",
+                local_dir=cache_dir,
+            )
+
+        mix_path = _filtered_mix665k_path()
+        ds = create_instruction_dataset(
+            data_path=None,
+            image_dir=image_dir,
+            tokenizer=tokenizer,
+            mixture_config={
+                "strategy": "balanced",
+                "datasets": [
+                    {"name": "instruct_150k", "data_path": instruct_path},
+                    {"name": "mix_665k", "data_path": mix_path},
+                ],
+            },
+            image_size=image_size,
+            max_length=max_length,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+            filter_to_available_images=True,
+        )
+        print(f"Loaded {len(ds)} balanced instruction-mixture samples")
+        return ds
+
+    if dataset == "mix_665k":
+        ds = _build_instruction_dataset(_filtered_mix665k_path())
         print(f"Loaded {len(ds)} multi-task instruction samples")
         return ds
 
@@ -1272,20 +1315,7 @@ def load_finetune_dataset(
         print(f"Loading LLaVA-Instruct-150K from {json_path}")
         print("Filtering dataset to only samples with real images")
 
-        ds = InstructionDataset(
-            data_path=json_path,
-            image_dir=image_dir,
-            tokenizer=tokenizer,
-            image_size=image_size,
-            max_length=max_length,
-            num_image_tokens=num_image_tokens,
-            image_token_policy=image_token_policy,
-            min_image_tokens=min_image_tokens,
-            max_image_tokens=max_image_tokens,
-            vision_encoder_type=vision_encoder_type,
-            vision_model_name=vision_model_name,
-            filter_to_available_images=True,
-        )
+        ds = _build_instruction_dataset(json_path)
 
         if len(ds) == 0:
             raise RuntimeError(
@@ -1420,13 +1450,40 @@ def load_llava_pretrain_dataset(
     vision_model_name: str = None,
 ):
     """
-    Load captioning dataset for Stage 1 alignment using real COCO images.
+    Load captioning dataset for Stage 1 alignment using real images.
 
-    Uses llava_instruct_150k.json (which references COCO images we have cached)
-    and extracts the first GPT response as a caption. Filters to samples whose
-    images exist in /checkpoints/coco_images.
+    Prefer true LLaVA-Pretrain caption data if both annotations and images have
+    been staged. Fall back to the existing COCO-backed instruction-caption
+    extraction path so current Modal runs remain executable.
     """
     import json
+
+    pretrain_json_path = "/checkpoints/llava_data/blip_laion_cc_sbu_558k.json"
+    pretrain_image_dir = "/checkpoints/llava_pretrain/images"
+    if os.path.exists(pretrain_json_path) and os.path.isdir(pretrain_image_dir):
+        from data.laion_dataset import create_laion_dataset
+
+        print(f"Loading true LLaVA-Pretrain captions from {pretrain_json_path}")
+        dataset = create_laion_dataset(
+            data_path=pretrain_json_path,
+            image_dir=pretrain_image_dir,
+            tokenizer=tokenizer,
+            dataset_type="llava_pretrain_caption",
+            caption_prompt="",
+            filter_to_available_images=True,
+            min_caption_chars=3,
+            deduplicate_captions=True,
+            insert_image_placeholders=insert_image_placeholders,
+            num_image_tokens=num_image_tokens,
+            max_length=max_length,
+            image_size=image_size,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+        )
+        if len(dataset) > 0:
+            print(f"Loaded {len(dataset)} true LLaVA-Pretrain samples with real images")
+            return dataset
+        print("True LLaVA-Pretrain path produced 0 usable samples; falling back to COCO captions")
 
     json_path = "/checkpoints/llava_data/llava_instruct_150k.json"
     image_dir = "/checkpoints/coco_images"

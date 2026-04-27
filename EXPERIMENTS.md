@@ -147,6 +147,66 @@ At 500 steps, **Stage 2 is a stylistic adjustment, not a capability gain.** The 
 - The old `/checkpoints/pretrain-output/checkpoint-2500` checkpoint is V1/legacy. V2 must train or load a V2 checkpoint with metadata.
 - V2 Stage 2 can run without a V2 pretrain checkpoint for smoke testing, but real experiments should start from a V2 Stage 1 checkpoint.
 - VQA metrics are now V2-path compatible, but image coverage is still partial, so use them as smoke/relative signals until the VQA cache is expanded.
+- The forward-looking V2 quality roadmap lives in `V2_QUALITY_PLAN.md`; use it as the execution plan for V2.1 experiments.
+
+---
+
+## V2 quality-plan implementation batch 1 — eval, data, compressor, and Modal smokes (2026-04-27)
+
+**Goal:** execute the first parallelizable slice of `V2_QUALITY_PLAN.md`: make eval more trustworthy, add real-pretrain/mixture data plumbing, and add a stronger config-gated connector candidate.
+
+### Code changes
+
+- Added `V2_QUALITY_PLAN.md` and linked it from `CLAUDE.md` and this experiment log.
+- Hardened captioning eval for AnyMALv2:
+  - inserts contiguous V2 image placeholder blocks,
+  - uses SigLIP2/V2 image preprocessing,
+  - filters/skips missing or corrupt images,
+  - reports `num_samples`, `avg_generated_tokens`, and `eos_rate`.
+- Hardened VQA eval to skip all-invalid batches from collate.
+- Added no-download eval tests in `tests/test_evaluation.py`.
+- Added `LlavaPretrainCaptionDataset` with JSON caption loading, real-image filtering, caption minimum length, and caption de-duplication.
+- Added `InstructionMixtureDataset` and `create_instruction_dataset(..., mixture_config=...)` for balanced/concat Stage 2 mixtures.
+- Updated V2 configs with LLaVA-Pretrain style Stage 1 data knobs and inactive Stage 2 mixture knobs.
+- Added `token_compressor_type="perceiver"` / `"perceiver2"` as a 2-layer residual cross-attention + FFN compressor while preserving existing `learned` behavior and state-dict surface.
+- Wired local scripts and Modal:
+  - local Stage 1 consumes `dataset_type`, `image_dir`, and filtering knobs,
+  - local Stage 2 consumes `mixture` and `filter_to_available_images`,
+  - Modal Stage 1 prefers true LLaVA-Pretrain captions when images are staged and otherwise falls back to the existing COCO-backed caption extraction,
+  - Modal Stage 2 supports `--dataset balanced_mix`.
+
+### Validation
+
+- `python3 -m py_compile ...` on touched integration files passed.
+- Focused tests: `pytest tests/test_evaluation.py tests/test_model.py::TestAnyMALv2CoreModules tests/test_training.py -q` -> 29 passed.
+- Full tests: `pytest tests -q` -> 118 passed, 1 skipped.
+- Static check: `git diff --check` passed.
+
+### Modal smoke runs
+
+- V2 Stage 1 pretrain smoke:
+  - Run name: `v2-pretrain-integration-smoke-20260427`
+  - App run: `ap-krX0b1NJwdAD0WGO4VdJAD`
+  - Command shape: `--stage pretrain --architecture anymal_v2 --max-steps 2 --batch-size 1`
+  - Result: completed 2 optimizer steps.
+  - Confirmed 256 V2 image placeholders, 384px SigLIP2 preprocessing, and Stage 1 trainables limited to `token_compressor + projector`.
+  - Data path: true LLaVA-Pretrain images were not staged, so the loader fell back to existing COCO-backed instruction-caption extraction (`157,712` samples from `81,479` images).
+- V2 Stage 2 balanced-mixture smoke:
+  - Run name: `v2-finetune-balanced-mix-smoke-20260427`
+  - App run: `ap-jEdIuwx1tvvHe4TiSdlE1v`
+  - Command shape: `--stage finetune --architecture anymal_v2 --dataset balanced_mix --max-steps 2 --batch-size 1 --no-run-eval-benchmarks --no-track-per-layer-grad-norms`
+  - Result: completed 2 optimizer steps.
+  - Mix-665K filtered to `338,470 / 665,298` samples with cached COCO images.
+  - Instruct-150K path kept `157,712 / 157,712` samples.
+  - Balanced mixture length: `676,940`.
+  - Confirmed 384 V2 image placeholders and Stage 2 trainables as adapter + LoRA with `other=0`.
+
+### Caveats and next work
+
+- True LLaVA-Pretrain images still need to be staged under `/checkpoints/llava_pretrain/images`; only the annotation JSON is currently cached.
+- The 2-step Stage 1 smoke did not save a checkpoint because `save_steps=250`, so the Stage 2 smoke intentionally ran without a V2 pretrain checkpoint. It validates mechanics, not quality.
+- `balanced_mix` currently balances `instruct_150k` and cached-COCO-filtered `mix_665k`; broader OCR/GQA sources still need image caches before they can contribute.
+- In-training `EvalRunner` still runs VQA only. Captioning eval is now V2-compatible but not yet wired into the training runner.
 
 ---
 

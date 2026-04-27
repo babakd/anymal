@@ -36,7 +36,7 @@ Recommended subset sizes for educational purposes:
 
 import torch
 from torch.utils.data import Dataset, IterableDataset
-from typing import Optional, Dict, Any, Iterator, Callable, List
+from typing import Optional, Dict, Any, Iterator, Callable, List, Tuple
 from PIL import Image
 import json
 import os
@@ -128,10 +128,15 @@ class LaionDataset(Dataset):
         num_image_tokens: int = 64,
         vision_encoder_type: str = "clip",
         vision_model_name: Optional[str] = None,
+        image_dir: Optional[str] = None,
+        filter_to_available_images: bool = False,
+        min_caption_chars: int = 1,
+        deduplicate_captions: bool = False,
     ):
         super().__init__()
 
         self.data_path = data_path
+        self.image_dir = image_dir
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.caption_prompt = caption_prompt
@@ -139,6 +144,9 @@ class LaionDataset(Dataset):
         self.num_image_tokens = num_image_tokens
         self.vision_encoder_type = vision_encoder_type
         self.vision_model_name = vision_model_name
+        self.filter_to_available_images = filter_to_available_images
+        self.min_caption_chars = min_caption_chars
+        self.deduplicate_captions = deduplicate_captions
 
         # Set up image transform
         self.transform = get_vision_transform(
@@ -223,6 +231,93 @@ class LaionDataset(Dataset):
             "labels": labels,
         }
 
+    def _caption_text_and_start(self, caption: str) -> Tuple[str, int]:
+        """Build the caption training string and response start char index."""
+        if self.caption_prompt:
+            return f"{self.caption_prompt} {caption}", len(self.caption_prompt) + 1
+        return caption, 0
+
+    def _extract_caption(self, item: Dict[str, Any]) -> str:
+        """Extract caption text from common caption/pretrain JSON records."""
+        caption = item.get("caption", item.get("text", ""))
+        if caption:
+            return str(caption).replace("<image>", "").strip()
+
+        for turn in item.get("conversations", []):
+            if turn.get("from", turn.get("role")) in {"gpt", "assistant"}:
+                return str(turn.get("value", turn.get("content", ""))).replace("<image>", "").strip()
+
+        return ""
+
+    def _resolve_image_path(self, image_ref: str, data_path: str) -> str:
+        """Resolve image references relative to image_dir first, then data_path."""
+        if os.path.isabs(image_ref):
+            return image_ref
+
+        if self.image_dir:
+            return os.path.join(self.image_dir, image_ref)
+
+        return os.path.join(os.path.dirname(data_path), image_ref)
+
+    def _normalize_json_item(self, item: Dict[str, Any], data_path: str) -> Optional[Dict[str, str]]:
+        image_ref = item.get("image_path", item.get("image", item.get("file_name", "")))
+        caption = self._extract_caption(item)
+        if not image_ref or not caption:
+            return None
+
+        return {
+            "image": image_ref,
+            "image_path": self._resolve_image_path(str(image_ref), data_path),
+            "caption": caption,
+        }
+
+    def _filter_samples(self, samples: List[Dict[str, Any]], source: str) -> List[Dict[str, Any]]:
+        """Apply explicit real-image, caption-quality, and duplicate filters."""
+        original_count = len(samples)
+
+        if self.min_caption_chars > 1:
+            before = len(samples)
+            samples = [
+                s for s in samples
+                if len(str(s.get("caption", "")).strip()) >= self.min_caption_chars
+            ]
+            print(
+                f"{source}: caption length filter kept {len(samples)}/{before} "
+                f"samples (min_caption_chars={self.min_caption_chars})"
+            )
+
+        if self.filter_to_available_images:
+            before = len(samples)
+            samples = [
+                s for s in samples
+                if s.get("image_path") and os.path.exists(s["image_path"])
+            ]
+            image_root = self.image_dir or os.path.dirname(self.data_path)
+            print(
+                f"{source}: real-image filter kept {len(samples)}/{before} "
+                f"samples from {image_root}"
+            )
+        else:
+            print(
+                f"{source}: loaded {len(samples)}/{original_count} samples; "
+                "real-image filtering disabled"
+            )
+
+        if self.deduplicate_captions:
+            before = len(samples)
+            seen = set()
+            unique = []
+            for sample in samples:
+                key = str(sample.get("caption", "")).strip().lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(sample)
+            samples = unique
+            print(f"{source}: caption de-dup kept {len(samples)}/{before} samples")
+
+        return samples
+
     def _load_samples(
         self,
         data_path: str,
@@ -242,6 +337,8 @@ class LaionDataset(Dataset):
         if os.path.isfile(data_path):
             if data_path.endswith(".parquet"):
                 samples = self._load_from_parquet(data_path)
+            elif data_path.endswith(".json"):
+                samples = self._load_from_json(data_path)
             elif data_path.endswith(".jsonl"):
                 samples = self._load_from_jsonl(data_path)
         elif os.path.isdir(data_path):
@@ -249,7 +346,9 @@ class LaionDataset(Dataset):
         else:
             raise ValueError(f"Unknown data path format: {data_path}")
 
-        # Limit samples if specified
+        samples = self._filter_samples(samples, source=self.__class__.__name__)
+
+        # Limit samples if specified after filtering so max_samples means usable samples.
         if max_samples is not None:
             samples = samples[:max_samples]
 
@@ -300,7 +399,36 @@ class LaionDataset(Dataset):
         samples = []
         with open(data_path, "r") as f:
             for line in f:
-                samples.append(json.loads(line))
+                item = json.loads(line)
+                if isinstance(item, dict):
+                    normalized = self._normalize_json_item(item, data_path)
+                    samples.append(normalized or item)
+        return samples
+
+    def _load_from_json(self, data_path: str) -> list:
+        """Load caption data from JSON, including LLaVA-Pretrain style files."""
+        with open(data_path, "r") as f:
+            data = json.load(f)
+
+        if isinstance(data, dict):
+            data = data.get("data", data.get("annotations", data.get("samples", [])))
+        if not isinstance(data, list):
+            raise ValueError(f"Expected a list-like JSON caption file: {data_path}")
+
+        samples = []
+        skipped = 0
+        for item in data:
+            if not isinstance(item, dict):
+                skipped += 1
+                continue
+            normalized = self._normalize_json_item(item, data_path)
+            if normalized is None:
+                skipped += 1
+                continue
+            samples.append(normalized)
+
+        if skipped:
+            print(f"LaionDataset: skipped {skipped} JSON records without image/caption")
         return samples
 
     def __len__(self) -> int:
@@ -334,16 +462,13 @@ class LaionDataset(Dataset):
         # Get caption
         caption = sample.get("caption", sample.get("text", ""))
 
-        # Format text for training
-        # The model sees: "A photo of [caption]"
-        # We only compute loss on the caption part
-        prompt = self.caption_prompt
-        full_text = f"{prompt} {caption}"
+        # Format text for training. We only compute loss on the caption part.
+        full_text, response_start_idx = self._caption_text_and_start(caption)
 
         # Encode text
         encoding = self.text_processor.encode_for_training(
             full_text,
-            response_start_idx=len(prompt) + 1,  # Start after prompt
+            response_start_idx=response_start_idx,
         )
         encoding = self._prepend_image_placeholders(encoding)
 
@@ -353,6 +478,38 @@ class LaionDataset(Dataset):
             "attention_mask": encoding["attention_mask"],
             "labels": encoding["labels"],
         }
+
+
+class LlavaPretrainCaptionDataset(LaionDataset):
+    """
+    LLaVA-Pretrain caption dataset for Stage 1 alignment.
+
+    Supports `blip_laion_cc_sbu_558k.json` style records with either
+    `caption`/`text` fields or LLaVA conversation records whose assistant turn
+    contains a BLIP caption. Real image filtering is enabled by default.
+    """
+
+    def __init__(
+        self,
+        annotation_path: str,
+        image_dir: str,
+        tokenizer,
+        caption_prompt: str = "",
+        filter_to_available_images: bool = True,
+        min_caption_chars: int = 3,
+        deduplicate_captions: bool = True,
+        **kwargs,
+    ):
+        super().__init__(
+            data_path=annotation_path,
+            image_dir=image_dir,
+            tokenizer=tokenizer,
+            caption_prompt=caption_prompt,
+            filter_to_available_images=filter_to_available_images,
+            min_caption_chars=min_caption_chars,
+            deduplicate_captions=deduplicate_captions,
+            **kwargs,
+        )
 
 
 class LaionStreamingDataset(IterableDataset):
@@ -538,10 +695,15 @@ class LaionStreamingDataset(IterableDataset):
                 break
 
         # Format and encode text
-        full_text = f"{self.caption_prompt} {caption}"
+        if self.caption_prompt:
+            full_text = f"{self.caption_prompt} {caption}"
+            response_start_idx = len(self.caption_prompt) + 1
+        else:
+            full_text = caption
+            response_start_idx = 0
         encoding = self.text_processor.encode_for_training(
             full_text,
-            response_start_idx=len(self.caption_prompt) + 1,
+            response_start_idx=response_start_idx,
         )
         encoding = self._prepend_image_placeholders(encoding)
 
@@ -562,6 +724,7 @@ def create_laion_dataset(
     data_path: str,
     tokenizer,
     streaming: bool = False,
+    dataset_type: str = "laion",
     **kwargs,
 ) -> Dataset:
     """
@@ -576,6 +739,19 @@ def create_laion_dataset(
     Returns:
         Dataset instance
     """
+    if dataset_type in {"llava_pretrain", "llava_pretrain_caption"}:
+        image_dir = kwargs.pop("image_dir", None)
+        if not image_dir:
+            raise ValueError("LlavaPretrainCaptionDataset requires image_dir")
+        if streaming:
+            raise ValueError("LLaVA-Pretrain JSON caption data is map-style, not streaming")
+        return LlavaPretrainCaptionDataset(
+            annotation_path=data_path,
+            image_dir=image_dir,
+            tokenizer=tokenizer,
+            **kwargs,
+        )
+
     if streaming:
         return LaionStreamingDataset(data_path, tokenizer, **kwargs)
     else:

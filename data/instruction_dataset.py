@@ -189,7 +189,7 @@ class InstructionDataset(Dataset):
         # Get set of available images for fast lookup
         available_images = set()
         for f in os.listdir(self.image_dir):
-            if f.endswith(('.jpg', '.jpeg', '.png')):
+            if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
                 available_images.add(f)
 
         # Filter samples
@@ -199,7 +199,10 @@ class InstructionDataset(Dataset):
             if s.get("image") in available_images
         ]
 
-        print(f"Filtered dataset: {len(filtered)}/{original_count} samples have real images")
+        print(
+            f"InstructionDataset: real-image filter kept {len(filtered)}/{original_count} "
+            f"samples from {self.image_dir}; missing={original_count - len(filtered)}"
+        )
         return filtered
 
     def __len__(self) -> int:
@@ -551,11 +554,133 @@ class InstructionDatasetSimple(Dataset):
         }
 
 
+class InstructionMixtureDataset(Dataset):
+    """
+    Small wrapper for Stage 2 instruction mixtures.
+
+    `concat` preserves natural dataset sizes. `balanced` round-robins sources
+    and oversamples smaller datasets to the largest source length.
+    """
+
+    def __init__(
+        self,
+        datasets: List[Dataset],
+        strategy: str = "balanced",
+        source_names: Optional[List[str]] = None,
+    ):
+        if not datasets:
+            raise ValueError("InstructionMixtureDataset requires at least one dataset")
+        if strategy not in {"balanced", "concat"}:
+            raise ValueError("strategy must be one of ['balanced', 'concat']")
+        if any(len(dataset) == 0 for dataset in datasets):
+            raise ValueError("InstructionMixtureDataset cannot include empty datasets")
+
+        self.datasets = datasets
+        self.strategy = strategy
+        self.source_names = source_names or [f"source_{i}" for i in range(len(datasets))]
+
+        if len(self.source_names) != len(self.datasets):
+            raise ValueError("source_names length must match datasets length")
+
+        self._cumulative_lengths = []
+        total = 0
+        for dataset in datasets:
+            total += len(dataset)
+            self._cumulative_lengths.append(total)
+
+        if self.strategy == "balanced":
+            self._length = max(len(dataset) for dataset in datasets) * len(datasets)
+        else:
+            self._length = total
+
+        sizes = ", ".join(
+            f"{name}={len(dataset)}" for name, dataset in zip(self.source_names, self.datasets)
+        )
+        print(
+            f"InstructionMixtureDataset: strategy={self.strategy}, "
+            f"length={self._length}, sources: {sizes}"
+        )
+
+    def __len__(self) -> int:
+        return self._length
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        if self.strategy == "balanced":
+            source_idx = idx % len(self.datasets)
+            local_idx = (idx // len(self.datasets)) % len(self.datasets[source_idx])
+            return self.datasets[source_idx][local_idx]
+
+        for source_idx, end in enumerate(self._cumulative_lengths):
+            start = 0 if source_idx == 0 else self._cumulative_lengths[source_idx - 1]
+            if idx < end:
+                return self.datasets[source_idx][idx - start]
+
+        raise IndexError(idx)
+
+
+def build_instruction_mixture_dataset(
+    mixture_config: Dict[str, Any],
+    tokenizer,
+    default_image_dir: Optional[str] = None,
+    simple: bool = False,
+    **kwargs,
+) -> InstructionMixtureDataset:
+    """Build a balanced/concat instruction mixture from config dictionaries."""
+    entries = mixture_config.get("datasets", mixture_config.get("sources", []))
+    strategy = mixture_config.get("strategy", "balanced")
+    if not entries:
+        raise ValueError("Instruction mixture config requires datasets")
+
+    datasets = []
+    names = []
+    for i, entry in enumerate(entries):
+        if isinstance(entry, str):
+            entry = {"data_path": entry}
+
+        entry_kwargs = dict(kwargs)
+        for key in (
+            "image_size",
+            "max_length",
+            "num_image_tokens",
+            "image_token_policy",
+            "min_image_tokens",
+            "max_image_tokens",
+            "vision_encoder_type",
+            "vision_model_name",
+            "system_prompt",
+            "filter_to_available_images",
+        ):
+            if key in entry:
+                entry_kwargs[key] = entry[key]
+
+        dataset = create_instruction_dataset(
+            data_path=entry["data_path"],
+            image_dir=entry.get("image_dir", default_image_dir),
+            tokenizer=tokenizer,
+            simple=entry.get("simple", simple),
+            **entry_kwargs,
+        )
+
+        max_samples = entry.get("max_samples")
+        if max_samples is not None:
+            dataset.samples = dataset.samples[: int(max_samples)]
+
+        datasets.append(dataset)
+        names.append(entry.get("name", f"source_{i}"))
+
+    return InstructionMixtureDataset(
+        datasets=datasets,
+        strategy=strategy,
+        source_names=names,
+    )
+
+
 def create_instruction_dataset(
-    data_path: str,
-    image_dir: str,
+    data_path: Optional[str],
+    image_dir: Optional[str],
     tokenizer,
     simple: bool = False,
+    mixture_config: Optional[Dict[str, Any]] = None,
     **kwargs,
 ) -> Dataset:
     """
@@ -571,6 +696,18 @@ def create_instruction_dataset(
     Returns:
         Dataset instance
     """
+    if mixture_config is not None:
+        return build_instruction_mixture_dataset(
+            mixture_config=mixture_config,
+            tokenizer=tokenizer,
+            default_image_dir=image_dir,
+            simple=simple,
+            **kwargs,
+        )
+
+    if data_path is None:
+        raise ValueError("data_path is required when mixture_config is not provided")
+
     if simple:
         return InstructionDatasetSimple(
             data_path, image_dir, tokenizer, **kwargs

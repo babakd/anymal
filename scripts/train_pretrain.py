@@ -201,6 +201,15 @@ def main():
         "vision_encoder_type": "siglip2" if architecture == "anymal_v2" else "clip",
         "vision_model_name": config["model"].get("vision_model_name"),
     }
+    if not streaming:
+        dataset_kwargs.update(
+            {
+                "image_dir": config["data"].get("image_dir"),
+                "filter_to_available_images": config["data"].get("filter_to_available_images", False),
+                "min_caption_chars": config["data"].get("min_caption_chars", 1),
+                "deduplicate_captions": config["data"].get("deduplicate_captions", False),
+            }
+        )
     if architecture == "anymal_v2":
         dataset_kwargs["insert_image_placeholders"] = True
         dataset_kwargs["num_image_tokens"] = config["model"].get("max_image_tokens", 256)
@@ -211,6 +220,7 @@ def main():
         data_path=config["data"]["train_data_path"],
         tokenizer=model.tokenizer,
         streaming=streaming,
+        dataset_type=config["data"].get("dataset_type", "laion"),
         **dataset_kwargs,
     )
 
@@ -279,6 +289,10 @@ def main():
                 data_path=eval_data_path,
                 tokenizer=model.tokenizer,
                 streaming=False,
+                dataset_type=config["data"].get(
+                    "eval_dataset_type",
+                    config["data"].get("dataset_type", "laion"),
+                ),
                 **dataset_kwargs,
             )
         elif hasattr(train_dataset, '__len__'):

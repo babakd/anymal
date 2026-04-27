@@ -303,6 +303,156 @@ class TestDatasets:
         placeholder_count = int((sample["input_ids"] == placeholder_id).sum().item())
         assert placeholder_count == 8
 
+    def test_llava_pretrain_caption_dataset_filters_real_images(self, tmp_path):
+        """LLaVA-Pretrain caption JSON should use captions and filter missing images."""
+        from data.laion_dataset import LlavaPretrainCaptionDataset, create_laion_dataset
+        from transformers import AutoTokenizer
+
+        images_dir = tmp_path / "images"
+        images_dir.mkdir()
+        img = Image.fromarray(
+            np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+        )
+        img.save(images_dir / "real.jpg")
+
+        annotations = [
+            {
+                "id": "kept",
+                "image": "real.jpg",
+                "conversations": [
+                    {"from": "human", "value": "<image>\nDescribe the image."},
+                    {"from": "gpt", "value": "A red cube on a table."},
+                ],
+            },
+            {
+                "id": "missing",
+                "image": "missing.jpg",
+                "conversations": [
+                    {"from": "gpt", "value": "This image is unavailable."},
+                ],
+            },
+            {
+                "id": "duplicate",
+                "image": "real.jpg",
+                "caption": "A red cube on a table.",
+            },
+        ]
+        annotation_path = tmp_path / "blip_laion_cc_sbu_558k.json"
+        with open(annotation_path, "w") as f:
+            json.dump(annotations, f)
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("gpt2", trust_remote_code=True)
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.add_special_tokens({"additional_special_tokens": ["<|image|>"]})
+        except Exception:
+            pytest.skip("Tokenizer not available")
+
+        dataset = LlavaPretrainCaptionDataset(
+            annotation_path=str(annotation_path),
+            image_dir=str(images_dir),
+            tokenizer=tokenizer,
+            max_length=64,
+            insert_image_placeholders=True,
+            num_image_tokens=6,
+        )
+
+        assert len(dataset) == 1
+        assert dataset.samples[0]["caption"] == "A red cube on a table."
+        sample = dataset[0]
+        assert sample is not None
+        assert sample["image"].shape == (3, 224, 224)
+        assert int((sample["input_ids"] == dataset.image_placeholder_token_id).sum().item()) == 6
+
+        factory_dataset = create_laion_dataset(
+            data_path=str(annotation_path),
+            image_dir=str(images_dir),
+            tokenizer=tokenizer,
+            dataset_type="llava_pretrain_caption",
+            max_length=64,
+        )
+        assert len(factory_dataset) == 1
+
+    def test_instruction_mixture_dataset_balances_sources(self, tmp_path):
+        """Stage 2 mixture wrapper should round-robin sources and oversample smaller sets."""
+        from data.instruction_dataset import create_instruction_dataset
+        from transformers import AutoTokenizer
+
+        images_dir = tmp_path / "images"
+        images_dir.mkdir()
+        for name in ["a.jpg", "b.jpg", "c.jpg"]:
+            img = Image.fromarray(
+                np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+            )
+            img.save(images_dir / name)
+
+        first_path = tmp_path / "first.json"
+        second_path = tmp_path / "second.json"
+        with open(first_path, "w") as f:
+            json.dump(
+                [
+                    {
+                        "id": "a",
+                        "image": "a.jpg",
+                        "conversations": [
+                            {"from": "human", "value": "<image>\nWhat is shown?"},
+                            {"from": "gpt", "value": "A."},
+                        ],
+                    },
+                    {
+                        "id": "b",
+                        "image": "b.jpg",
+                        "conversations": [
+                            {"from": "human", "value": "<image>\nWhat is shown?"},
+                            {"from": "gpt", "value": "B."},
+                        ],
+                    },
+                ],
+                f,
+            )
+        with open(second_path, "w") as f:
+            json.dump(
+                [
+                    {
+                        "id": "c",
+                        "image": "c.jpg",
+                        "conversations": [
+                            {"from": "human", "value": "<image>\nWhat is shown?"},
+                            {"from": "gpt", "value": "C."},
+                        ],
+                    }
+                ],
+                f,
+            )
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("gpt2", trust_remote_code=True)
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.add_special_tokens({"additional_special_tokens": ["<|image|>"]})
+        except Exception:
+            pytest.skip("Tokenizer not available")
+
+        dataset = create_instruction_dataset(
+            data_path=None,
+            image_dir=str(images_dir),
+            tokenizer=tokenizer,
+            max_length=96,
+            mixture_config={
+                "strategy": "balanced",
+                "datasets": [
+                    {"name": "first", "data_path": str(first_path)},
+                    {"name": "second", "data_path": str(second_path)},
+                ],
+            },
+            filter_to_available_images=True,
+        )
+
+        assert len(dataset.datasets) == 2
+        assert len(dataset) == 4
+        assert dataset.source_names == ["first", "second"]
+        assert dataset[0]["image"].shape == (3, 224, 224)
+        assert dataset[1]["image"].shape == (3, 224, 224)
+
     def test_collate_fn_filters_none(self, tmp_path):
         """Test that collate_fn filters out None samples."""
         from data.data_utils import collate_fn
