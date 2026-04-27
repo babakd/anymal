@@ -60,6 +60,10 @@ runs/
 # Data files (downloaded during training)
 data/*.json
 data/*.jsonl
+
+# Inference / experiment artifacts (regeneratable)
+*_predictions.json
+predictions_*.json
 *.tar
 *.tar.gz
 *.zip

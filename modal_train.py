@@ -16,6 +16,8 @@ Options:
 
 import modal
 import os
+import secrets
+from datetime import datetime
 from pathlib import Path
 
 # Define the Modal app
@@ -116,12 +118,38 @@ def _create_versioned_run_dir(base_dir: str, prefix: str = "run") -> str:
             next_id += 1
 
 
-def _resolve_run_output_dir(base_dir: str, resume_checkpoint: str = None, prefix: str = "run") -> str:
+def _generate_unique_run_name(prefix: str = "run") -> str:
+    """
+    Generate a collision-free run name: {prefix}-YYYYMMDD-HHMMSS-XXXX.
+
+    Safe to call from multiple parallel processes — each invocation produces
+    a globally unique name without coordination. Must be called in the local
+    entrypoint (before any Modal .remote() call) so all containers share the
+    same name and no container needs to read the shared volume to pick one.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    rand = secrets.token_hex(2)  # 4 hex chars, 65k possibilities per second
+    return f"{prefix}-{timestamp}-{rand}"
+
+
+def _resolve_run_output_dir(
+    base_dir: str,
+    resume_checkpoint: str = None,
+    prefix: str = "run",
+    run_name: str = None,
+) -> str:
     """
     Resolve output directory for a training run.
 
-    - New runs: create numbered run dirs (e.g., run-0001) to avoid overwriting.
     - Resumed runs: write checkpoints into the run directory containing resume_checkpoint.
+    - Explicit run_name: use {base_dir}/{run_name} directly (race-free — caller
+      already generated a unique name, typically via _generate_unique_run_name()
+      in the local entrypoint).
+    - Fallback (run_name is None): create a numbered dir via _create_versioned_run_dir.
+      NOTE: this fallback races across parallel containers on Modal Volumes because
+      volumes are eventually consistent — os.mkdir appears atomic per container but
+      multiple containers can each "succeed" on the same path and then clobber each
+      other when the volume syncs. Prefer passing run_name.
     """
     if resume_checkpoint:
         ckpt_dir = os.path.abspath(str(resume_checkpoint))
@@ -131,6 +159,12 @@ def _resolve_run_output_dir(base_dir: str, resume_checkpoint: str = None, prefix
             return resumed_output_dir
         os.makedirs(ckpt_dir, exist_ok=True)
         return ckpt_dir
+
+    if run_name:
+        run_dir = os.path.join(base_dir, run_name)
+        os.makedirs(run_dir, exist_ok=True)
+        return run_dir
+
     return _create_versioned_run_dir(base_dir, prefix=prefix)
 
 
@@ -498,6 +532,7 @@ class Trainer:
         pretrain_checkpoint: str = None,
         resume_checkpoint: str = None,
         dataset: str = "instruct_150k",
+        run_name: str = None,
     ):
         """
         Run AnyMAL training on Modal.
@@ -556,6 +591,7 @@ class Trainer:
                 pretrain_checkpoint=pretrain_checkpoint,
                 resume_checkpoint=resume_checkpoint,
                 dataset=dataset,
+                run_name=run_name,
             )
         else:
             lr = learning_rate or 2e-4
@@ -563,6 +599,7 @@ class Trainer:
                 base_dir="/checkpoints/pretrain-output",
                 resume_checkpoint=resume_checkpoint,
                 prefix="run",
+                run_name=run_name,
             )
             run_pretrain(
                 llama_path=self.llama_path,
@@ -705,7 +742,8 @@ def _diagnose_batch(batch, tokenizer, step_name="first batch"):
 def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size, use_wandb, use_dummy_data,
                   track_per_layer_grad_norms=True, run_eval_benchmarks=True,
                   pretrain_checkpoint=None, resume_checkpoint=None,
-                  lora_learning_rate=None, dataset="instruct_150k"):
+                  lora_learning_rate=None, dataset="instruct_150k",
+                  run_name=None):
     """Run Stage 2 fine-tuning with real COCO images."""
     import torch
     from models import create_model_from_config
@@ -817,6 +855,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         base_dir="/checkpoints/finetune-output",
         resume_checkpoint=resume_checkpoint,
         prefix="run",
+        run_name=run_name,
     )
     print(f"Finetune checkpoints will be written to: {finetune_output_dir}")
 
@@ -1495,6 +1534,7 @@ def _run_pretrain_distributed(
     architecture="anymal_v1",
     wandb_api_key=None,
     resume_checkpoint=None,
+    run_name=None,
 ):
     """Shared implementation for Stage 1 distributed pretraining."""
     import sys
@@ -1531,6 +1571,7 @@ def _run_pretrain_distributed(
         base_dir="/checkpoints/pretrain-output",
         resume_checkpoint=resume_checkpoint,
         prefix="run",
+        run_name=run_name,
     )
     print(f"Pretrain checkpoints will be written to: {pretrain_output_dir}")
 
@@ -1569,6 +1610,7 @@ def pretrain_distributed(
     architecture="anymal_v1",
     wandb_api_key=None,
     resume_checkpoint=None,
+    run_name=None,
 ):
     """Run Stage 1 pretraining on 4x A100-80GB using DDP."""
     return _run_pretrain_distributed(
@@ -1579,6 +1621,7 @@ def pretrain_distributed(
         architecture=architecture,
         wandb_api_key=wandb_api_key,
         resume_checkpoint=resume_checkpoint,
+        run_name=run_name,
     )
 
 
@@ -1600,6 +1643,7 @@ def pretrain_distributed_h100(
     architecture="anymal_v1",
     wandb_api_key=None,
     resume_checkpoint=None,
+    run_name=None,
 ):
     """Run Stage 1 pretraining on 4x H100 using DDP."""
     return _run_pretrain_distributed(
@@ -1610,6 +1654,7 @@ def pretrain_distributed_h100(
         architecture=architecture,
         wandb_api_key=wandb_api_key,
         resume_checkpoint=resume_checkpoint,
+        run_name=run_name,
     )
 
 
@@ -1630,6 +1675,7 @@ def main(
     pretrain_checkpoint: str = None,
     resume_checkpoint: str = None,
     dataset: str = "instruct_150k",
+    run_name: str = None,
 ):
     """
     Entry point for Modal training.
@@ -1647,8 +1693,17 @@ def main(
     """
     selected_gpu = _resolve_modal_gpu(stage, gpu_type)
 
+    # Generate unique run name locally BEFORE any .remote() call. All containers
+    # receive the same name and write to the same directory — avoids a race
+    # where parallel invocations each try to claim e.g. run-0010 on a Modal
+    # Volume (which has eventual consistency, so mkdir atomicity doesn't hold
+    # across containers).
+    if run_name is None:
+        run_name = _generate_unique_run_name(prefix="run")
+
     print(f"Starting AnyMAL training on Modal...")
     print(f"  Stage: {stage}")
+    print(f"  Run name: {run_name}")
     print(f"  Architecture: {architecture}")
     print(f"  GPU type: {gpu_type}")
     print(f"  Modal GPU resource: {selected_gpu}")
@@ -1683,6 +1738,7 @@ def main(
             architecture=architecture,
             wandb_api_key=wandb_api_key,
             resume_checkpoint=resume_checkpoint,
+            run_name=run_name,
         )
     else:
         # Stage 2 uses single-GPU with QLoRA
@@ -1703,4 +1759,5 @@ def main(
             pretrain_checkpoint=pretrain_checkpoint,
             resume_checkpoint=resume_checkpoint,
             dataset=dataset,
+            run_name=run_name,
         )
