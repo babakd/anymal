@@ -521,6 +521,85 @@ class TestAnyMALv2CoreModules:
         assert x.grad is not None
         assert any(p.grad is not None for p in compressor.parameters() if p.requires_grad)
 
+    def test_token_compressor_learned_state_dict_unchanged(self):
+        """Learned compressor should keep its existing parameter surface."""
+        from models.projectors.token_compressor import TokenCompressor
+
+        compressor = TokenCompressor(
+            input_dim=96,
+            max_tokens=12,
+            compressor_type="learned",
+            num_heads=8,
+        )
+
+        assert list(compressor.state_dict().keys()) == [
+            "pool_queries",
+            "pool_norm.weight",
+            "pool_norm.bias",
+            "pool_attn.in_proj_weight",
+            "pool_attn.in_proj_bias",
+            "pool_attn.out_proj.weight",
+            "pool_attn.out_proj.bias",
+        ]
+
+    def test_token_compressor_perceiver_shape_mask_counts_and_grad(self):
+        """Perceiver compressor should match TokenCompressor output contracts."""
+        from models.projectors.token_compressor import TokenCompressor
+
+        compressor = TokenCompressor(
+            input_dim=64,
+            max_tokens=10,
+            compressor_type="perceiver",
+            num_heads=8,
+        )
+        x = torch.randn(4, 17, 64, requires_grad=True)
+        target_counts = torch.tensor([10, 6, 0, 12], dtype=torch.long)
+        y, mask, counts = compressor(x, target_num_tokens=target_counts)
+
+        assert y.shape == (4, 10, 64)
+        assert mask.shape == (4, 10)
+        assert counts.tolist() == [10, 6, 1, 10]
+        assert mask.sum(dim=1).tolist() == [10, 6, 1, 10]
+        assert torch.all(y[1, 6:] == 0)
+        assert torch.all(y[2, 1:] == 0)
+        assert len(compressor.perceiver_layers) == 2
+
+        loss = y.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert any(p.grad is not None for p in compressor.parameters() if p.requires_grad)
+
+    def test_token_compressor_perceiver_respects_attention_mask(self):
+        """Masked input tokens should not contribute gradients through cross-attention."""
+        from models.projectors.token_compressor import TokenCompressor
+
+        compressor = TokenCompressor(
+            input_dim=32,
+            max_tokens=5,
+            compressor_type="perceiver2",
+            num_heads=4,
+        )
+        x = torch.randn(2, 8, 32, requires_grad=True)
+        attention_mask = torch.tensor(
+            [
+                [True, True, True, True, True, True, True, True],
+                [True, True, True, True, False, False, False, False],
+            ]
+        )
+        y, mask, counts = compressor(
+            x,
+            target_num_tokens=torch.tensor([5, 3]),
+            attention_mask=attention_mask,
+        )
+
+        assert y.shape == (2, 5, 32)
+        assert counts.tolist() == [5, 3]
+        assert mask.sum(dim=1).tolist() == [5, 3]
+        assert torch.all(y[1, 3:] == 0)
+
+        y.sum().backward()
+        assert torch.allclose(x.grad[1, 4:], torch.zeros_like(x.grad[1, 4:]))
+
     def test_v2_strict_splice_detects_mismatch(self):
         """Strict splice should fail fast when placeholder and image token counts differ."""
         from models.anymal_v2 import AnyMALv2

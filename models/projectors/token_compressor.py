@@ -15,6 +15,7 @@ class TokenCompressor(nn.Module):
 
     Supports:
     - learned: learned query cross-attention pooling (default)
+    - perceiver/perceiver2: 2-layer residual cross-attention + FFN resampler
     - avg: interpolation-based pooling
     """
 
@@ -47,6 +48,23 @@ class TokenCompressor(nn.Module):
                 dropout=dropout,
                 batch_first=True,
             )
+        elif compressor_type in ("perceiver", "perceiver2"):
+            if input_dim % num_heads != 0:
+                raise ValueError(
+                    f"input_dim={input_dim} must be divisible by num_heads={num_heads}"
+                )
+            self.perceiver_queries = nn.Parameter(torch.randn(max_tokens, input_dim) * 0.02)
+            self.perceiver_layers = nn.ModuleList(
+                [
+                    PerceiverTokenCompressorBlock(
+                        dim=input_dim,
+                        num_heads=num_heads,
+                        dropout=dropout,
+                    )
+                    for _ in range(2)
+                ]
+            )
+            self.perceiver_norm = nn.LayerNorm(input_dim)
         elif compressor_type == "avg":
             self.pool_queries = None
             self.pool_norm = None
@@ -54,7 +72,7 @@ class TokenCompressor(nn.Module):
         else:
             raise ValueError(
                 f"Unknown compressor_type '{compressor_type}'. "
-                "Expected one of ['learned', 'avg']."
+                "Expected one of ['learned', 'perceiver', 'perceiver2', 'avg']."
             )
 
     def _normalize_target_counts(
@@ -116,6 +134,11 @@ class TokenCompressor(nn.Module):
                 key_padding_mask=key_padding_mask,
                 need_weights=False,
             )
+        elif self.compressor_type in ("perceiver", "perceiver2"):
+            pooled = self.perceiver_queries.unsqueeze(0).expand(batch_size, -1, -1)
+            for layer in self.perceiver_layers:
+                pooled = layer(pooled, x, attention_mask=attention_mask)
+            pooled = self.perceiver_norm(pooled)
         else:
             pooled = F.interpolate(
                 x.transpose(1, 2),
@@ -130,3 +153,53 @@ class TokenCompressor(nn.Module):
         # Zero invalid pooled tokens to avoid accidental use.
         pooled = pooled * token_mask.unsqueeze(-1).to(dtype=pooled.dtype)
         return pooled, token_mask, token_counts
+
+
+class PerceiverTokenCompressorBlock(nn.Module):
+    """Residual cross-attention block used by the V2 Perceiver compressor."""
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        ff_mult: int = 4,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.query_norm = nn.LayerNorm(dim)
+        self.context_norm = nn.LayerNorm(dim)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.ff_norm = nn.LayerNorm(dim)
+        self.ff = nn.Sequential(
+            nn.Linear(dim, dim * ff_mult),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim * ff_mult, dim),
+            nn.Dropout(dropout),
+        )
+
+    def forward(
+        self,
+        queries: torch.Tensor,
+        context: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        key_padding_mask = None
+        if attention_mask is not None:
+            key_padding_mask = ~attention_mask.bool()
+
+        normed_context = self.context_norm(context)
+        attn_out, _ = self.cross_attn(
+            query=self.query_norm(queries),
+            key=normed_context,
+            value=normed_context,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )
+        queries = queries + attn_out
+        return queries + self.ff(self.ff_norm(queries))

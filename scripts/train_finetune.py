@@ -32,7 +32,7 @@ sys.path.insert(0, str(project_root))
 
 from models import create_model_from_config
 from model_metadata import normalize_architecture_name
-from data import InstructionDataset, build_dataloader, ImageTextCollator
+from data import create_instruction_dataset, build_dataloader, ImageTextCollator
 from data.dataset_splitter import deterministic_train_val_split
 from training import FinetuneTrainer
 from training.finetune import FinetuneConfig
@@ -179,7 +179,11 @@ def main():
 
     # Initialize dataset
     print_rank_0("\nLoading dataset...")
-    train_dataset = InstructionDataset(
+    mixture_config = config["data"].get("mixture")
+    if mixture_config and not mixture_config.get("enabled", True):
+        mixture_config = None
+
+    train_dataset = create_instruction_dataset(
         data_path=config["data"]["train_data_path"],
         image_dir=config["data"]["image_dir"],
         tokenizer=model.tokenizer,
@@ -195,6 +199,8 @@ def main():
         vision_encoder_type="siglip2" if architecture == "anymal_v2" else "clip",
         vision_model_name=config["model"].get("vision_model_name"),
         system_prompt=config["data"].get("system_prompt"),
+        filter_to_available_images=config["data"].get("filter_to_available_images", False),
+        mixture_config=mixture_config,
     )
 
     print_rank_0(f"Dataset size: {len(train_dataset):,}")
@@ -271,7 +277,7 @@ def main():
         if eval_data_path:
             # Use explicit eval data path
             print_rank_0(f"\nLoading eval dataset from {eval_data_path}...")
-            eval_dataset = InstructionDataset(
+            eval_dataset = create_instruction_dataset(
                 data_path=eval_data_path,
                 image_dir=config["data"]["image_dir"],
                 tokenizer=model.tokenizer,
@@ -287,6 +293,7 @@ def main():
                 vision_encoder_type="siglip2" if architecture == "anymal_v2" else "clip",
                 vision_model_name=config["model"].get("vision_model_name"),
                 system_prompt=config["data"].get("system_prompt"),
+                filter_to_available_images=config["data"].get("filter_to_available_images", False),
             )
         else:
             # Split train dataset into train/val

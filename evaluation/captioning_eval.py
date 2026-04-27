@@ -57,11 +57,16 @@ class COCOCaptionDataset(Dataset):
         transform,
         tokenizer,
         split: str = "val",
+        filter_to_available_images: bool = True,
+        image_placeholder_token_id: Optional[int] = None,
+        num_image_tokens: int = 0,
     ):
         self.image_dir = image_dir
         self.transform = transform
         self.tokenizer = tokenizer
         self.split = split
+        self.image_placeholder_token_id = image_placeholder_token_id
+        self.num_image_tokens = int(num_image_tokens or 0)
 
         # Load annotations
         with open(annotations_file, "r") as f:
@@ -76,10 +81,21 @@ class COCOCaptionDataset(Dataset):
                 self.annotations[image_id] = []
             self.annotations[image_id].append(ann["caption"])
 
+        if filter_to_available_images and image_dir and os.path.exists(image_dir):
+            total = len(self.images)
+            self.images = [
+                img for img in self.images
+                if os.path.exists(os.path.join(image_dir, img["file_name"]))
+            ]
+            print(
+                f"COCO captioning filtered to {len(self.images)}/{total} "
+                "images with available files"
+            )
+
     def __len__(self) -> int:
         return len(self.images)
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
+    def __getitem__(self, idx: int) -> Optional[Dict[str, Any]]:
         img_info = self.images[idx]
         image_id = img_info["id"]
         file_name = img_info["file_name"]
@@ -88,8 +104,12 @@ class COCOCaptionDataset(Dataset):
         image_path = os.path.join(self.image_dir, file_name)
 
         from PIL import Image
-        image = Image.open(image_path).convert("RGB")
-        image_tensor = self.transform(image)
+        try:
+            image = Image.open(image_path).convert("RGB")
+            image_tensor = self.transform(image)
+        except (FileNotFoundError, OSError) as e:
+            print(f"COCO captioning: skipping image {image_path}: {e}")
+            return None
 
         # Create prompt for captioning
         prompt = "Describe this image in detail:"
@@ -102,14 +122,26 @@ class COCOCaptionDataset(Dataset):
             truncation=True,
             max_length=64,
         )
+        input_ids = encoding["input_ids"].squeeze(0)
+        attention_mask = encoding["attention_mask"].squeeze(0)
+
+        if self.image_placeholder_token_id is not None and self.num_image_tokens > 0:
+            placeholders = torch.full(
+                (self.num_image_tokens,),
+                self.image_placeholder_token_id,
+                dtype=input_ids.dtype,
+            )
+            placeholder_mask = torch.ones(self.num_image_tokens, dtype=attention_mask.dtype)
+            input_ids = torch.cat([placeholders, input_ids], dim=0)
+            attention_mask = torch.cat([placeholder_mask, attention_mask], dim=0)
 
         # Get ground truth captions
         captions = self.annotations.get(image_id, [])
 
         return {
             "image": image_tensor,
-            "input_ids": encoding["input_ids"].squeeze(0),
-            "attention_mask": encoding["attention_mask"].squeeze(0),
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
             "image_id": image_id,
             "captions": captions,
         }
@@ -159,8 +191,13 @@ class CaptioningEvaluator:
         # Collect predictions and references
         predictions = {}
         references = {}
+        generated_token_counts = []
+        clean_eos_count = 0
 
         for batch in tqdm(dataloader, desc="Generating captions"):
+            if batch is None:
+                continue
+
             # Move to device
             images = batch["image"].to(self.device)
             input_ids = batch["input_ids"].to(self.device)
@@ -181,6 +218,9 @@ class CaptioningEvaluator:
                 # When generating from `inputs_embeds` (multimodal), HF may return only new tokens.
                 seq = generated_ids[i]
                 generated = seq[prompt_len:] if seq.shape[0] > prompt_len else seq
+                generated_token_counts.append(int(generated.shape[0]))
+                if generated.numel() > 0 and generated[-1].item() == self.model.tokenizer.eos_token_id:
+                    clean_eos_count += 1
 
                 caption = self.model.tokenizer.decode(
                     generated,
@@ -194,8 +234,21 @@ class CaptioningEvaluator:
                 predictions[image_id] = [caption]
                 references[image_id] = batch["captions"][i]
 
-        # Compute metrics
-        metrics = self._compute_metrics(predictions, references)
+        avg_generated_tokens = (
+            sum(generated_token_counts) / len(generated_token_counts)
+            if generated_token_counts else 0.0
+        )
+        eos_rate = clean_eos_count / len(generated_token_counts) if generated_token_counts else 0.0
+
+        if not predictions:
+            metrics = {"num_samples": 0}
+        else:
+            # Compute metrics
+            metrics = self._compute_metrics(predictions, references)
+
+        metrics["num_samples"] = len(predictions)
+        metrics["avg_generated_tokens"] = avg_generated_tokens
+        metrics["eos_rate"] = eos_rate
 
         # Save predictions
         if output_file:
@@ -281,6 +334,9 @@ class CaptioningEvaluator:
         """
         Compute simple BLEU score as fallback.
         """
+        if not predictions:
+            return {"BLEU-1": 0, "BLEU-4": 0}
+
         try:
             from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
         except ImportError:
@@ -308,7 +364,7 @@ class CaptioningEvaluator:
         }
 
 
-def caption_collate_fn(batch: List[Dict[str, Any]], pad_token_id: int) -> Dict[str, Any]:
+def caption_collate_fn(batch: List[Optional[Dict[str, Any]]], pad_token_id: int) -> Optional[Dict[str, Any]]:
     """
     Custom collate function for captioning evaluation with variable-length sequences.
 
@@ -317,8 +373,12 @@ def caption_collate_fn(batch: List[Dict[str, Any]], pad_token_id: int) -> Dict[s
         pad_token_id: Token ID for padding
 
     Returns:
-        Batched dict with padded tensors
+        Batched dict with padded tensors, or None if all samples are invalid
     """
+    batch = [item for item in batch if item is not None]
+    if len(batch) == 0:
+        return None
+
     images = torch.stack([item["image"] for item in batch])
     max_len = max(item["input_ids"].shape[-1] for item in batch)
 
@@ -361,15 +421,26 @@ def evaluate_coco_captioning(
     Returns:
         Evaluation metrics
     """
-    from data import get_image_transform
+    from data import get_vision_transform
 
-    transform = get_image_transform(image_size=224, is_train=False)
+    is_v2 = getattr(model, "architecture", "") == "anymal_v2"
+    vision_type = getattr(model, "vision_encoder_type", "clip")
+    vision_model = getattr(getattr(model, "image_encoder", None), "model_name", None)
+    transform = get_vision_transform(
+        vision_encoder_type=vision_type,
+        vision_model_name=vision_model,
+        image_size=384 if is_v2 else 224,
+        is_train=False,
+        use_augmentation=False,
+    )
 
     dataset = COCOCaptionDataset(
         annotations_file=annotations_file,
         image_dir=image_dir,
         transform=transform,
         tokenizer=model.tokenizer,
+        image_placeholder_token_id=getattr(model, "image_placeholder_token_id", None),
+        num_image_tokens=getattr(model, "num_image_tokens", 0) if is_v2 else 0,
     )
 
     pad_token_id = model.tokenizer.pad_token_id or model.tokenizer.eos_token_id

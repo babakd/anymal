@@ -6,8 +6,18 @@ This module provides dataset classes for:
 - LLaVA-Instruct-150K (instruction tuning)
 """
 
-from .laion_dataset import LaionDataset, LaionStreamingDataset, create_laion_dataset
-from .instruction_dataset import InstructionDataset
+from .laion_dataset import (
+    LaionDataset,
+    LaionStreamingDataset,
+    LlavaPretrainCaptionDataset,
+    create_laion_dataset,
+)
+from .instruction_dataset import (
+    InstructionDataset,
+    InstructionMixtureDataset,
+    build_instruction_mixture_dataset,
+    create_instruction_dataset,
+)
 from .data_utils import (
     get_image_transform,
     get_siglip_image_transform,
@@ -20,8 +30,12 @@ from .data_utils import (
 __all__ = [
     "LaionDataset",
     "LaionStreamingDataset",
+    "LlavaPretrainCaptionDataset",
     "create_laion_dataset",
     "InstructionDataset",
+    "InstructionMixtureDataset",
+    "build_instruction_mixture_dataset",
+    "create_instruction_dataset",
     "get_image_transform",
     "get_siglip_image_transform",
     "get_vision_transform",
