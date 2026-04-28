@@ -262,6 +262,13 @@ This is a larger product decision. Do it after the V2.1 data/eval/connector work
 
 For the next real run, do not start with another LR sweep.
 
+Prepared run commands, canary run IDs, and gates live in `V2_TRAINING_RUNBOOK.md`.
+The 2026-04-27 true LLaVA-Pretrain image staging attempt failed on the existing
+Modal volume because the exploded JPEG tree exhausted the volume inode/device
+budget; use COCO-backed Stage 1 canaries only as systems checks until image
+storage is moved to tar/WebDataset shards, object storage, or a larger/different
+volume.
+
 Target:
 
 1. Fix VQA/captioning eval coverage enough to produce comparable V2 metrics.

@@ -43,6 +43,8 @@ V2 quality roadmap: see `V2_QUALITY_PLAN.md`. In short, prioritize eval hardenin
 
 V2 quality-plan batch 1 is implemented and smoke-tested. It adds V2-compatible captioning eval metrics, LLaVA-Pretrain caption dataset plumbing, balanced Stage 2 instruction mixtures, config-gated `token_compressor_type="perceiver"` / `"perceiver2"`, and Modal support for `--dataset balanced_mix`. Validation: `pytest tests -q` -> 118 passed, 1 skipped; Modal smoke runs `ap-krX0b1NJwdAD0WGO4VdJAD` (Stage 1) and `ap-jEdIuwx1tvvHe4TiSdlE1v` (Stage 2 balanced mix). Caveat: true LLaVA-Pretrain images are not staged at `/checkpoints/llava_pretrain/images`, so Modal Stage 1 still falls back to COCO-backed caption extraction until those images are added.
 
+V2 Stage 1/2 run prep lives in `V2_TRAINING_RUNBOOK.md`. It includes Modal canary run IDs, learned-compressor baseline commands, Perceiver connector ablation commands, and the required reporting template. True LLaVA-Pretrain image staging is currently blocked on the existing Modal volume inode/device limit, so Stage 1 falls back to COCO-backed captions until image storage moves to tar/WebDataset shards, object storage, or a larger/different volume.
+
 ### Two-Stage Training Pipeline
 
 **Stage 1 -> Stage 2 flow**:

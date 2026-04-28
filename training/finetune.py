@@ -43,7 +43,7 @@ from dataclasses import dataclass
 
 from .trainer import Trainer, TrainerConfig
 from .distributed import print_rank_0, is_main_process
-from model_metadata import validate_checkpoint_architecture
+from model_metadata import read_model_metadata, validate_checkpoint_architecture
 
 
 @dataclass
@@ -135,6 +135,15 @@ class FinetuneTrainer(Trainer):
             checkpoint_dir=checkpoint_path,
             expected_architecture=expected_arch,
         )
+        if expected_arch == "anymal_v2":
+            meta = read_model_metadata(checkpoint_path) or {}
+            checkpoint_compressor = meta.get("token_compressor_type")
+            model_compressor = getattr(model, "token_compressor_type", None)
+            if checkpoint_compressor and model_compressor and checkpoint_compressor != model_compressor:
+                raise RuntimeError(
+                    f"Checkpoint token_compressor_type mismatch for {checkpoint_path}: "
+                    f"checkpoint={checkpoint_compressor}, model={model_compressor}."
+                )
 
         projector_path = os.path.join(checkpoint_path, "projector.pt")
 
@@ -149,7 +158,56 @@ class FinetuneTrainer(Trainer):
         if hasattr(model, "token_compressor") and os.path.exists(compressor_path):
             print_rank_0(f"Loading token compressor from {compressor_path}")
             compressor_state = torch.load(compressor_path, map_location="cpu")
+            compressor_state = self._adapt_token_compressor_state(
+                model.token_compressor,
+                compressor_state,
+            )
             model.token_compressor.load_state_dict(compressor_state)
+
+    def _adapt_token_compressor_state(self, token_compressor, checkpoint_state):
+        """
+        Adapt Stage 1 compressor query tables when Stage 2 uses more image tokens.
+
+        V2 currently trains Stage 1 with 256 image tokens and Stage 2 with 384.
+        Learned/perceiver query tables are therefore longer in Stage 2, while
+        attention/projection weights remain shape-compatible.
+        """
+        current_state = token_compressor.state_dict()
+        adapted_state = {}
+
+        for name, value in checkpoint_state.items():
+            if name not in current_state:
+                adapted_state[name] = value
+                continue
+
+            current_value = current_state[name]
+            if current_value.shape == value.shape:
+                adapted_state[name] = value
+                continue
+
+            can_expand_rows = (
+                value.ndim >= 2
+                and current_value.ndim == value.ndim
+                and current_value.shape[1:] == value.shape[1:]
+                and current_value.shape[0] >= value.shape[0]
+                and name.endswith("queries")
+            )
+            if not can_expand_rows:
+                raise RuntimeError(
+                    f"Token compressor checkpoint shape mismatch for {name}: "
+                    f"checkpoint={tuple(value.shape)}, model={tuple(current_value.shape)}"
+                )
+
+            expanded = current_value.clone()
+            rows = value.shape[0]
+            expanded[:rows] = value
+            adapted_state[name] = expanded
+            print_rank_0(
+                f"Expanded token compressor {name}: copied {rows} pretrained rows "
+                f"into {current_value.shape[0]} model rows"
+            )
+
+        return adapted_state
 
     def _verify_trainable_params(self, model):
         """Verify that projector + LoRA are trainable."""
