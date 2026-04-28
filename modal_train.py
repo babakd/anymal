@@ -188,6 +188,42 @@ def _collect_checkpoint_candidates(root_dir: str):
     return candidates
 
 
+def _latest_resumable_checkpoint(output_dir: str, max_steps: int = None):
+    """Find the latest checkpoint in a run dir that has trainer state."""
+    candidates = []
+    for _mtime, step, path in _collect_checkpoint_candidates(output_dir):
+        if max_steps is not None and step >= max_steps:
+            continue
+        if os.path.exists(os.path.join(path, "trainer_state.pt")):
+            candidates.append((step, path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[-1][1]
+
+
+def _resolve_effective_resume_checkpoint(
+    output_dir: str,
+    resume_checkpoint: str = None,
+    max_steps: int = None,
+):
+    """Use an explicit resume checkpoint, or auto-resume from the run dir."""
+    if resume_checkpoint:
+        return resume_checkpoint
+
+    latest_checkpoint = _latest_resumable_checkpoint(output_dir, max_steps=max_steps)
+    if latest_checkpoint:
+        print(f"Auto-resuming from latest checkpoint in run dir: {latest_checkpoint}")
+    return latest_checkpoint
+
+
+def _checkpoint_save_interval(max_steps: int, max_interval: int = 250) -> int:
+    """Pick a checkpoint cadence that also protects short canaries."""
+    if max_steps <= 0:
+        return max_interval
+    return min(max_interval, max(50, max_steps // 4), max_steps)
+
+
 def _checkpoint_matches_run_config(
     checkpoint_dir: str,
     expected_architecture: str,
@@ -915,6 +951,11 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         prefix="run",
         run_name=run_name,
     )
+    resume_checkpoint = _resolve_effective_resume_checkpoint(
+        finetune_output_dir,
+        resume_checkpoint=resume_checkpoint,
+        max_steps=max_steps,
+    )
     print(f"Finetune checkpoints will be written to: {finetune_output_dir}")
 
     # Auto-discover pretrain checkpoint if not explicitly provided
@@ -954,12 +995,13 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         use_amp=True,
         amp_dtype="bfloat16",
         logging_steps=1,  # Log every step for close monitoring
-        save_steps=max(100, max_steps // 4),
+        save_steps=_checkpoint_save_interval(max_steps),
         eval_steps=eval_steps,
         max_eval_batches=200,  # Clip eval to 200 batches (~55s) during training
         output_dir=finetune_output_dir,
         save_llm_checkpoint=True,
         save_llm_base_weights=False,
+        commit_on_save=True,
         use_wandb=use_wandb,
         wandb_project="anymal-finetune",
         track_per_layer_grad_norms=track_per_layer_grad_norms,
@@ -1037,6 +1079,11 @@ def run_pretrain(
     if use_dummy_data:
         print("WARNING: --use-dummy-data was passed but Stage 1 must use real images.")
         print("Ignoring --use-dummy-data flag and loading real COCO images.")
+    resume_checkpoint = _resolve_effective_resume_checkpoint(
+        output_dir,
+        resume_checkpoint=resume_checkpoint,
+        max_steps=max_steps,
+    )
     print(f"Pretrain checkpoints will be written to: {output_dir}")
 
     # Initialize model (no LoRA for pretraining)
@@ -1165,13 +1212,14 @@ def run_pretrain(
         use_amp=True,
         amp_dtype="bfloat16",
         logging_steps=10,
-        save_steps=250,
+        save_steps=_checkpoint_save_interval(max_steps),
         save_total_limit=5,
         eval_steps=eval_steps,
         max_eval_batches=200,
         output_dir=output_dir,
         save_llm_checkpoint=False,
         save_llm_base_weights=False,
+        commit_on_save=True,
         use_wandb=use_wandb,
         wandb_project="anymal-pretrain",
         resume_from_checkpoint=resume_checkpoint,
@@ -1519,6 +1567,18 @@ def _resolve_llava_pretrain_image_dir(annotation_path: str, pretrain_dir: str):
     return None
 
 
+def _resolve_llava_pretrain_zip_path(pretrain_dir: str):
+    """Return a cached LLaVA-Pretrain images.zip path if one exists."""
+    candidates = [
+        os.path.join(pretrain_dir, "images.zip"),
+        os.path.join(pretrain_dir, "images", "images.zip"),
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def load_llava_pretrain_dataset(
     tokenizer,
     insert_image_placeholders: bool = False,
@@ -1537,20 +1597,25 @@ def load_llava_pretrain_dataset(
     """
     pretrain_json_path = "/checkpoints/llava_data/blip_laion_cc_sbu_558k.json"
     pretrain_dir = "/checkpoints/llava_pretrain"
+    pretrain_zip_path = _resolve_llava_pretrain_zip_path(pretrain_dir)
     pretrain_image_dir = _resolve_llava_pretrain_image_dir(pretrain_json_path, pretrain_dir)
     pretrain_manifest_path = "/checkpoints/llava_pretrain/manifest.json"
     if (
         os.path.exists(pretrain_json_path)
-        and pretrain_image_dir
-        and os.path.isdir(pretrain_image_dir)
+        and (pretrain_zip_path or (pretrain_image_dir and os.path.isdir(pretrain_image_dir)))
         and os.path.exists(pretrain_manifest_path)
     ):
         from data.laion_dataset import create_laion_dataset
 
         print(f"Loading true LLaVA-Pretrain captions from {pretrain_json_path}")
+        if pretrain_zip_path:
+            print(f"Reading true LLaVA-Pretrain images directly from zip: {pretrain_zip_path}")
+        else:
+            print(f"Reading true LLaVA-Pretrain images from directory: {pretrain_image_dir}")
         dataset = create_laion_dataset(
             data_path=pretrain_json_path,
             image_dir=pretrain_image_dir,
+            image_zip_path=pretrain_zip_path,
             tokenizer=tokenizer,
             dataset_type="llava_pretrain_caption",
             caption_prompt="",
@@ -1907,6 +1972,14 @@ def stage_llava_pretrain_images(force: bool = False):
             )
         return total
 
+    def _count_zip_images(zip_path):
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            return sum(
+                1 for name in zf.namelist()
+                if not name.endswith("/")
+                and name.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+            )
+
     print("Staging LLaVA-Pretrain annotation JSON...")
     hf_hub_download(
         repo_id="liuhaotian/LLaVA-Pretrain",
@@ -1915,11 +1988,27 @@ def stage_llava_pretrain_images(force: bool = False):
         local_dir=data_dir,
     )
 
+    zip_path = _resolve_llava_pretrain_zip_path(pretrain_dir)
+    if zip_path and os.path.exists(manifest_path) and not force:
+        num_images = _count_zip_images(zip_path)
+        print(f"Using existing LLaVA-Pretrain image zip {zip_path}: {num_images:,} files")
+        return {
+            "image_zip_path": zip_path,
+            "num_images": num_images,
+            "storage": "zip",
+            "skipped": True,
+        }
+
     image_dir = _resolve_llava_pretrain_image_dir(pretrain_json_path, pretrain_dir)
     existing_images = _count_images(image_dir) if image_dir else 0
     if existing_images and os.path.exists(manifest_path) and not force:
         print(f"Using existing LLaVA-Pretrain images in {image_dir}: {existing_images:,} files")
-        return {"image_dir": image_dir, "num_images": existing_images, "skipped": True}
+        return {
+            "image_dir": image_dir,
+            "num_images": existing_images,
+            "storage": "directory",
+            "skipped": True,
+        }
     if existing_images and not os.path.exists(manifest_path):
         print(
             f"Found {existing_images:,} partially staged images in {image_dir}; "
@@ -1934,25 +2023,29 @@ def stage_llava_pretrain_images(force: bool = False):
         local_dir=pretrain_dir,
     )
 
-    print(f"Extracting {zip_path} to {pretrain_dir}...")
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(pretrain_dir)
-
-    image_dir = _resolve_llava_pretrain_image_dir(pretrain_json_path, pretrain_dir)
-    if not image_dir:
-        raise RuntimeError(f"Could not find extracted LLaVA-Pretrain images under {pretrain_dir}")
-
-    num_images = _count_images(image_dir)
+    num_images = _count_zip_images(zip_path)
     if num_images == 0:
-        raise RuntimeError(f"No images found after extraction in {image_dir}")
+        raise RuntimeError(f"No images found inside {zip_path}")
 
     with open(manifest_path, "w") as f:
-        json.dump({"image_dir": image_dir, "num_images": num_images}, f)
+        json.dump(
+            {
+                "image_zip_path": zip_path,
+                "num_images": num_images,
+                "storage": "zip",
+            },
+            f,
+        )
         f.write("\n")
 
     volume.commit()
-    print(f"Staged {num_images:,} LLaVA-Pretrain images in {image_dir}")
-    return {"image_dir": image_dir, "num_images": num_images, "skipped": False}
+    print(f"Staged {num_images:,} LLaVA-Pretrain images as one zip: {zip_path}")
+    return {
+        "image_zip_path": zip_path,
+        "num_images": num_images,
+        "storage": "zip",
+        "skipped": False,
+    }
 
 
 @app.function(

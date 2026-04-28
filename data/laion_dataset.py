@@ -38,10 +38,12 @@ import torch
 from torch.utils.data import Dataset, IterableDataset
 from typing import Optional, Dict, Any, Iterator, Callable, List, Tuple
 from PIL import Image
+import io
 import json
 import os
 import glob
 import re
+import zipfile
 
 from .data_utils import get_vision_transform, TextProcessor
 
@@ -129,6 +131,7 @@ class LaionDataset(Dataset):
         vision_encoder_type: str = "clip",
         vision_model_name: Optional[str] = None,
         image_dir: Optional[str] = None,
+        image_zip_path: Optional[str] = None,
         filter_to_available_images: bool = False,
         min_caption_chars: int = 1,
         deduplicate_captions: bool = False,
@@ -137,6 +140,9 @@ class LaionDataset(Dataset):
 
         self.data_path = data_path
         self.image_dir = image_dir
+        self.image_zip_path = image_zip_path
+        self._image_zip = None
+        self._zip_member_index = None
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.caption_prompt = caption_prompt
@@ -259,6 +265,65 @@ class LaionDataset(Dataset):
 
         return os.path.join(os.path.dirname(data_path), image_ref)
 
+    def _normalize_zip_ref(self, image_ref: str) -> str:
+        """Normalize JSON image refs and zip members to comparable POSIX paths."""
+        return str(image_ref).replace("\\", "/").lstrip("./").lstrip("/")
+
+    def _get_image_zip(self):
+        if not self.image_zip_path:
+            return None
+        if self._image_zip is None:
+            self._image_zip = zipfile.ZipFile(self.image_zip_path, "r")
+        return self._image_zip
+
+    def _get_zip_member_index(self) -> Dict[str, Optional[str]]:
+        """
+        Build a lookup for exact refs, refs under an `images/` root, and basenames.
+
+        Basename collisions are marked ambiguous instead of guessed.
+        """
+        if self._zip_member_index is not None:
+            return self._zip_member_index
+
+        if not self.image_zip_path:
+            self._zip_member_index = {}
+            return self._zip_member_index
+
+        member_index: Dict[str, Optional[str]] = {}
+        with zipfile.ZipFile(self.image_zip_path, "r") as zf:
+            members = [
+                name
+                for name in zf.namelist()
+                if not name.endswith("/")
+                and name.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+            ]
+
+        def add_key(key: str, member: str) -> None:
+            key = self._normalize_zip_ref(key)
+            existing = member_index.get(key)
+            if existing is None and key in member_index:
+                return
+            if existing is not None and existing != member:
+                member_index[key] = None
+                return
+            member_index[key] = member
+
+        for member in members:
+            norm_member = self._normalize_zip_ref(member)
+            add_key(norm_member, member)
+            if norm_member.startswith("images/"):
+                add_key(norm_member[len("images/"):], member)
+            add_key(os.path.basename(norm_member), member)
+
+        self._zip_member_index = member_index
+        return self._zip_member_index
+
+    def _resolve_zip_member(self, image_ref: str) -> Optional[str]:
+        if not self.image_zip_path:
+            return None
+        ref = self._normalize_zip_ref(image_ref)
+        return self._get_zip_member_index().get(ref)
+
     def _normalize_json_item(self, item: Dict[str, Any], data_path: str) -> Optional[Dict[str, str]]:
         image_ref = item.get("image_path", item.get("image", item.get("file_name", "")))
         caption = self._extract_caption(item)
@@ -268,6 +333,7 @@ class LaionDataset(Dataset):
         return {
             "image": image_ref,
             "image_path": self._resolve_image_path(str(image_ref), data_path),
+            "image_zip_member": self._resolve_zip_member(str(image_ref)),
             "caption": caption,
         }
 
@@ -288,11 +354,18 @@ class LaionDataset(Dataset):
 
         if self.filter_to_available_images:
             before = len(samples)
-            samples = [
-                s for s in samples
-                if s.get("image_path") and os.path.exists(s["image_path"])
-            ]
-            image_root = self.image_dir or os.path.dirname(self.data_path)
+            if self.image_zip_path:
+                samples = [
+                    s for s in samples
+                    if s.get("image_zip_member")
+                ]
+                image_root = self.image_zip_path
+            else:
+                samples = [
+                    s for s in samples
+                    if s.get("image_path") and os.path.exists(s["image_path"])
+                ]
+                image_root = self.image_dir or os.path.dirname(self.data_path)
             print(
                 f"{source}: real-image filter kept {len(samples)}/{before} "
                 f"samples from {image_root}"
@@ -452,9 +525,13 @@ class LaionDataset(Dataset):
         # Load and process image
         image_path = sample.get("image_path", sample.get("image"))
         try:
-            image = Image.open(image_path).convert("RGB")
+            if sample.get("image_zip_member"):
+                with self._get_image_zip().open(sample["image_zip_member"]) as f:
+                    image = Image.open(io.BytesIO(f.read())).convert("RGB")
+            else:
+                image = Image.open(image_path).convert("RGB")
             image_tensor = self.transform(image)
-        except (IOError, OSError) as e:
+        except (IOError, OSError, KeyError, zipfile.BadZipFile) as e:
             # Handle corrupted or missing images
             print(f"Warning: Failed to load image {image_path}: {e}")
             return None
@@ -479,6 +556,11 @@ class LaionDataset(Dataset):
             "labels": encoding["labels"],
         }
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_image_zip"] = None
+        return state
+
 
 class LlavaPretrainCaptionDataset(LaionDataset):
     """
@@ -492,8 +574,9 @@ class LlavaPretrainCaptionDataset(LaionDataset):
     def __init__(
         self,
         annotation_path: str,
-        image_dir: str,
+        image_dir: Optional[str],
         tokenizer,
+        image_zip_path: Optional[str] = None,
         caption_prompt: str = "",
         filter_to_available_images: bool = True,
         min_caption_chars: int = 3,
@@ -503,6 +586,7 @@ class LlavaPretrainCaptionDataset(LaionDataset):
         super().__init__(
             data_path=annotation_path,
             image_dir=image_dir,
+            image_zip_path=image_zip_path,
             tokenizer=tokenizer,
             caption_prompt=caption_prompt,
             filter_to_available_images=filter_to_available_images,
@@ -741,13 +825,15 @@ def create_laion_dataset(
     """
     if dataset_type in {"llava_pretrain", "llava_pretrain_caption"}:
         image_dir = kwargs.pop("image_dir", None)
-        if not image_dir:
-            raise ValueError("LlavaPretrainCaptionDataset requires image_dir")
+        image_zip_path = kwargs.pop("image_zip_path", None)
+        if not image_dir and not image_zip_path:
+            raise ValueError("LlavaPretrainCaptionDataset requires image_dir or image_zip_path")
         if streaming:
             raise ValueError("LLaVA-Pretrain JSON caption data is map-style, not streaming")
         return LlavaPretrainCaptionDataset(
             annotation_path=data_path,
             image_dir=image_dir,
+            image_zip_path=image_zip_path,
             tokenizer=tokenizer,
             **kwargs,
         )

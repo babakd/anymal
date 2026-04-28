@@ -89,6 +89,7 @@ class TrainerConfig:
     output_dir: str = "./outputs"
     save_llm_checkpoint: bool = True
     save_llm_base_weights: bool = False
+    commit_on_save: bool = False
 
     # Logging
     logging_steps: int = 10
@@ -681,6 +682,26 @@ class Trainer:
 
         # Clean up old checkpoints
         self._cleanup_checkpoints()
+
+        if self.config.commit_on_save:
+            self._commit_checkpoint_volume()
+
+    def _commit_checkpoint_volume(self):
+        """Best-effort Modal volume commit after a checkpoint save."""
+        try:
+            import sys
+
+            module = sys.modules.get("modal_train") or sys.modules.get("__main__")
+            mounted_volume = getattr(module, "volume", None)
+            if mounted_volume is not None:
+                mounted_volume.commit()
+            else:
+                import modal
+
+                modal.Volume.from_name("anymal-checkpoints").commit()
+            print_rank_0("Committed checkpoint volume after save")
+        except Exception as exc:
+            print_rank_0(f"WARNING: Could not commit checkpoint volume: {exc}")
 
     def _load_checkpoint(self, checkpoint_dir: str):
         """Resume training from a saved checkpoint."""

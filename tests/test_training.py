@@ -13,6 +13,7 @@ import os
 import tempfile
 import json
 import importlib.util
+import zipfile
 from PIL import Image
 import numpy as np
 
@@ -367,6 +368,62 @@ class TestDatasets:
         factory_dataset = create_laion_dataset(
             data_path=str(annotation_path),
             image_dir=str(images_dir),
+            tokenizer=tokenizer,
+            dataset_type="llava_pretrain_caption",
+            max_length=64,
+        )
+        assert len(factory_dataset) == 1
+
+    def test_llava_pretrain_caption_dataset_reads_zip_images(self, tmp_path):
+        """LLaVA-Pretrain captions should support image lookup directly from images.zip."""
+        from data.laion_dataset import LlavaPretrainCaptionDataset, create_laion_dataset
+        from transformers import AutoTokenizer
+
+        image_path = tmp_path / "real.jpg"
+        img = Image.fromarray(
+            np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+        )
+        img.save(image_path)
+
+        zip_path = tmp_path / "images.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.write(image_path, arcname="images/real.jpg")
+
+        annotations = [
+            {"id": "kept", "image": "real.jpg", "caption": "A zipped image."},
+            {"id": "missing", "image": "missing.jpg", "caption": "Missing."},
+        ]
+        annotation_path = tmp_path / "blip_laion_cc_sbu_558k.json"
+        with open(annotation_path, "w") as f:
+            json.dump(annotations, f)
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("gpt2", trust_remote_code=True)
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.add_special_tokens({"additional_special_tokens": ["<|image|>"]})
+        except Exception:
+            pytest.skip("Tokenizer not available")
+
+        dataset = LlavaPretrainCaptionDataset(
+            annotation_path=str(annotation_path),
+            image_dir=None,
+            image_zip_path=str(zip_path),
+            tokenizer=tokenizer,
+            max_length=64,
+            insert_image_placeholders=True,
+            num_image_tokens=4,
+        )
+
+        assert len(dataset) == 1
+        assert dataset.samples[0]["image_zip_member"] == "images/real.jpg"
+        sample = dataset[0]
+        assert sample is not None
+        assert sample["image"].shape == (3, 224, 224)
+        assert int((sample["input_ids"] == dataset.image_placeholder_token_id).sum().item()) == 4
+
+        factory_dataset = create_laion_dataset(
+            data_path=str(annotation_path),
+            image_zip_path=str(zip_path),
             tokenizer=tokenizer,
             dataset_type="llava_pretrain_caption",
             max_length=64,
