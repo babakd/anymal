@@ -188,6 +188,37 @@ def _collect_checkpoint_candidates(root_dir: str):
     return candidates
 
 
+def _checkpoint_matches_run_config(
+    checkpoint_dir: str,
+    expected_architecture: str,
+    token_compressor_type: str = None,
+) -> bool:
+    """Return whether a checkpoint is compatible with the requested run config."""
+    from model_metadata import read_model_metadata, validate_checkpoint_architecture
+
+    try:
+        validate_checkpoint_architecture(
+            checkpoint_dir=checkpoint_dir,
+            expected_architecture=expected_architecture,
+        )
+    except RuntimeError:
+        return False
+
+    if expected_architecture != "anymal_v2" or not token_compressor_type:
+        return True
+
+    meta = read_model_metadata(checkpoint_dir) or {}
+    checkpoint_compressor = meta.get("token_compressor_type")
+    if checkpoint_compressor and checkpoint_compressor != token_compressor_type:
+        print(
+            f"Skipping checkpoint {checkpoint_dir}: token_compressor_type="
+            f"{checkpoint_compressor!r}, requested={token_compressor_type!r}"
+        )
+        return False
+
+    return True
+
+
 @app.cls(
     image=image,
     gpu="A100-80GB",  # Use A100 80GB for large models
@@ -527,6 +558,7 @@ class Trainer:
         max_steps: int = 100,
         stage: str = "finetune",
         architecture: str = "anymal_v1",
+        token_compressor_type: str = "learned",
         learning_rate: float = None,
         lora_learning_rate: float = None,
         batch_size: int = 4,
@@ -546,6 +578,7 @@ class Trainer:
         Args:
             max_steps: Number of training steps
             stage: "pretrain" for Stage 1, "finetune" for Stage 2
+            token_compressor_type: V2 connector type ("learned", "perceiver", "perceiver2")
             learning_rate: Learning rate (default: 2e-5 for finetune, 2e-4 for pretrain)
             lora_learning_rate: Separate LR for LoRA params (default: 2e-4 for finetune)
             batch_size: Per-device batch size
@@ -592,6 +625,7 @@ class Trainer:
                 batch_size=batch_size,
                 use_wandb=use_wandb,
                 use_dummy_data=use_dummy_data,
+                token_compressor_type=token_compressor_type,
                 track_per_layer_grad_norms=track_per_layer_grad_norms,
                 run_eval_benchmarks=run_eval_benchmarks,
                 pretrain_checkpoint=pretrain_checkpoint,
@@ -615,6 +649,7 @@ class Trainer:
                 batch_size=batch_size,
                 use_wandb=use_wandb,
                 use_dummy_data=use_dummy_data,
+                token_compressor_type=token_compressor_type,
                 resume_checkpoint=resume_checkpoint,
                 output_dir=pretrain_output_dir,
             )
@@ -749,6 +784,7 @@ def _diagnose_batch(batch, tokenizer, step_name="first batch"):
 
 
 def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size, use_wandb, use_dummy_data,
+                  token_compressor_type="learned",
                   track_per_layer_grad_norms=True, run_eval_benchmarks=True,
                   pretrain_checkpoint=None, resume_checkpoint=None,
                   lora_learning_rate=None, dataset="instruct_150k",
@@ -802,7 +838,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
             {
                 "vision_encoder_type": "siglip2",
                 "vision_model_name": "google/siglip2-so400m-patch14-384",
-                "token_compressor_type": "learned",
+                "token_compressor_type": token_compressor_type,
                 "bottleneck_dim": 2048,
                 "max_image_tokens": 384,
                 "min_image_tokens": 384,
@@ -885,17 +921,14 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
     if pretrain_checkpoint is None:
         pretrain_dir = "/checkpoints/pretrain-output"
         candidates = _collect_checkpoint_candidates(pretrain_dir)
-        from model_metadata import validate_checkpoint_architecture
         compatible_candidates = []
         for mtime, step, path in candidates:
-            try:
-                validate_checkpoint_architecture(
-                    checkpoint_dir=path,
-                    expected_architecture=arch_key,
-                )
+            if _checkpoint_matches_run_config(
+                checkpoint_dir=path,
+                expected_architecture=arch_key,
+                token_compressor_type=token_compressor_type,
+            ):
                 compatible_candidates.append((mtime, step, path))
-            except RuntimeError:
-                continue
         candidates = compatible_candidates
         if candidates:
             # Choose most recently modified checkpoint, break ties by step.
@@ -988,6 +1021,7 @@ def run_pretrain(
     batch_size,
     use_wandb,
     use_dummy_data=False,
+    token_compressor_type="learned",
     distributed=False,
     resume_checkpoint=None,
     output_dir="/checkpoints/pretrain-output",
@@ -1041,7 +1075,7 @@ def run_pretrain(
             {
                 "vision_encoder_type": "siglip2",
                 "vision_model_name": "google/siglip2-so400m-patch14-384",
-                "token_compressor_type": "learned",
+                "token_compressor_type": token_compressor_type,
                 "bottleneck_dim": 2048,
                 "max_image_tokens": 256,
                 "min_image_tokens": 256,
@@ -1440,6 +1474,51 @@ class COCOCaptionDataset:
         }
 
 
+def _resolve_llava_pretrain_image_dir(annotation_path: str, pretrain_dir: str):
+    """
+    Pick the LLaVA-Pretrain image root that matches annotation image refs.
+
+    Some copies of images.zip extract to `images/<shard>/<file>.jpg`, while
+    others extract shard directories directly under the target directory.
+    """
+    import json
+
+    if not os.path.exists(annotation_path) or not os.path.isdir(pretrain_dir):
+        return None
+
+    candidates = [
+        os.path.join(pretrain_dir, "images"),
+        pretrain_dir,
+    ]
+
+    refs = []
+    try:
+        with open(annotation_path, "r") as f:
+            records = json.load(f)
+        for item in records[:1000]:
+            image_ref = item.get("image_path", item.get("image", item.get("file_name", "")))
+            if image_ref:
+                refs.append(str(image_ref))
+            if len(refs) >= 100:
+                break
+    except Exception as exc:
+        print(f"Could not inspect LLaVA-Pretrain annotations for image root: {exc}")
+
+    if refs:
+        for candidate in candidates:
+            if os.path.isdir(candidate) and any(os.path.exists(os.path.join(candidate, ref)) for ref in refs):
+                return candidate
+
+    for candidate in candidates:
+        if not os.path.isdir(candidate):
+            continue
+        for _root, _dirs, files in os.walk(candidate):
+            if any(f.lower().endswith((".jpg", ".jpeg", ".png", ".webp")) for f in files):
+                return candidate
+
+    return None
+
+
 def load_llava_pretrain_dataset(
     tokenizer,
     insert_image_placeholders: bool = False,
@@ -1456,11 +1535,16 @@ def load_llava_pretrain_dataset(
     been staged. Fall back to the existing COCO-backed instruction-caption
     extraction path so current Modal runs remain executable.
     """
-    import json
-
     pretrain_json_path = "/checkpoints/llava_data/blip_laion_cc_sbu_558k.json"
-    pretrain_image_dir = "/checkpoints/llava_pretrain/images"
-    if os.path.exists(pretrain_json_path) and os.path.isdir(pretrain_image_dir):
+    pretrain_dir = "/checkpoints/llava_pretrain"
+    pretrain_image_dir = _resolve_llava_pretrain_image_dir(pretrain_json_path, pretrain_dir)
+    pretrain_manifest_path = "/checkpoints/llava_pretrain/manifest.json"
+    if (
+        os.path.exists(pretrain_json_path)
+        and pretrain_image_dir
+        and os.path.isdir(pretrain_image_dir)
+        and os.path.exists(pretrain_manifest_path)
+    ):
         from data.laion_dataset import create_laion_dataset
 
         print(f"Loading true LLaVA-Pretrain captions from {pretrain_json_path}")
@@ -1642,6 +1726,7 @@ def _pretrain_worker(local_rank, world_size, config):
             learning_rate=config["learning_rate"],
             batch_size=config["batch_size"],
             use_wandb=config["use_wandb"] and local_rank == 0,  # Only rank 0 logs
+            token_compressor_type=config.get("token_compressor_type", "learned"),
             distributed=True,
             resume_checkpoint=config.get("resume_checkpoint"),
             output_dir=config["output_dir"],
@@ -1656,6 +1741,7 @@ def _run_pretrain_distributed(
     batch_size,
     use_wandb,
     architecture="anymal_v1",
+    token_compressor_type="learned",
     wandb_api_key=None,
     resume_checkpoint=None,
     run_name=None,
@@ -1706,6 +1792,7 @@ def _run_pretrain_distributed(
         "batch_size": batch_size,
         "use_wandb": use_wandb,
         "architecture": architecture,
+        "token_compressor_type": token_compressor_type,
         "resume_checkpoint": resume_checkpoint,
         "output_dir": pretrain_output_dir,
     }
@@ -1732,6 +1819,7 @@ def pretrain_distributed(
     batch_size,
     use_wandb,
     architecture="anymal_v1",
+    token_compressor_type="learned",
     wandb_api_key=None,
     resume_checkpoint=None,
     run_name=None,
@@ -1743,6 +1831,7 @@ def pretrain_distributed(
         batch_size=batch_size,
         use_wandb=use_wandb,
         architecture=architecture,
+        token_compressor_type=token_compressor_type,
         wandb_api_key=wandb_api_key,
         resume_checkpoint=resume_checkpoint,
         run_name=run_name,
@@ -1765,6 +1854,7 @@ def pretrain_distributed_h100(
     batch_size,
     use_wandb,
     architecture="anymal_v1",
+    token_compressor_type="learned",
     wandb_api_key=None,
     resume_checkpoint=None,
     run_name=None,
@@ -1776,10 +1866,115 @@ def pretrain_distributed_h100(
         batch_size=batch_size,
         use_wandb=use_wandb,
         architecture=architecture,
+        token_compressor_type=token_compressor_type,
         wandb_api_key=wandb_api_key,
         resume_checkpoint=resume_checkpoint,
         run_name=run_name,
     )
+
+
+@app.function(
+    image=image,
+    timeout=14400,
+    volumes={"/checkpoints": volume},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def stage_llava_pretrain_images(force: bool = False):
+    """
+    Stage true LLaVA-Pretrain annotations and images into the Modal volume.
+
+    This is intentionally separate from normal training setup because images.zip
+    is large and Stage 2 runs do not need it.
+    """
+    import os
+    import json
+    import zipfile
+    from huggingface_hub import hf_hub_download
+
+    data_dir = "/checkpoints/llava_data"
+    pretrain_dir = "/checkpoints/llava_pretrain"
+    pretrain_json_path = os.path.join(data_dir, "blip_laion_cc_sbu_558k.json")
+    manifest_path = os.path.join(pretrain_dir, "manifest.json")
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(pretrain_dir, exist_ok=True)
+
+    def _count_images(root):
+        total = 0
+        for _dirpath, _dirnames, filenames in os.walk(root):
+            total += sum(
+                1 for f in filenames
+                if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+            )
+        return total
+
+    print("Staging LLaVA-Pretrain annotation JSON...")
+    hf_hub_download(
+        repo_id="liuhaotian/LLaVA-Pretrain",
+        filename="blip_laion_cc_sbu_558k.json",
+        repo_type="dataset",
+        local_dir=data_dir,
+    )
+
+    image_dir = _resolve_llava_pretrain_image_dir(pretrain_json_path, pretrain_dir)
+    existing_images = _count_images(image_dir) if image_dir else 0
+    if existing_images and os.path.exists(manifest_path) and not force:
+        print(f"Using existing LLaVA-Pretrain images in {image_dir}: {existing_images:,} files")
+        return {"image_dir": image_dir, "num_images": existing_images, "skipped": True}
+    if existing_images and not os.path.exists(manifest_path):
+        print(
+            f"Found {existing_images:,} partially staged images in {image_dir}; "
+            "continuing extraction before marking data complete."
+        )
+
+    print("Downloading LLaVA-Pretrain images.zip...")
+    zip_path = hf_hub_download(
+        repo_id="liuhaotian/LLaVA-Pretrain",
+        filename="images.zip",
+        repo_type="dataset",
+        local_dir=pretrain_dir,
+    )
+
+    print(f"Extracting {zip_path} to {pretrain_dir}...")
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(pretrain_dir)
+
+    image_dir = _resolve_llava_pretrain_image_dir(pretrain_json_path, pretrain_dir)
+    if not image_dir:
+        raise RuntimeError(f"Could not find extracted LLaVA-Pretrain images under {pretrain_dir}")
+
+    num_images = _count_images(image_dir)
+    if num_images == 0:
+        raise RuntimeError(f"No images found after extraction in {image_dir}")
+
+    with open(manifest_path, "w") as f:
+        json.dump({"image_dir": image_dir, "num_images": num_images}, f)
+        f.write("\n")
+
+    volume.commit()
+    print(f"Staged {num_images:,} LLaVA-Pretrain images in {image_dir}")
+    return {"image_dir": image_dir, "num_images": num_images, "skipped": False}
+
+
+@app.function(
+    image=image,
+    timeout=14400,
+    volumes={"/checkpoints": volume},
+)
+def cleanup_failed_llava_pretrain_staging():
+    """Remove only the failed LLaVA-Pretrain image staging payload."""
+    import os
+    import shutil
+
+    pretrain_dir = "/checkpoints/llava_pretrain"
+    if not os.path.exists(pretrain_dir):
+        print(f"No LLaVA-Pretrain staging directory found at {pretrain_dir}")
+        return {"removed": False}
+
+    shutil.rmtree(pretrain_dir)
+    print(f"Removed failed LLaVA-Pretrain staging directory: {pretrain_dir}")
+
+    volume.commit()
+    return {"removed": pretrain_dir}
 
 
 @app.local_entrypoint()
@@ -1787,6 +1982,7 @@ def main(
     max_steps: int = 100,
     stage: str = "finetune",
     architecture: str = "anymal_v1",
+    token_compressor_type: str = "learned",
     gpu_type: str = "a100",
     learning_rate: float = None,
     lora_learning_rate: float = None,
@@ -1811,11 +2007,17 @@ def main(
         modal run modal_train.py --stage pretrain             # Stage 1 (4 GPUs)
         modal run modal_train.py --stage pretrain --gpu-type h100
         modal run modal_train.py --stage finetune             # Stage 2 (auto-discovers pretrain ckpt)
+        modal run modal_train.py --architecture anymal_v2 --token-compressor-type perceiver --stage pretrain
         modal run modal_train.py --use-wandb --wandb-api-key YOUR_KEY  # With W&B
         modal run modal_train.py --stage pretrain --resume-checkpoint /checkpoints/pretrain-output/run-0001/checkpoint-250
         modal run modal_train.py --stage finetune --learning-rate 2e-5 --lora-learning-rate 2e-4 --dataset mix_665k
     """
     selected_gpu = _resolve_modal_gpu(stage, gpu_type)
+    token_compressor_type = str(token_compressor_type).strip().lower()
+    if token_compressor_type not in {"learned", "perceiver", "perceiver2", "avg"}:
+        raise ValueError(
+            "--token-compressor-type must be one of: learned, perceiver, perceiver2, avg"
+        )
 
     # Generate unique run name locally BEFORE any .remote() call. All containers
     # receive the same name and write to the same directory — avoids a race
@@ -1829,6 +2031,7 @@ def main(
     print(f"  Stage: {stage}")
     print(f"  Run name: {run_name}")
     print(f"  Architecture: {architecture}")
+    print(f"  Token compressor: {token_compressor_type}")
     print(f"  GPU type: {gpu_type}")
     print(f"  Modal GPU resource: {selected_gpu}")
     print(f"  Max steps: {max_steps}")
@@ -1860,6 +2063,7 @@ def main(
             batch_size=batch_size,
             use_wandb=use_wandb,
             architecture=architecture,
+            token_compressor_type=token_compressor_type,
             wandb_api_key=wandb_api_key,
             resume_checkpoint=resume_checkpoint,
             run_name=run_name,
@@ -1872,6 +2076,7 @@ def main(
             max_steps=max_steps,
             stage=stage,
             architecture=architecture,
+            token_compressor_type=token_compressor_type,
             learning_rate=learning_rate,
             lora_learning_rate=lora_learning_rate,
             batch_size=batch_size,
