@@ -2,25 +2,30 @@
 
 ## Project Status (Last Updated: Feb 2026)
 
-**Current State**: Two-stage training pipeline working end-to-end on Modal. Stage 1 pretrain completed on 4x A100-80GB (2500 steps, loss 12 -> 1.5, checkpoint-2500 saved). Stage 2 finetune verified on 1x A100-80GB (500 steps, loss 7.5 -> 1.4). Checkpoint resume and `--detach` mode working for long runs. Inference script produces predictions across checkpoints.
+**Current State**: Two-stage training pipeline working end-to-end on Modal. Stage 1 pretrain completed on 4x A100-80GB (2500 steps, loss 12 -> 1.5). Stage 2 initial run (500 steps, LR=1e-5, LLaVA-Instruct-150K only) showed flat loss and no improvement over pretrain-only. Root causes identified and fixed: separate LoRA/projector LRs, cosine LR floor, multi-task dataset support (LLaVA-1.5 Mix-665K filtered to COCO), projector warmup, VQA eval image filtering, and fair inference comparison (single quantization). Ready for validation run.
 
 | Component | Status |
 |-----------|--------|
 | Model architecture | Complete |
 | Stage 1 pretrain (Modal, 4 GPU DDP) | Complete (2500 steps, loss 12 -> 1.5, checkpoint-2500) |
-| Stage 2 finetune (Modal, 1 GPU QLoRA) | Verified (500-step run, real COCO images) |
+| Stage 2 finetune (Modal, 1 GPU QLoRA) | Fixed — ready for validation run with multi-task data + separate LRs |
 | Inference / prediction viewer | Working (`modal_inference.py` + `prediction_viewer.html`) |
-| W&B integration | Working (both stages) |
-| LLaVA dataset loader | Working (InstructionDataset with real images) |
+| W&B integration | Working (both stages, now logs per-group LRs) |
+| LLaVA dataset loader | Working (InstructionDataset, supports instruct_150k and mix_665k) |
+| Multi-task dataset (Mix-665K) | Implemented (auto-downloads, filters to cached COCO images) |
 | Stage 1 caption dataset | Working (COCOCaptionDataset, 157K samples from 81K images) |
 | COCO images | Cached on Modal Volume (81,479 images) |
 | Health monitoring | Working (loss/grad anomaly detection) |
 | Throughput tracking | Working (tokens/sec, samples/sec) |
 | Train/val split | Working (deterministic 95/5 split, both stages) |
-| In-training eval | Working (clipped to 200 batches, both stages) |
+| In-training eval | Working (clipped to 200 batches, debug logging added) |
 | Pretrain checkpoint auto-discovery | Working (Stage 2 auto-loads Stage 1 projector) |
 | Checkpoint resume | Working (restores optimizer, scheduler, scaler, RNG states) |
-| VQA evaluation | Partial (fails on missing images, see Known Issues) |
+| VQA evaluation | Fixed (filters to available images, graceful error handling) |
+| Separate LR (LoRA vs projector) | Implemented (default: 2e-4 LoRA / 2e-5 projector) |
+| Cosine LR floor | Implemented (10% of peak, prevents decay-to-zero) |
+| Projector warmup | Implemented (freeze projector for first 200 steps) |
+| Fair inference comparison | Fixed (single model with use_qlora=True for all checkpoints) |
 | Unit tests | 101 passing, 1 skipped |
 
 ### Architecture Split (Mar 2026)
@@ -41,11 +46,11 @@ Important implications:
 **Stage 1 -> Stage 2 flow**:
 1. `modal run --detach modal_train.py --stage pretrain --max-steps 2500 --use-wandb` (4 GPUs, DDP)
 2. Checkpoint saved to `/checkpoints/pretrain-output/checkpoint-N/projector.pt`
-3. `modal run modal_train.py --stage finetune --max-steps 500 --use-wandb` (1 GPU, QLoRA)
+3. `modal run --detach modal_train.py --stage finetune --max-steps 2000 --batch-size 2 --use-wandb --dataset mix_665k` (1 GPU, QLoRA)
 4. Stage 2 auto-discovers the pretrain checkpoint and loads `projector.pt`
 5. `modal run modal_inference.py` to generate predictions from all checkpoints
 
-**Note**: Use `--detach` for Stage 1 (long runs). Without it, Modal kills the run if the local client disconnects.
+**Note**: Use `--detach` for long runs (Stage 1 and Stage 2 production runs). Without it, Modal kills the run if the local client disconnects.
 
 ### Verified Runs
 
@@ -58,11 +63,19 @@ Important implications:
 - Wall time: ~1.5 hours total, Cost: ~$22
 - W&B: `anymal-pretrain` project
 
-**Stage 2 verified run (500 steps, 1x A100-80GB)**:
-- Loss: 7.5 -> 1.4 (converged)
-- Eval loss: computed every 50 steps, ~57s each (200 batches)
-- Grad norms: stable at 0.7-1.5
-- Wall time: 35 min, Cost: ~$2.50
+**Stage 2 initial run (500 steps, 1x A100-80GB) — BASELINE, before fixes**:
+- Loss: ~1.35 -> ~1.22 (flat, bouncy between 1.0-1.7 per step)
+- Used LLaVA-Instruct-150K only, LR=1e-5 for both projector and LoRA
+- No clear improvement over pretrain-only; some regressions (e.g., wrong dog breed)
+- Root causes: single-task data, LR too low for LoRA, no LR floor, unfair inference comparison
+- All root causes now fixed (see Key Bug Fixes 12-18)
+
+**Stage 2 inference comparison (20 examples, 9 checkpoints)**:
+- Step 0 (random projector): complete garbage (repeating tokens)
+- Steps 1500-2500 (pretrain only): coherent, image-grounded responses (correctly IDs objects, colors, counts)
+- Steps 250-500 (finetune + LoRA): similar quality to pretrain-only, no clear improvement
+- Note: comparison was confounded by different quantization (pretrain=full precision, finetune=4-bit). Now fixed.
+- See `predictions_20260209_063338.json` + `prediction_viewer.html` for full comparison
 
 ### Key Bug Fixes Applied
 
@@ -77,6 +90,13 @@ Important implications:
 9. **Checkpoint resume**: Added full checkpoint resume support (optimizer, scheduler, scaler, RNG states, health monitor) with micro-batch fast-forward on resume
 10. **Modal function timeout**: Increased `pretrain_distributed` timeout from 7200s (2 hours) to 14400s (4 hours) to avoid timeout on long Stage 1 runs
 11. **Modal client disconnect**: Long-running `modal run` commands fail if the local client disconnects. Fix: use `modal run --detach` for Stage 1
+12. **Separate LRs for LoRA vs projector**: Added `--lora-learning-rate` CLI param. Default: 2e-4 for LoRA, 2e-5 for projector (matches LLaVA-1.5 pattern). Infrastructure already existed in `TrainerConfig.lora_learning_rate` and `_create_optimizer()` param groups.
+13. **Cosine LR floor**: Replaced `CosineAnnealingLR` (decays to 0) with `LambdaLR` cosine-with-floor. `min_lr_ratio=0.1` means LR floors at 10% of peak. Respects per-group LRs via LambdaLR multiplier.
+14. **Multi-task dataset**: Added `--dataset mix_665k` option. Downloads `llava_v1_5_mix665k.json`, filters to cached COCO images (~300-350K samples), normalizes image paths to filenames. Renamed `load_llava_instruct_dataset()` to `load_finetune_dataset()`.
+15. **Projector warmup**: Added `projector_warmup_steps=200` to `FinetuneConfig`. Freezes projector for first 200 steps so LoRA warms up first, then unfreezes and rebuilds optimizer/scheduler.
+16. **VQA eval image filtering**: Added `filter_to_available_images=True` to `VQADataset.__init__()`. Scans image_dir for available files, filters questions to matching images. Added try/except safety net in `__getitem__()`. Updated collate to filter None.
+17. **Eval loss debug logging**: Added `print_rank_0()` in `evaluate()` showing batch count and avg_loss. Warns if 0 valid batches.
+18. **Fair inference comparison**: Rewrote `modal_inference.py` to use a single model with `use_qlora=True` for ALL checkpoints. For pretrain-only checkpoints, zeros LoRA B matrices (no-op adapter = equivalent to no LoRA). Eliminates quantization confound.
 
 ---
 
@@ -139,11 +159,22 @@ modal run --detach modal_train.py --stage pretrain --max-steps 2500 --batch-size
 # Stage 1: Resume from checkpoint (if interrupted)
 modal run --detach modal_train.py --stage pretrain --max-steps 2500 --batch-size 2 --use-wandb --resume-checkpoint /checkpoints/pretrain-output/checkpoint-1500
 
-# Stage 2: Instruction finetuning (auto-loads Stage 1 checkpoint)
-modal run modal_train.py --stage finetune --max-steps 500 --batch-size 2 --use-wandb
+# Stage 2: Instruction finetuning with multi-task data (RECOMMENDED)
+# Uses LLaVA-1.5 Mix-665K filtered to cached COCO images, separate LRs, projector warmup
+modal run --detach modal_train.py --stage finetune --max-steps 2000 --batch-size 2 --use-wandb \
+  --learning-rate 2e-5 --lora-learning-rate 2e-4 --dataset mix_665k
+
+# Stage 2: With original LLaVA-Instruct-150K only (for comparison)
+modal run --detach modal_train.py --stage finetune --max-steps 2000 --batch-size 2 --use-wandb \
+  --dataset instruct_150k
 
 # Stage 2 with explicit pretrain checkpoint
-modal run modal_train.py --stage finetune --max-steps 500 --pretrain-checkpoint /checkpoints/pretrain-output/checkpoint-2500
+modal run --detach modal_train.py --stage finetune --max-steps 2000 --batch-size 2 --use-wandb \
+  --pretrain-checkpoint /checkpoints/pretrain-output/checkpoint-2500 --dataset mix_665k
+
+# Stage 2: Resume from checkpoint (if interrupted)
+modal run --detach modal_train.py --stage finetune --max-steps 2000 --batch-size 2 --use-wandb \
+  --resume-checkpoint /checkpoints/finetune-output/checkpoint-1000
 
 # Inference: generate predictions across all checkpoints
 modal run modal_inference.py --num-examples 20
@@ -157,8 +188,9 @@ modal run modal_inference.py --num-examples 20
 | `--batch-size` | Per-device batch size | 4 |
 | `--stage` | `"finetune"` or `"pretrain"` | finetune |
 | `--use-wandb` | Enable W&B logging | False |
-| `--use-dummy-data` | Ignored (real images always used, warns if passed) | False |
-| `--learning-rate` | Learning rate | 1e-5 (finetune), 2e-4 (pretrain) |
+| `--learning-rate` | Projector learning rate | 2e-5 (finetune), 2e-4 (pretrain) |
+| `--lora-learning-rate` | Separate LR for LoRA params | 2e-4 (finetune only) |
+| `--dataset` | `"instruct_150k"` or `"mix_665k"` | instruct_150k |
 | `--pretrain-checkpoint` | Path to Stage 1 checkpoint (auto-discovered if omitted) | None |
 | `--track-per-layer-grad-norms` | Log per-layer gradient norms | True |
 | `--run-eval-benchmarks` | Run VQA eval during finetune | True |
@@ -171,7 +203,8 @@ modal run modal_inference.py --num-examples 20
 | Pretrain full | 4x A100-80GB | 2500 | ~1.5 hours | ~$22 |
 | Pretrain smoke test | 4x A100-80GB | 20 | ~2.5 min | ~$0.50 |
 | Finetune short | 1x A100-80GB | 200 | ~8 min | ~$1.00 |
-| Finetune verified | 1x A100-80GB | 500 | ~35 min | ~$2.50 |
+| Finetune validation | 1x A100-80GB | 2000 | ~2-3 hours | ~$10-15 |
+| Finetune full | 1x A100-80GB | 3000 | ~3-5 hours | ~$15-25 |
 
 ### Viewing Results
 
@@ -211,14 +244,14 @@ anymal/
 │   └── llm/
 │       └── llama_wrapper.py    # LLaMA + QLoRA
 ├── training/
-│   ├── trainer.py              # Base trainer (DDP, AMP, warmup, clipped eval)
+│   ├── trainer.py              # Base trainer (DDP, AMP, warmup, clipped eval, per-group LR)
 │   ├── health_monitor.py       # Loss/gradient anomaly detection
 │   ├── throughput_tracker.py   # Tokens/sec, samples/sec tracking
 │   ├── pretrain.py             # Stage 1 trainer
-│   ├── finetune.py             # Stage 2 trainer (loads pretrain checkpoint)
+│   ├── finetune.py             # Stage 2 trainer (projector warmup, pretrain checkpoint loading)
 │   └── distributed.py          # Multi-GPU utilities (DDP setup/cleanup)
 ├── evaluation/
-│   ├── vqa_eval.py             # VQAv2 evaluation
+│   ├── vqa_eval.py             # VQAv2 evaluation (with image filtering)
 │   ├── eval_runner.py          # In-training eval wrapper (graceful errors)
 │   └── captioning_eval.py      # COCO captioning
 ├── scripts/
@@ -264,10 +297,30 @@ torchrun --nproc_per_node=8 scripts/train_finetune.py --config configs/finetune.
 **Stage 2 (Instruction Tuning)** — `run_finetune()` in `modal_train.py`:
 - Freeze: CLIP + LLaMA base
 - Train: Perceiver Resampler + LoRA adapters (`use_qlora=True`, `lora_alpha=16`)
-- Data: `InstructionDataset` — LLaVA-Instruct-150K with real COCO images
+- Data: `InstructionDataset` — LLaVA-Instruct-150K or Mix-665K (filtered to cached COCO images)
 - GPU: 1x A100-80GB (QLoRA has DDP edge cases)
 - Loads: Stage 1 `projector.pt` (auto-discovered or via `--pretrain-checkpoint`)
-- LR: 1e-5, grad_accum: 4
+- LR: 2e-5 projector / 2e-4 LoRA (separate param groups), cosine with 10% floor
+- Projector warmup: frozen for first 200 steps (LoRA warms up alone)
+- grad_accum: 8, effective batch: 16 (1 GPU x 2 x 8)
+
+### Separate Learning Rates (Stage 2)
+
+The optimizer creates separate param groups for projector and LoRA with different LRs:
+- **Projector**: `learning_rate` (default 2e-5) — lower to preserve Stage 1 alignment
+- **LoRA adapters**: `lora_learning_rate` (default 2e-4) — higher because LoRA is low-rank + has 0.25 scaling
+
+This matches the LLaVA-1.5 pattern (10x higher LR for LoRA vs projector). The cosine scheduler with `min_lr_ratio=0.1` respects per-group LRs via `LambdaLR` (multiplies each group's `initial_lr`).
+
+Plumbing: CLI `--lora-learning-rate` -> `Trainer.train()` -> `run_finetune(lora_learning_rate=...)` -> `FinetuneConfig(lora_learning_rate=...)` -> `Trainer._create_optimizer()` param groups.
+
+### Projector Warmup (Stage 2)
+
+`FinetuneConfig.projector_warmup_steps=200` freezes the projector for the first N steps. This gives LoRA a head start before projector drifts from Stage 1 alignment. At step N, projector is unfrozen and optimizer/scheduler are rebuilt to include projector params.
+
+### Multi-Task Dataset
+
+`--dataset mix_665k` loads `llava_v1_5_mix665k.json` (auto-downloaded during container setup) and filters to samples whose images exist in `/checkpoints/coco_images/`. The JSON uses paths like `coco/train2017/000000123456.jpg` — the loader extracts just the filename and matches against cached files. Expected ~300-350K surviving samples (COCO + some GQA/VG overlap). The filtered data covers diverse task types: conversation, VQA, reasoning, grounding — vs single-task conversation in the 150K dataset.
 
 ### LoRA Configuration
 
@@ -296,6 +349,10 @@ Stage 1 uses `pretrain_distributed()` which requests `gpu="A100-80GB:4"` on Moda
 3. Creates model with `llm_device_map=None` (critical — `device_map="auto"` breaks DDP)
 4. Creates dataloaders with `num_workers=0` (nested multiprocessing breaks `mp.spawn`)
 5. The `Trainer` base class auto-wraps with DDP when `world_size > 1`
+
+### Inference Pipeline
+
+`modal_inference.py` loads a **single model with `use_qlora=True`** for ALL checkpoints (pretrain and finetune). For pretrain-only checkpoints, LoRA B matrices are zeroed out (`_reset_lora_weights()`) so the adapter is a no-op — equivalent to no LoRA but with the same 4-bit quantization. This ensures fair comparison across all checkpoints.
 
 ### Memory Requirements
 
@@ -333,6 +390,10 @@ On resume, the trainer fast-forwards through `global_step * gradient_accumulatio
 
 In-training eval is clipped to `max_eval_batches=200` (both stages) to avoid blocking training. With batch_size=2, this evaluates 400 samples in ~57 seconds.
 
+### W&B Logging
+
+The trainer logs per-group learning rates (`train/lr_projector`, `train/lr_lora`) and component gradient norms (`train/grad_norm_projector`, `train/grad_norm_lora`). Training config (including `lora_learning_rate`, `min_lr_ratio`) is logged to W&B config at start.
+
 ---
 
 ## Known Issues & TODO
@@ -343,23 +404,40 @@ In-training eval is clipped to `max_eval_batches=200` (both stages) to avoid blo
 
 2. **OOM on A100-40GB**: Model + optimizer states exceed 40GB. Must use A100-80GB.
 
-3. **VQA eval image coverage**: VQA evaluation samples 500 questions randomly, but these may reference COCO val2014 images not present in our cached set. Fix: filter the VQA dataset to only questions whose images exist locally.
+3. **Stage 2 without Stage 1**: If no pretrain checkpoint exists, Stage 2 warns and runs with random perceiver weights. The model will learn to ignore image tokens. Always run Stage 1 first.
 
-4. **Stage 2 without Stage 1**: If no pretrain checkpoint exists, Stage 2 warns and runs with random perceiver weights. The model will learn to ignore image tokens. Always run Stage 1 first.
+4. **Stage 1 loss plateau**: Loss plateaus at ~1.5 after ~500 steps. This is expected — the LLM is completely frozen in Stage 1, so the perceiver quickly learns the projection and then the frozen LLM becomes the bottleneck. More steps beyond 2500 are unlikely to help.
 
-5. **Eval loss logging**: During Stage 1 pretrain, eval steps run (200 batches, progress bars visible) but logged eval loss shows `0.0000`. The eval loop runs but the loss value isn't captured correctly in stdout.
+### Paper vs Our Implementation — Data Comparison
 
-6. **Stage 1 loss plateau**: Loss plateaus at ~1.5 after ~500 steps. This is expected — the LLM is completely frozen in Stage 1, so the perceiver quickly learns the projection and then the frozen LLM becomes the bottleneck. More steps beyond 2500 are unlikely to help.
+| | AnyMAL Paper | Our Replica (with fixes) |
+|--|-------------|-------------|
+| **Stage 1 data** | Cleaned LAION-2B subset (billions of pairs) | 157K COCO captions from LLaVA JSON (81K images) |
+| **Stage 1 steps** | 100K steps, batch 2048 | 2500 steps, batch 64 (4 GPUs x 2 x 8) |
+| **Stage 2 data** | ~210K custom (60K human + 150K LLaMA-2-70B synthetic) | Mix-665K filtered to COCO (~300-350K multi-task samples) |
+| **Stage 2 steps** | 3K steps, batch 128 (384K samples) | 2000 steps, batch 16 (32K samples) |
+| **Stage 2 LR** | 1e-5 | 2e-5 projector / 2e-4 LoRA |
+| **Base LLM** | LLaMA-2 (13B/70B) | LLaMA-3-8B-Instruct |
+| **LoRA** | r=64, alpha=16 | r=64, alpha=16 |
+
+LLaVA-1.5 LoRA reference: LR=2e-4 for LoRA / 2e-5 for projector, r=128, alpha=256, 1 epoch over 665K samples.
 
 ### TODO
 
 - [x] Run full Stage 1 alignment (2500 steps, loss 12 -> 1.5, checkpoint-2500)
-- [ ] Run Stage 2 finetune with pretrained perceiver and verify multimodal output
-- [ ] Fix eval loss logging (currently shows 0.0000 in pretrain)
+- [x] Run Stage 2 finetune with pretrained perceiver (500 steps — baseline, flat loss)
+- [x] Run inference comparison across checkpoints (pretrain-only vs finetune)
+- [x] Implement multi-task dataset: Mix-665K filtered to cached COCO images
+- [x] Implement separate LR for LoRA vs projector (2e-4 / 2e-5)
+- [x] Add cosine LR floor (10% of peak)
+- [x] Add projector warmup (freeze first 200 steps)
+- [x] Fix VQA eval to filter to available images only
+- [x] Fix eval loss debug logging
+- [x] Fix inference to use same quantization for all checkpoints
+- [ ] **Run validation: 2000 steps with mix_665k + separate LRs + projector warmup** (~$10-15)
+- [ ] If validation improves, run full 3000 steps
 - [ ] Add flash-attn to Modal image (use pre-built wheel)
-- [ ] Fix VQA eval to filter to available images only
 - [ ] Support multi-image input
-- [ ] Download COCO train images for full-scale training
 - [ ] Add more eval benchmarks (captioning, etc.)
 
 ---
@@ -400,8 +478,17 @@ modal run --detach modal_train.py --stage pretrain --max-steps 2500 --batch-size
 # Stage 1: resume from checkpoint
 modal run --detach modal_train.py --stage pretrain --max-steps 2500 --batch-size 2 --use-wandb --resume-checkpoint /checkpoints/pretrain-output/checkpoint-1500
 
-# Stage 2: finetune (1 GPU, auto-loads pretrain checkpoint)
-modal run modal_train.py --stage finetune --max-steps 500 --batch-size 2 --use-wandb
+# Stage 2: finetune with multi-task data (RECOMMENDED)
+modal run --detach modal_train.py --stage finetune --max-steps 2000 --batch-size 2 --use-wandb \
+  --learning-rate 2e-5 --lora-learning-rate 2e-4 --dataset mix_665k
+
+# Stage 2: finetune with original 150K data only
+modal run --detach modal_train.py --stage finetune --max-steps 2000 --batch-size 2 --use-wandb \
+  --dataset instruct_150k
+
+# Stage 2: resume from checkpoint
+modal run --detach modal_train.py --stage finetune --max-steps 2000 --batch-size 2 --use-wandb \
+  --resume-checkpoint /checkpoints/finetune-output/checkpoint-1000
 
 # Inference: generate predictions from all checkpoints
 modal run modal_inference.py --num-examples 20
@@ -425,4 +512,5 @@ modal volume get anymal-checkpoints /checkpoints/finetune-output ./local_finetun
 - **Perceiver Resampler**: [Flamingo arXiv:2204.14198](https://arxiv.org/abs/2204.14198)
 - **QLoRA**: [arXiv:2305.14314](https://arxiv.org/abs/2305.14314)
 - **LLaVA**: [github.com/haotian-liu/LLaVA](https://github.com/haotian-liu/LLaVA)
+- **LLaVA-1.5**: [CVPR 2024 — Improved Baselines with Visual Instruction Tuning](https://openaccess.thecvf.com/content/CVPR2024/papers/Liu_Improved_Baselines_with_Visual_Instruction_Tuning_CVPR_2024_paper.pdf)
 - **Modal Docs**: [modal.com/docs](https://modal.com/docs)

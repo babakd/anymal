@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AnyMAL Training Progression</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6366f1;
+    --accent-dim: #4f46e5;
+    --green: #22c55e;
+    --green-bg: rgba(34,197,94,0.08);
+    --orange: #f59e0b;
+    --orange-bg: rgba(245,158,11,0.08);
+    --blue: #3b82f6;
+    --blue-bg: rgba(59,130,246,0.08);
+    --purple: #a78bfa;
+    --purple-bg: rgba(167,139,250,0.08);
+    --red: #ef4444;
+  }
+
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  /* Header */
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 20px 32px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    backdrop-filter: blur(12px);
+  }
+
+  .header-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  h1 {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--text);
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .badge-pretrain {
+    background: var(--blue-bg);
+    color: var(--blue);
+    border: 1px solid rgba(59,130,246,0.2);
+  }
+
+  .badge-finetune {
+    background: var(--purple-bg);
+    color: var(--purple);
+    border: 1px solid rgba(167,139,250,0.2);
+  }
+
+  .badge-base {
+    background: var(--orange-bg);
+    color: var(--orange);
+    border: 1px solid rgba(245,158,11,0.2);
+  }
+
+  .meta {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+  }
+
+  .load-btn {
+    padding: 7px 16px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  .load-btn:hover { background: var(--accent-dim); }
+
+  .search-box {
+    padding: 7px 12px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--text);
+    width: 220px;
+    font-family: inherit;
+    transition: border-color 0.15s;
+  }
+  .search-box:focus { outline: none; border-color: var(--accent); }
+  .search-box::placeholder { color: var(--text-dim); }
+
+  .view-toggle {
+    display: flex;
+    gap: 0;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .view-toggle button {
+    padding: 6px 14px;
+    background: var(--surface2);
+    color: var(--text-dim);
+    border: none;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+  .view-toggle button.active {
+    background: var(--accent);
+    color: #fff;
+  }
+  .view-toggle button:not(:last-child) {
+    border-right: 1px solid var(--border);
+  }
+
+  #file-input { display: none; }
+
+  /* Pipeline legend */
+  .pipeline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+  }
+
+  .pipeline-step {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    border: 1px solid transparent;
+    user-select: none;
+  }
+
+  .pipeline-step.active {
+    border-color: var(--accent);
+    background: rgba(99,102,241,0.1);
+  }
+
+  .pipeline-step .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+
+  .pipeline-arrow {
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+
+  /* Empty state */
+  .empty-state {
+    text-align: center;
+    padding: 120px 24px;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+  .empty-state code {
+    background: var(--surface2);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+
+  /* Main content */
+  main {
+    padding: 24px 32px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  /* Example card — progression layout */
+  .example {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 20px;
+    overflow: hidden;
+    transition: border-color 0.15s;
+  }
+  .example:hover {
+    border-color: rgba(99,102,241,0.3);
+  }
+
+  .example-header {
+    display: flex;
+    gap: 20px;
+    padding: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .example-image {
+    width: 200px;
+    min-width: 200px;
+    height: 150px;
+    border-radius: 8px;
+    object-fit: cover;
+    background: var(--surface2);
+  }
+
+  .example-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .example-idx {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  .example-question {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 10px;
+    line-height: 1.4;
+  }
+
+  .example-gt {
+    font-size: 12px;
+    color: var(--green);
+    background: var(--green-bg);
+    border: 1px solid rgba(34,197,94,0.15);
+    border-radius: 8px;
+    padding: 10px 12px;
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.15s;
+  }
+
+  .example-gt .gt-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .example-gt .gt-toggle {
+    font-size: 10px;
+    opacity: 0.7;
+  }
+
+  .example-gt .gt-text {
+    margin-top: 6px;
+    line-height: 1.5;
+    display: none;
+  }
+
+  .example-gt.expanded .gt-text {
+    display: block;
+  }
+
+  /* Predictions timeline */
+  .predictions {
+    padding: 0;
+  }
+
+  .pred-row {
+    display: flex;
+    align-items: stretch;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.1s;
+  }
+  .pred-row:last-child { border-bottom: none; }
+  .pred-row:hover { background: rgba(99,102,241,0.03); }
+
+  .pred-step-label {
+    width: 160px;
+    min-width: 160px;
+    padding: 14px 16px;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+  }
+
+  .pred-step-num {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .pred-step-stage {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .stage-base { color: var(--orange); }
+  .stage-pretrain { color: var(--blue); }
+  .stage-finetune { color: var(--purple); }
+
+  .pred-timeline-dot {
+    width: 3px;
+    min-width: 3px;
+    position: relative;
+  }
+
+  .pred-timeline-dot::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    transform: translateX(-50%);
+    background: var(--border);
+  }
+
+  .pred-timeline-dot::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    border: 2px solid var(--border);
+    background: var(--surface);
+  }
+
+  .pred-row[data-stage="base"] .pred-timeline-dot::after { border-color: var(--orange); }
+  .pred-row[data-stage="pretrain"] .pred-timeline-dot::after { border-color: var(--blue); }
+  .pred-row[data-stage="finetune"] .pred-timeline-dot::after { border-color: var(--purple); }
+
+  .pred-text {
+    flex: 1;
+    padding: 14px 16px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text);
+    min-width: 0;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+
+  .pred-text.gibberish {
+    color: var(--red);
+    opacity: 0.7;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+
+  .pred-text.empty-pred {
+    color: var(--text-dim);
+    font-style: italic;
+  }
+
+  /* Slider view */
+  .slider-controls {
+    display: none;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .slider-controls.active {
+    display: flex;
+  }
+
+  .slider-controls label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+  }
+
+  .step-slider {
+    width: 300px;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  .step-indicator {
+    font-size: 14px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    min-width: 120px;
+    color: var(--text);
+  }
+
+  /* Grid view */
+  .grid-view {
+    display: none;
+  }
+
+  .grid-view.active {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 16px;
+  }
+
+  .grid-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    transition: border-color 0.15s;
+  }
+  .grid-card:hover { border-color: rgba(99,102,241,0.3); }
+
+  .grid-card-img {
+    width: 100%;
+    aspect-ratio: 4/3;
+    object-fit: cover;
+    background: var(--surface2);
+  }
+
+  .grid-card-body {
+    padding: 12px 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .grid-card-idx {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .grid-card-question {
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  .grid-card-gt {
+    font-size: 12px;
+    color: var(--green);
+    background: var(--green-bg);
+    border-radius: 6px;
+    padding: 8px 10px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .grid-card-gt .gt-label {
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .grid-card-gt .gt-text {
+    margin-top: 4px;
+    display: none;
+  }
+  .grid-card-gt.expanded .gt-text { display: block; }
+
+  .grid-card-pred {
+    font-size: 12px;
+    background: var(--surface2);
+    border-radius: 6px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+  }
+  .grid-card-pred .pred-label {
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    header { padding: 14px 16px; }
+    main { padding: 16px; }
+    .example-header { flex-direction: column; }
+    .example-image { width: 100%; height: 200px; }
+    .pred-step-label { width: 100px; min-width: 100px; }
+    .step-slider { width: 180px; }
+  }
+
+  /* Summary stats bar */
+  .stats-bar {
+    display: flex;
+    gap: 20px;
+    padding: 16px 32px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+
+  .stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .stat-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-dim);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .stat-value {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-top">
+    <div class="header-left">
+      <h1>AnyMAL Training Progression</h1>
+      <span class="meta" id="meta-info"></span>
+    </div>
+    <div>
+      <button class="load-btn" id="load-btn">Load predictions.json</button>
+      <input type="file" id="file-input" accept=".json">
+    </div>
+  </div>
+  <div class="controls" id="controls" style="display:none;">
+    <div class="view-toggle" id="view-toggle">
+      <button class="active" data-view="timeline">Timeline</button>
+      <button data-view="grid">Grid</button>
+    </div>
+    <input type="text" class="search-box" id="search-box" placeholder="Filter by question...">
+    <div class="slider-controls" id="slider-controls">
+      <label>Step:</label>
+      <input type="range" class="step-slider" id="step-slider" min="0" max="0" value="0">
+      <span class="step-indicator" id="step-indicator"></span>
+    </div>
+  </div>
+  <div class="pipeline" id="pipeline" style="display:none;"></div>
+</header>
+
+<div class="stats-bar" id="stats-bar" style="display:none;"></div>
+
+<main>
+  <div class="empty-state" id="empty-state">
+    Load a <code>predictions.json</code> file to view model predictions across training checkpoints.<br>
+    <span style="margin-top:8px;display:inline-block;font-size:12px;">
+      Generated by <code>modal run modal_inference.py</code>
+    </span>
+  </div>
+  <div id="timeline-view"></div>
+  <div class="grid-view" id="grid-view"></div>
+</main>
+
+<script>
+(function() {
+  let data = null;
+  let currentView = 'timeline';
+  let currentStepIndex = 0;
+
+  const $ = (sel) => document.querySelector(sel);
+  const $$ = (sel) => document.querySelectorAll(sel);
+
+  const fileInput = $('#file-input');
+  const loadBtn = $('#load-btn');
+  const controls = $('#controls');
+  const pipeline = $('#pipeline');
+  const statsBar = $('#stats-bar');
+  const searchBox = $('#search-box');
+  const timelineView = $('#timeline-view');
+  const gridView = $('#grid-view');
+  const emptyState = $('#empty-state');
+  const metaInfo = $('#meta-info');
+  const viewToggle = $('#view-toggle');
+  const sliderControls = $('#slider-controls');
+  const stepSlider = $('#step-slider');
+  const stepIndicator = $('#step-indicator');
+
+  loadBtn.addEventListener('click', () => fileInput.click());
+
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        data = JSON.parse(ev.target.result);
+        init();
+      } catch (err) {
+        alert('Failed to parse JSON: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  });
+
+  // Listen for injected data (from Modal web endpoint)
+  document.addEventListener('predictions-loaded', (e) => {
+    if (!data) { data = e.detail; init(); }
+  });
+
+  // Also check for inline data (set before this script runs)
+  if (window.__PREDICTIONS_DATA__ && !data) {
+    data = window.__PREDICTIONS_DATA__;
+    setTimeout(init, 0);
+  }
+
+  // Try auto-loading predictions files from same directory
+  // Try timestamped file first (newest), then fallback to plain predictions.json
+  fetch('predictions_20260209_042846.json')
+    .then(r => { if (r.ok) return r.json(); throw new Error('not found'); })
+    .then(d => { if (!data) { data = d; init(); } })
+    .catch(() => {
+      fetch('predictions_20260208_222917.json')
+        .then(r => { if (r.ok) return r.json(); throw new Error('not found'); })
+        .then(d => { if (!data) { data = d; init(); } })
+        .catch(() => {
+          fetch('predictions.json')
+            .then(r => { if (r.ok) return r.json(); throw new Error('not found'); })
+            .then(d => { if (!data) { data = d; init(); } })
+            .catch(() => {});
+        });
+    });
+
+  function stageColor(stage) {
+    if (stage === 'pretrain') return 'var(--blue)';
+    if (stage === 'finetune') return 'var(--purple)';
+    return 'var(--orange)';
+  }
+
+  function stageClass(stage) {
+    if (stage === 'pretrain') return 'stage-pretrain';
+    if (stage === 'finetune') return 'stage-finetune';
+    return 'stage-base';
+  }
+
+  function badgeClass(stage) {
+    if (stage === 'pretrain') return 'badge-pretrain';
+    if (stage === 'finetune') return 'badge-finetune';
+    return 'badge-base';
+  }
+
+  function isGibberish(text) {
+    if (!text || text.length < 10) return true;
+    // Check for extreme repetition
+    const words = text.split(/\s+/);
+    if (words.length > 5) {
+      const unique = new Set(words);
+      if (unique.size <= 3) return true;
+    }
+    // Check if it's just repeating a short pattern
+    if (text.length > 30) {
+      const chunk = text.substring(0, 15);
+      const rest = text.substring(15);
+      if (rest.includes(chunk) && rest.indexOf(chunk) < 20) {
+        // Check how many times the chunk repeats
+        const count = text.split(chunk).length - 1;
+        if (count > 5) return true;
+      }
+    }
+    return false;
+  }
+
+  function truncate(text, maxLen) {
+    if (!text) return '(no prediction)';
+    if (text.length <= maxLen) return text;
+    return text.substring(0, maxLen) + '...';
+  }
+
+  function init() {
+    if (!data || !data.steps || !data.examples) {
+      alert('Invalid predictions.json format.');
+      return;
+    }
+
+    emptyState.style.display = 'none';
+    controls.style.display = 'flex';
+    pipeline.style.display = 'flex';
+    statsBar.style.display = 'flex';
+
+    // Metadata
+    const nExamples = data.metadata.num_examples;
+    const nSteps = data.steps.length;
+    const ts = data.metadata.timestamp || '';
+    metaInfo.textContent = ts;
+
+    // Stats bar
+    const stages = [...new Set(data.steps.map(s => s.stage || 'unknown'))];
+    const pretSteps = data.steps.filter(s => s.stage === 'pretrain').length;
+    const ftSteps = data.steps.filter(s => s.stage === 'finetune').length;
+    statsBar.innerHTML = `
+      <div class="stat"><div class="stat-label">Examples</div><div class="stat-value">${nExamples}</div></div>
+      <div class="stat"><div class="stat-label">Checkpoints</div><div class="stat-value">${nSteps}</div></div>
+      <div class="stat"><div class="stat-label">Pretrain Steps</div><div class="stat-value">${pretSteps}</div></div>
+      <div class="stat"><div class="stat-label">Finetune Steps</div><div class="stat-value">${ftSteps}</div></div>
+      <div class="stat"><div class="stat-label">Elapsed</div><div class="stat-value">${Math.round((data.metadata.elapsed_seconds || 0) / 60)}m</div></div>
+    `;
+
+    // Pipeline legend
+    pipeline.innerHTML = '';
+    data.steps.forEach((s, i) => {
+      if (i > 0) {
+        const arrow = document.createElement('span');
+        arrow.className = 'pipeline-arrow';
+        arrow.textContent = '\u2192';
+        pipeline.appendChild(arrow);
+      }
+      const el = document.createElement('span');
+      el.className = 'pipeline-step';
+      const stage = s.stage || 'base';
+      el.innerHTML = `<span class="dot" style="background:${stageColor(stage)}"></span>Step ${s.step} <span class="badge ${badgeClass(stage)}">${stage}</span>`;
+      pipeline.appendChild(el);
+    });
+
+    // Slider setup for grid view
+    stepSlider.min = 0;
+    stepSlider.max = data.steps.length - 1;
+    stepSlider.value = data.steps.length - 1;
+    currentStepIndex = data.steps.length - 1;
+    updateStepIndicator();
+
+    buildTimelineView();
+    buildGridView();
+    setView('timeline');
+  }
+
+  function updateStepIndicator() {
+    if (!data) return;
+    const s = data.steps[currentStepIndex];
+    const stage = s.stage || 'base';
+    stepIndicator.innerHTML = `Step ${s.step} <span class="badge ${badgeClass(stage)}" style="font-size:10px">${stage}</span>`;
+  }
+
+  // View toggle
+  viewToggle.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-view]');
+    if (!btn) return;
+    setView(btn.dataset.view);
+  });
+
+  function setView(view) {
+    currentView = view;
+    $$('#view-toggle button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+
+    if (view === 'timeline') {
+      timelineView.style.display = 'block';
+      gridView.classList.remove('active');
+      sliderControls.classList.remove('active');
+    } else {
+      timelineView.style.display = 'none';
+      gridView.classList.add('active');
+      sliderControls.classList.add('active');
+      updateGridPredictions();
+    }
+  }
+
+  stepSlider.addEventListener('input', () => {
+    currentStepIndex = parseInt(stepSlider.value);
+    updateStepIndicator();
+    updateGridPredictions();
+  });
+
+  searchBox.addEventListener('input', () => filterExamples());
+
+  function filterExamples() {
+    const q = searchBox.value.toLowerCase().trim();
+    // Timeline view
+    $$('.example').forEach(el => {
+      el.style.display = (!q || el.dataset.question.includes(q)) ? '' : 'none';
+    });
+    // Grid view
+    $$('.grid-card').forEach(el => {
+      el.style.display = (!q || el.dataset.question.includes(q)) ? '' : 'none';
+    });
+  }
+
+  function buildTimelineView() {
+    timelineView.innerHTML = '';
+
+    data.examples.forEach((ex) => {
+      const div = document.createElement('div');
+      div.className = 'example';
+      div.dataset.question = (ex.question || '').toLowerCase();
+      div.dataset.idx = ex.idx;
+
+      // Header: image + question + ground truth
+      const header = document.createElement('div');
+      header.className = 'example-header';
+
+      if (ex.image_b64) {
+        const img = document.createElement('img');
+        img.className = 'example-image';
+        img.src = 'data:image/jpeg;base64,' + ex.image_b64;
+        img.alt = 'COCO image';
+        img.loading = 'lazy';
+        header.appendChild(img);
+      }
+
+      const info = document.createElement('div');
+      info.className = 'example-info';
+
+      const idx = document.createElement('div');
+      idx.className = 'example-idx';
+      idx.textContent = '#' + ex.idx + (ex.image_filename ? ' \u2014 ' + ex.image_filename : '');
+      info.appendChild(idx);
+
+      const question = document.createElement('div');
+      question.className = 'example-question';
+      question.textContent = ex.question || '(no question)';
+      info.appendChild(question);
+
+      const gt = document.createElement('div');
+      gt.className = 'example-gt';
+      gt.innerHTML = `
+        <div class="gt-header">
+          <span>Ground Truth</span>
+          <span class="gt-toggle">click to expand</span>
+        </div>
+        <div class="gt-text"></div>
+      `;
+      gt.querySelector('.gt-text').textContent = ex.ground_truth || '';
+      gt.addEventListener('click', () => {
+        gt.classList.toggle('expanded');
+        gt.querySelector('.gt-toggle').textContent = gt.classList.contains('expanded') ? 'click to collapse' : 'click to expand';
+      });
+      info.appendChild(gt);
+
+      header.appendChild(info);
+      div.appendChild(header);
+
+      // Predictions timeline
+      const preds = document.createElement('div');
+      preds.className = 'predictions';
+
+      data.steps.forEach((stepData) => {
+        const stage = stepData.stage || 'base';
+        const pred = stepData.predictions.find(p => p.idx === ex.idx);
+        const predText = pred ? pred.prediction : '(no prediction)';
+
+        const row = document.createElement('div');
+        row.className = 'pred-row';
+        row.dataset.stage = stage;
+
+        const label = document.createElement('div');
+        label.className = 'pred-step-label';
+        label.innerHTML = `
+          <div class="pred-step-num">Step ${stepData.step}</div>
+          <div class="pred-step-stage ${stageClass(stage)}">${stage}</div>
+        `;
+        row.appendChild(label);
+
+        const dot = document.createElement('div');
+        dot.className = 'pred-timeline-dot';
+        row.appendChild(dot);
+
+        const text = document.createElement('div');
+        const isEmpty = !predText || predText.trim().length === 0;
+        if (isEmpty) {
+          text.className = 'pred-text empty-pred';
+          text.textContent = '(empty output)';
+        } else if (isGibberish(predText)) {
+          text.className = 'pred-text gibberish';
+          text.textContent = predText;
+        } else {
+          text.className = 'pred-text';
+          text.textContent = predText;
+        }
+        row.appendChild(text);
+
+        preds.appendChild(row);
+      });
+
+      div.appendChild(preds);
+      timelineView.appendChild(div);
+    });
+  }
+
+  function buildGridView() {
+    gridView.innerHTML = '';
+
+    data.examples.forEach((ex) => {
+      const card = document.createElement('div');
+      card.className = 'grid-card';
+      card.dataset.idx = ex.idx;
+      card.dataset.question = (ex.question || '').toLowerCase();
+
+      if (ex.image_b64) {
+        const img = document.createElement('img');
+        img.className = 'grid-card-img';
+        img.src = 'data:image/jpeg;base64,' + ex.image_b64;
+        img.alt = 'COCO image';
+        img.loading = 'lazy';
+        card.appendChild(img);
+      }
+
+      const body = document.createElement('div');
+      body.className = 'grid-card-body';
+
+      const idx = document.createElement('div');
+      idx.className = 'grid-card-idx';
+      idx.textContent = '#' + ex.idx;
+      body.appendChild(idx);
+
+      const q = document.createElement('div');
+      q.className = 'grid-card-question';
+      q.textContent = ex.question || '(no question)';
+      body.appendChild(q);
+
+      const gt = document.createElement('div');
+      gt.className = 'grid-card-gt';
+      gt.innerHTML = '<div class="gt-label">Ground Truth (click)</div><div class="gt-text"></div>';
+      gt.querySelector('.gt-text').textContent = ex.ground_truth || '';
+      gt.addEventListener('click', () => gt.classList.toggle('expanded'));
+      body.appendChild(gt);
+
+      const pred = document.createElement('div');
+      pred.className = 'grid-card-pred';
+      pred.innerHTML = '<div class="pred-label">Prediction</div><div class="pred-text-grid" data-pred-idx="' + ex.idx + '"></div>';
+      body.appendChild(pred);
+
+      card.appendChild(body);
+      gridView.appendChild(card);
+    });
+  }
+
+  function updateGridPredictions() {
+    if (!data) return;
+    const stepData = data.steps[currentStepIndex];
+    const predMap = {};
+    stepData.predictions.forEach(p => { predMap[p.idx] = p.prediction; });
+
+    $$('.pred-text-grid').forEach(el => {
+      const idx = parseInt(el.dataset.predIdx);
+      const text = predMap[idx] !== undefined ? predMap[idx] : '(no prediction)';
+      el.textContent = text;
+      el.style.color = isGibberish(text) ? 'var(--text-dim)' : 'var(--text)';
+      el.style.fontStyle = isGibberish(text) ? 'italic' : 'normal';
+    });
+
+    // Update grid card pred labels
+    $$('.grid-card-pred .pred-label').forEach(el => {
+      const stage = stepData.stage || 'base';
+      el.textContent = `Step ${stepData.step} (${stage})`;
+    });
+  }
+})();
+</script>
+
+</body>
+</html>

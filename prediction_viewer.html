@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AnyMAL Prediction Viewer</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f5f6f8;
+    color: #1a1a1a;
+    line-height: 1.5;
+  }
+
+  header {
+    background: #fff;
+    border-bottom: 1px solid #e0e0e0;
+    padding: 16px 24px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .header-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .meta {
+    font-size: 13px;
+    color: #666;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+
+  .load-btn {
+    padding: 6px 14px;
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    font-weight: 500;
+  }
+  .load-btn:hover { background: #1d4ed8; }
+
+  .slider-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .slider-group label {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .slider-group input[type="range"] {
+    width: 200px;
+    accent-color: #2563eb;
+  }
+
+  .step-label {
+    font-size: 14px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    min-width: 70px;
+  }
+
+  .search-box {
+    padding: 6px 10px;
+    border: 1px solid #d0d0d0;
+    border-radius: 6px;
+    font-size: 13px;
+    width: 200px;
+  }
+  .search-box:focus { outline: none; border-color: #2563eb; }
+
+  #file-input { display: none; }
+
+  .empty-state {
+    text-align: center;
+    padding: 80px 24px;
+    color: #888;
+    font-size: 15px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
+    padding: 20px 24px;
+  }
+
+  .card {
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .card-img {
+    width: 100%;
+    aspect-ratio: 4/3;
+    object-fit: cover;
+    background: #eee;
+    display: block;
+  }
+
+  .card-body {
+    padding: 12px 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+  }
+
+  .card-idx {
+    font-size: 11px;
+    color: #999;
+    font-weight: 500;
+  }
+
+  .card-question {
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .card-gt {
+    font-size: 12px;
+    color: #16a34a;
+    background: #f0fdf4;
+    border-radius: 6px;
+    padding: 6px 8px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .card-gt.collapsed .gt-text { display: none; }
+  .card-gt .gt-label {
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .gt-text { margin-top: 4px; }
+
+  .card-pred {
+    font-size: 13px;
+    color: #9a3412;
+    background: #fff7ed;
+    border-radius: 6px;
+    padding: 6px 8px;
+  }
+  .pred-label {
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #c2410c;
+  }
+  .pred-text { margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-row">
+    <h1>AnyMAL Prediction Viewer</h1>
+    <span class="meta" id="meta-info"></span>
+  </div>
+  <div class="controls" id="controls" style="display:none;">
+    <div class="slider-group">
+      <label for="step-slider">Step:</label>
+      <input type="range" id="step-slider" min="0" max="0" value="0" step="1">
+      <span class="step-label" id="step-label">0</span>
+    </div>
+    <input type="text" class="search-box" id="search-box" placeholder="Filter by question...">
+  </div>
+  <div style="margin-top:12px;">
+    <button class="load-btn" id="load-btn">Load predictions.json</button>
+    <input type="file" id="file-input" accept=".json">
+  </div>
+</header>
+
+<main>
+  <div class="empty-state" id="empty-state">
+    Load a <code>predictions.json</code> file to view model predictions across training checkpoints.
+  </div>
+  <div class="grid" id="grid"></div>
+</main>
+
+<script>
+(function() {
+  let data = null;
+  let currentStepIndex = 0;
+
+  const fileInput = document.getElementById('file-input');
+  const loadBtn = document.getElementById('load-btn');
+  const controls = document.getElementById('controls');
+  const slider = document.getElementById('step-slider');
+  const stepLabel = document.getElementById('step-label');
+  const searchBox = document.getElementById('search-box');
+  const grid = document.getElementById('grid');
+  const emptyState = document.getElementById('empty-state');
+  const metaInfo = document.getElementById('meta-info');
+
+  loadBtn.addEventListener('click', () => fileInput.click());
+
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        data = JSON.parse(ev.target.result);
+        init();
+      } catch (err) {
+        alert('Failed to parse JSON: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  });
+
+  function init() {
+    if (!data || !data.steps || !data.examples) {
+      alert('Invalid predictions.json format.');
+      return;
+    }
+
+    emptyState.style.display = 'none';
+    controls.style.display = 'flex';
+
+    const steps = data.steps.map(s => s.step);
+    slider.min = 0;
+    slider.max = steps.length - 1;
+    slider.value = 0;
+    currentStepIndex = 0;
+
+    metaInfo.textContent = `${data.metadata.num_examples} examples | Steps: ${steps.join(', ')} | ${data.metadata.timestamp}`;
+
+    updateStepLabel();
+    buildCards();
+    updatePredictions();
+  }
+
+  slider.addEventListener('input', () => {
+    currentStepIndex = parseInt(slider.value);
+    updateStepLabel();
+    updatePredictions();
+  });
+
+  searchBox.addEventListener('input', () => {
+    filterCards();
+  });
+
+  function updateStepLabel() {
+    if (!data) return;
+    const step = data.steps[currentStepIndex].step;
+    stepLabel.textContent = 'Step ' + step;
+  }
+
+  function buildCards() {
+    grid.innerHTML = '';
+    data.examples.forEach((ex) => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.dataset.idx = ex.idx;
+      card.dataset.question = (ex.question || '').toLowerCase();
+
+      // Image
+      if (ex.image_b64) {
+        const img = document.createElement('img');
+        img.className = 'card-img';
+        img.src = 'data:image/jpeg;base64,' + ex.image_b64;
+        img.alt = 'COCO image';
+        img.loading = 'lazy';
+        card.appendChild(img);
+      }
+
+      const body = document.createElement('div');
+      body.className = 'card-body';
+
+      // Index
+      const idx = document.createElement('div');
+      idx.className = 'card-idx';
+      idx.textContent = '#' + ex.idx + (ex.image_filename ? ' — ' + ex.image_filename : '');
+      body.appendChild(idx);
+
+      // Question
+      const q = document.createElement('div');
+      q.className = 'card-question';
+      q.textContent = ex.question || '(no question)';
+      body.appendChild(q);
+
+      // Ground truth (collapsible)
+      const gt = document.createElement('div');
+      gt.className = 'card-gt collapsed';
+      gt.innerHTML = '<div class="gt-label">Ground Truth (click to expand)</div><div class="gt-text"></div>';
+      gt.querySelector('.gt-text').textContent = ex.ground_truth || '';
+      gt.addEventListener('click', () => gt.classList.toggle('collapsed'));
+      // Update label on toggle
+      const observer = new MutationObserver(() => {
+        gt.querySelector('.gt-label').textContent =
+          gt.classList.contains('collapsed') ? 'Ground Truth (click to expand)' : 'Ground Truth';
+      });
+      observer.observe(gt, { attributes: true, attributeFilter: ['class'] });
+      body.appendChild(gt);
+
+      // Prediction
+      const pred = document.createElement('div');
+      pred.className = 'card-pred';
+      pred.innerHTML = '<div class="pred-label">Prediction</div><div class="pred-text" data-pred-idx="' + ex.idx + '"></div>';
+      body.appendChild(pred);
+
+      card.appendChild(body);
+      grid.appendChild(card);
+    });
+  }
+
+  function updatePredictions() {
+    if (!data) return;
+    const stepData = data.steps[currentStepIndex];
+    const predMap = {};
+    stepData.predictions.forEach(p => { predMap[p.idx] = p.prediction; });
+
+    document.querySelectorAll('[data-pred-idx]').forEach(el => {
+      const idx = parseInt(el.dataset.predIdx);
+      el.textContent = predMap[idx] !== undefined ? predMap[idx] : '(no prediction)';
+    });
+  }
+
+  function filterCards() {
+    const query = searchBox.value.toLowerCase().trim();
+    document.querySelectorAll('.card').forEach(card => {
+      if (!query) {
+        card.style.display = '';
+      } else {
+        card.style.display = card.dataset.question.includes(query) ? '' : 'none';
+      }
+    });
+  }
+})();
+</script>
+
+</body>
+</html>

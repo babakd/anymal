@@ -804,23 +804,13 @@ class Trainer:
         print_rank_0(f"  Resumed at global_step={self.global_step}, epoch={self.epoch}")
 
     def _cleanup_checkpoints(self):
-        """Remove old checkpoints beyond save_total_limit."""
-        if self.config.save_total_limit <= 0:
-            return
+        """
+        Checkpoint cleanup is intentionally disabled.
 
-        checkpoints = []
-        for name in os.listdir(self.config.output_dir):
-            if name.startswith("checkpoint-"):
-                step = int(name.split("-")[1])
-                checkpoints.append((step, os.path.join(self.config.output_dir, name)))
-
-        checkpoints.sort(key=lambda x: x[0])
-
-        # Remove oldest checkpoints
-        while len(checkpoints) > self.config.save_total_limit:
-            _, path = checkpoints.pop(0)
-            import shutil
-            shutil.rmtree(path)
+        We retain all checkpoints and rely on explicit/manual pruning instead
+        of automatic deletion based on save_total_limit.
+        """
+        return
 
     def _compute_component_grad_norms(self) -> Dict[str, float]:
         """Compute gradient norms per model component for diagnostics."""

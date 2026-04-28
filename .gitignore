@@ -82,3 +82,6 @@ Thumbs.db
 .env
 .env.local
 *.env
+
+# Codex local handoff context
+codex.md
