@@ -69,6 +69,12 @@ GPU_MODAL_RESOURCES = {
     "h100": {"single": "H100", "distributed": "H100:4"},
 }
 
+# Full V2 runs are longer than the original smoke/canary budget. Keep Stage 1
+# comfortably above the observed 250-step zip canary extrapolation, and give
+# Stage 2 enough room for 3000 QLoRA steps plus eval/checkpoint overhead.
+STAGE1_PRETRAIN_TIMEOUT_SECONDS = 8 * 60 * 60
+STAGE2_TRAINER_TIMEOUT_SECONDS = 24 * 60 * 60
+
 
 def _normalize_gpu_type(gpu_type: str) -> str:
     """Normalize user-facing GPU type flag to known keys."""
@@ -258,7 +264,7 @@ def _checkpoint_matches_run_config(
 @app.cls(
     image=image,
     gpu="A100-80GB",  # Use A100 80GB for large models
-    timeout=14400,  # 4 hour timeout
+    timeout=STAGE2_TRAINER_TIMEOUT_SECONDS,
     volumes={"/checkpoints": volume},
     secrets=[
         modal.Secret.from_name("huggingface"),
@@ -995,7 +1001,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         use_amp=True,
         amp_dtype="bfloat16",
         logging_steps=1,  # Log every step for close monitoring
-        save_steps=_checkpoint_save_interval(max_steps),
+        save_steps=_checkpoint_save_interval(max_steps, max_interval=50),
         eval_steps=eval_steps,
         max_eval_batches=200,  # Clip eval to 200 batches (~55s) during training
         output_dir=finetune_output_dir,
@@ -1871,7 +1877,7 @@ def _run_pretrain_distributed(
 @app.function(
     image=image,
     gpu="A100-80GB:4",
-    timeout=14400,  # 4 hour timeout
+    timeout=STAGE1_PRETRAIN_TIMEOUT_SECONDS,
     volumes={"/checkpoints": volume},
     secrets=[
         modal.Secret.from_name("huggingface"),
@@ -1906,7 +1912,7 @@ def pretrain_distributed(
 @app.function(
     image=image,
     gpu="H100:4",
-    timeout=14400,  # 4 hour timeout
+    timeout=STAGE1_PRETRAIN_TIMEOUT_SECONDS,
     volumes={"/checkpoints": volume},
     secrets=[
         modal.Secret.from_name("huggingface"),
@@ -2127,6 +2133,10 @@ def main(
     print(f"  Token compressor: {token_compressor_type}")
     print(f"  GPU type: {gpu_type}")
     print(f"  Modal GPU resource: {selected_gpu}")
+    print(
+        "  Modal timeout: "
+        f"{(STAGE1_PRETRAIN_TIMEOUT_SECONDS if stage == 'pretrain' else STAGE2_TRAINER_TIMEOUT_SECONDS) // 3600}h"
+    )
     print(f"  Max steps: {max_steps}")
     print(f"  Batch size: {batch_size}")
     print(f"  Data: {'dummy' if use_dummy_data else 'LLaVA'}")

@@ -15,10 +15,10 @@ Recent agent changes made V2 the active path and added:
 - Optional V2 connector variants via `--token-compressor-type learned|perceiver|perceiver2`.
 
 The Stage 1 smoke and first live canary fell back to COCO-backed instruction
-captions because true LLaVA-Pretrain images are not staged. On 2026-04-27,
-attempting to extract `images.zip` into the existing Modal volume failed with
-`OSError: [Errno 28] No space left on device` after the volume hit its inode
-limit. Do not judge real V2 quality from COCO-fallback Stage 1 alone.
+captions because true LLaVA-Pretrain images were not staged yet. On
+2026-04-27, the exploded-file staging attempt hit the Modal volume inode/device
+limit. The current path keeps `images.zip` compressed and reads from it
+directly, so meaningful Stage 1 runs should use true LLaVA-Pretrain data.
 
 ## Run Gates
 
@@ -61,6 +61,35 @@ existing `anymal-checkpoints` volume and `LlavaPretrainCaptionDataset` reads
 images directly from the zip. This avoids the exploded JPEG inode/device limit
 that blocked the previous staging attempt. If `manifest.json` and `images.zip`
 are missing, Stage 1 still intentionally falls back to COCO-backed captions.
+
+Trainer readiness: full-run Modal timeouts are now raised above canary budgets:
+Stage 1 distributed pretraining has an 8-hour timeout, and Stage 2 single-GPU
+QLoRA has a 24-hour timeout.
+
+## 2026-04-28 Full Learned-Connector Baseline
+
+The first meaningful V2 learned-compressor Stage 1 + Stage 2 run is complete.
+Use `V2_FULL_TRAINING_ARTIFACT_20260428.md` as the durable record.
+
+Summary:
+
+- Stage 1: true LLaVA-Pretrain zip-backed data, 2500 steps on 4x H100.
+- Stage 1 Modal app: `ap-4Jy7OQ7ptFY77J2Zm1qg0a`.
+- Stage 1 W&B: `https://wandb.ai/babakdam/anymal-pretrain/runs/x77vo36v`.
+- Stage 1 checkpoint:
+  `/checkpoints/pretrain-output/v2-stage1-learned-2500-20260428/checkpoint-2500`.
+- Stage 1 final eval loss: `2.5290`.
+- Stage 2: `balanced_mix`, 3000 steps on 1x A100.
+- Stage 2 Modal app: `ap-598nYUdjvsf1K3AS3eeA8N`.
+- Stage 2 W&B: `https://wandb.ai/babakdam/anymal-finetune/runs/3gyl1apj`.
+- Stage 2 checkpoint:
+  `/checkpoints/finetune-output/v2-stage2-balanced-mix-3000-20260428/checkpoint-3000`.
+- Stage 2 final eval loss: `1.1203`.
+- Stage 2 final VQA: `6.47%` on 500 samples.
+
+The first Stage 2 attempt restarted before its first checkpoint. The hardened
+successful run saved every 50 steps, committed the Modal volume after each save,
+and verified every checkpoint through `checkpoint-3000`.
 
 2026-04-27 zip staging launch:
 

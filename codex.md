@@ -3,6 +3,23 @@
 Last updated: 2026-02-11
 Authoring context: analysis of latest Stage 2 Modal run + inference comparison artifacts.
 
+## 2026-04-28 Supersession Note
+
+This file describes older V1-era/early Stage 2 behavior and should not be used
+as the current V2 training status. The current V2 learned-compressor baseline
+completed both meaningful stages on 2026-04-28. See:
+
+- `V2_FULL_TRAINING_ARTIFACT_20260428.md`
+- `V2_TRAINING_RUNBOOK.md`
+- `CLAUDE.md`
+
+Key current checkpoints:
+
+- Stage 1:
+  `/checkpoints/pretrain-output/v2-stage1-learned-2500-20260428/checkpoint-2500`
+- Stage 2:
+  `/checkpoints/finetune-output/v2-stage2-balanced-mix-3000-20260428/checkpoint-3000`
+
 ## Scope
 
 This note captures the current understanding of why Stage 2 fine-tuning has not delivered clear gains (and has some regressions), based on:
@@ -159,4 +176,3 @@ Conclusion: aggregate token-F1 slightly improves, but factual grounding regressi
 - Which failure mode is priority: semantic grounding accuracy vs fluency/detail?
 - Should Stage 2 continue training projector or lock projector after Stage 1?
 - Is the 20-example set fixed as regression gate, or should it be expanded and versioned?
-

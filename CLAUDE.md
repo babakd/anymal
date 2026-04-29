@@ -2,17 +2,17 @@
 
 ## Project Status (Last Updated: Apr 2026)
 
-**Current State**: V2 is now the active training path; V1 is legacy. The V2 architecture is SigLIP2 -> learned token compressor -> MLP bottleneck projector -> LLaMA-3-8B-Instruct. V2 Stage 1 and Stage 2 smoke runs both completed on Modal after the preprocessing/eval/optimizer fixes below. The older V1 Stage 1 checkpoint (`/checkpoints/pretrain-output/checkpoint-2500`) is intentionally guarded as legacy and must not be auto-loaded into V2.
+**Current State**: V2 is now the active training path; V1 is legacy. The V2 architecture is SigLIP2 -> learned token compressor -> MLP bottleneck projector -> LLaMA-3-8B-Instruct. A meaningful V2 learned-compressor Stage 1 + Stage 2 baseline completed on Modal on 2026-04-28 after the preprocessing/eval/optimizer/data fixes below. The older V1 Stage 1 checkpoint (`/checkpoints/pretrain-output/checkpoint-2500`) is intentionally guarded as legacy and must not be auto-loaded into V2.
 
 | Component | Status |
 |-----------|--------|
 | Model architecture | V2 active; V1 legacy |
-| Stage 1 pretrain (Modal, 4 GPU DDP) | V2 smoke verified; V1 full checkpoint exists but is legacy |
-| Stage 2 finetune (Modal, 1 GPU QLoRA) | V2 smoke verified; V1 500-step runs exist but are legacy |
+| Stage 1 pretrain (Modal, 4 GPU DDP) | V2 learned baseline complete: `/checkpoints/pretrain-output/v2-stage1-learned-2500-20260428/checkpoint-2500` |
+| Stage 2 finetune (Modal, 1 GPU QLoRA) | V2 learned baseline complete: `/checkpoints/finetune-output/v2-stage2-balanced-mix-3000-20260428/checkpoint-3000` |
 | Inference / prediction viewer | Working (`modal_inference.py` + `prediction_viewer.html`) |
 | W&B integration | Working (both stages) |
 | LLaVA dataset loader | Working (InstructionDataset with real images) |
-| Stage 1 caption dataset | Working (COCOCaptionDataset, 157K samples from 81K images) |
+| Stage 1 caption dataset | Working for V2 through zip-backed LLaVA-Pretrain images; COCO fallback remains available |
 | COCO images | Cached on Modal Volume (81,479 images) |
 | Health monitoring | Working (loss/grad anomaly detection) |
 | Throughput tracking | Working (tokens/sec, samples/sec) |
@@ -37,13 +37,23 @@ Verified Modal smoke runs:
 - V2 Stage 2 finetune smoke: `v2-smoke-20260427-codex-2`, app run `ap-SLiGhwZe4E5UQlcXm4cE5i`
 - V2 Stage 1 pretrain smoke: `v2-pretrain-smoke-20260427-codex`, app run `ap-WK9FApkcZviH9IgaWYfGHZ`
 
-Recommended next real experiment: run V2 Stage 1 for a meaningful checkpoint first, then V2 Stage 2 from that checkpoint. Do not compare V2 Stage 2 numbers against V1 Stage 1-loaded runs.
+Recommended next real experiment: evaluate the completed learned-compressor baseline, then run the Perceiver connector ablation from the same zip-backed Stage 1 data path. Do not compare V2 Stage 2 numbers against V1 Stage 1-loaded runs.
 
 V2 quality roadmap: see `V2_QUALITY_PLAN.md`. In short, prioritize eval hardening, real Stage 1 pretraining data, balanced Stage 2 data, dynamic/high-resolution visual tokens, a stronger spatial connector, and hallucination/verbosity alignment before doing more LR sweeps.
 
-V2 quality-plan batch 1 is implemented and smoke-tested. It adds V2-compatible captioning eval metrics, LLaVA-Pretrain caption dataset plumbing, balanced Stage 2 instruction mixtures, config-gated `token_compressor_type="perceiver"` / `"perceiver2"`, and Modal support for `--dataset balanced_mix`. Validation: `pytest tests -q` -> 118 passed, 1 skipped; Modal smoke runs `ap-krX0b1NJwdAD0WGO4VdJAD` (Stage 1) and `ap-jEdIuwx1tvvHe4TiSdlE1v` (Stage 2 balanced mix). Caveat: true LLaVA-Pretrain images are not staged at `/checkpoints/llava_pretrain/images`, so Modal Stage 1 still falls back to COCO-backed caption extraction until those images are added.
+V2 quality-plan batch 1 is implemented and smoke-tested. It adds V2-compatible captioning eval metrics, LLaVA-Pretrain caption dataset plumbing, balanced Stage 2 instruction mixtures, config-gated `token_compressor_type="perceiver"` / `"perceiver2"`, and Modal support for `--dataset balanced_mix`. Validation: `pytest tests -q` -> 118 passed, 1 skipped; Modal smoke runs `ap-krX0b1NJwdAD0WGO4VdJAD` (Stage 1) and `ap-jEdIuwx1tvvHe4TiSdlE1v` (Stage 2 balanced mix). Current V2 Stage 1 uses `/checkpoints/llava_pretrain/images.zip` directly; if the zip manifest is missing, it still falls back to COCO-backed captions.
 
-V2 Stage 1/2 run prep lives in `V2_TRAINING_RUNBOOK.md`. It includes Modal canary run IDs, learned-compressor baseline commands, Perceiver connector ablation commands, and the required reporting template. True LLaVA-Pretrain image staging is currently blocked on the existing Modal volume inode/device limit, so Stage 1 falls back to COCO-backed captions until image storage moves to tar/WebDataset shards, object storage, or a larger/different volume.
+V2 Stage 1/2 run prep lives in `V2_TRAINING_RUNBOOK.md`. It includes Modal canary run IDs, learned-compressor baseline commands, Perceiver connector ablation commands, and the required reporting template. True LLaVA-Pretrain image staging now works through `/checkpoints/llava_pretrain/images.zip`, read directly from the zip to avoid the existing Modal volume inode/device limit.
+
+The completed 2026-04-28 full baseline is recorded in
+`V2_FULL_TRAINING_ARTIFACT_20260428.md`. Do not treat V2 learned-compressor
+results as canary-only anymore: Stage 1 ran 2500 true LLaVA-Pretrain steps and
+Stage 2 ran 3000 `balanced_mix` steps from that exact checkpoint.
+
+Long-run monitoring policy lives in `TRAINING_RUN_BABYSITTING_PLAYBOOK.md`.
+Future agents should use it when supervising Modal training: prioritize correct
+run identity, checkpoint recoverability, validation trend, and persistent
+gradient behavior over noisy single-batch train loss.
 
 ### Two-Stage Training Pipeline
 
@@ -57,6 +67,21 @@ V2 Stage 1/2 run prep lives in `V2_TRAINING_RUNBOOK.md`. It includes Modal canar
 **Note**: Use `--detach` for Stage 1 (long runs). Without it, Modal kills the run if the local client disconnects.
 
 ### Verified Runs
+
+**V2 learned Stage 1 full run (2500 steps, 4x H100, 2026-04-28)**:
+- True LLaVA-Pretrain zip-backed data.
+- Final checkpoint: `/checkpoints/pretrain-output/v2-stage1-learned-2500-20260428/checkpoint-2500`
+- Final eval loss: `2.5290`
+- W&B: `https://wandb.ai/babakdam/anymal-pretrain/runs/x77vo36v`
+- Durable record: `V2_FULL_TRAINING_ARTIFACT_20260428.md`
+
+**V2 learned Stage 2 full run (3000 steps, 1x A100, 2026-04-28)**:
+- Loaded the exact Stage 1 checkpoint above; data was `balanced_mix`.
+- Final checkpoint: `/checkpoints/finetune-output/v2-stage2-balanced-mix-3000-20260428/checkpoint-3000`
+- Final eval loss: `1.1203`
+- Final VQA: `6.47%` on 500 samples
+- W&B: `https://wandb.ai/babakdam/anymal-finetune/runs/3gyl1apj`
+- Durable record: `V2_FULL_TRAINING_ARTIFACT_20260428.md`
 
 **Stage 1 full run (2500 steps, 4x A100-80GB)**:
 - Loss: ~12 -> ~1.5 (plateaus around step 500, expected with frozen LLM)
