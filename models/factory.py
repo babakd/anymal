@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 
 from .anymal import AnyMAL
 from .anymal_v2 import AnyMALv2
+from .anymal_v3 import AnyMALv3
 from model_metadata import normalize_architecture_name
 
 
@@ -27,6 +28,8 @@ def create_model(
         return AnyMAL(**_filter_kwargs_for_constructor(AnyMAL, kwargs))
     if architecture == "anymal_v2":
         return AnyMALv2(**_filter_kwargs_for_constructor(AnyMALv2, kwargs))
+    if architecture == "anymal_v3":
+        return AnyMALv3(**_filter_kwargs_for_constructor(AnyMALv3, kwargs))
     raise ValueError(f"Unsupported architecture: {architecture}")
 
 

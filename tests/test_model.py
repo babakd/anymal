@@ -542,6 +542,35 @@ class TestAnyMALv2CoreModules:
             "pool_attn.out_proj.bias",
         ]
 
+    def test_stage2_expands_learned_queries_from_stage1(self):
+        """Stage 2 loader should copy 256 learned queries into a 384-query table."""
+        from models.projectors.token_compressor import TokenCompressor
+        from training.finetune import FinetuneTrainer
+
+        stage1 = TokenCompressor(
+            input_dim=32,
+            max_tokens=256,
+            compressor_type="learned",
+            num_heads=8,
+        )
+        stage2 = TokenCompressor(
+            input_dim=32,
+            max_tokens=384,
+            compressor_type="learned",
+            num_heads=8,
+        )
+        original_extra_rows = stage2.pool_queries[256:].detach().clone()
+
+        adapted = FinetuneTrainer._adapt_token_compressor_state(
+            FinetuneTrainer.__new__(FinetuneTrainer),
+            stage2,
+            stage1.state_dict(),
+        )
+
+        assert adapted["pool_queries"].shape == (384, 32)
+        assert torch.allclose(adapted["pool_queries"][:256], stage1.pool_queries)
+        assert torch.allclose(adapted["pool_queries"][256:], original_extra_rows)
+
     def test_token_compressor_perceiver_shape_mask_counts_and_grad(self):
         """Perceiver compressor should match TokenCompressor output contracts."""
         from models.projectors.token_compressor import TokenCompressor
@@ -637,7 +666,7 @@ class TestModelFactory:
     """Tests for architecture-routing model factory."""
 
     def test_factory_routes_by_architecture(self, monkeypatch):
-        """Factory should dispatch anymal_v1 and anymal_v2 to the right constructor."""
+        """Factory should dispatch all registered architectures to the right constructor."""
         from models import factory
 
         class DummyV1:
@@ -650,14 +679,22 @@ class TestModelFactory:
                 self.kind = "v2"
                 self.kwargs = kwargs
 
+        class DummyV3:
+            def __init__(self, **kwargs):
+                self.kind = "v3"
+                self.kwargs = kwargs
+
         monkeypatch.setattr(factory, "AnyMAL", DummyV1)
         monkeypatch.setattr(factory, "AnyMALv2", DummyV2)
+        monkeypatch.setattr(factory, "AnyMALv3", DummyV3)
 
         model_v1 = factory.create_model("anymal_v1", llm_model_name="a")
         model_v2 = factory.create_model("anymal_v2", llm_model_name="b")
+        model_v3 = factory.create_model("anymal_v3", llm_model_name="c")
 
         assert model_v1.kind == "v1"
         assert model_v2.kind == "v2"
+        assert model_v3.kind == "v3"
 
     def test_factory_from_config_uses_model_architecture(self, monkeypatch):
         """Config-driven factory should route by config['model']['architecture']."""
@@ -669,6 +706,19 @@ class TestModelFactory:
 
         monkeypatch.setattr(factory, "AnyMALv2", DummyV2)
         config = {"model": {"architecture": "anymal_v2", "llm_model_name": "foo"}}
+        model = factory.create_model_from_config(config)
+        assert model.kwargs["llm_model_name"] == "foo"
+
+    def test_factory_from_config_routes_v3(self, monkeypatch):
+        """Config-driven factory should route anymal_v3."""
+        from models import factory
+
+        class DummyV3:
+            def __init__(self, llm_model_name=None, **kwargs):
+                self.kwargs = {"llm_model_name": llm_model_name, **kwargs}
+
+        monkeypatch.setattr(factory, "AnyMALv3", DummyV3)
+        config = {"model": {"architecture": "anymal_v3", "llm_model_name": "foo"}}
         model = factory.create_model_from_config(config)
         assert model.kwargs["llm_model_name"] == "foo"
 

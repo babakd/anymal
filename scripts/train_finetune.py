@@ -196,7 +196,7 @@ def main():
         image_token_policy=config["data"].get("image_token_policy", "fixed"),
         min_image_tokens=config["model"].get("min_image_tokens"),
         max_image_tokens=config["model"].get("max_image_tokens"),
-        vision_encoder_type="siglip2" if architecture == "anymal_v2" else "clip",
+        vision_encoder_type="siglip2" if architecture in {"anymal_v2", "anymal_v3"} else "clip",
         vision_model_name=config["model"].get("vision_model_name"),
         system_prompt=config["data"].get("system_prompt"),
         filter_to_available_images=config["data"].get("filter_to_available_images", False),
@@ -266,7 +266,7 @@ def main():
         max_eval_batches=eval_config.get("max_eval_batches"),
         projector_warmup_steps=config["training"].get(
             "projector_warmup_steps",
-            0 if architecture == "anymal_v2" else 200,
+            0 if architecture in {"anymal_v2", "anymal_v3"} else 200,
         ),
     )
 
@@ -290,7 +290,7 @@ def main():
                 image_token_policy=config["data"].get("image_token_policy", "fixed"),
                 min_image_tokens=config["model"].get("min_image_tokens"),
                 max_image_tokens=config["model"].get("max_image_tokens"),
-                vision_encoder_type="siglip2" if architecture == "anymal_v2" else "clip",
+                vision_encoder_type="siglip2" if architecture in {"anymal_v2", "anymal_v3"} else "clip",
                 vision_model_name=config["model"].get("vision_model_name"),
                 system_prompt=config["data"].get("system_prompt"),
                 filter_to_available_images=config["data"].get("filter_to_available_images", False),

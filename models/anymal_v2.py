@@ -16,7 +16,11 @@ import torch.nn as nn
 
 from .encoders import SigLIP2Encoder
 from .llm import LlamaWrapper
-from model_metadata import validate_checkpoint_architecture, write_model_metadata
+from model_metadata import (
+    validate_checkpoint_architecture,
+    validate_checkpoint_metadata_values,
+    write_model_metadata,
+)
 from .projectors import MLPBottleneckProjector, TokenCompressor
 
 
@@ -524,18 +528,32 @@ class AnyMALv2(nn.Module):
         validate_checkpoint_architecture(save_path, expected_architecture=cls.architecture)
 
         model = cls(llm_model_name=llm_model_name, **kwargs)
+        validate_checkpoint_metadata_values(
+            save_path,
+            expected_architecture=cls.architecture,
+            expected_values={
+                "vision_encoder_type": getattr(model, "vision_encoder_type", None),
+                "token_compressor_type": getattr(model, "token_compressor_type", None),
+                "max_image_tokens": getattr(model, "max_image_tokens", None),
+                "min_image_tokens": getattr(model, "min_image_tokens", None),
+            },
+        )
         projector_path = os.path.join(save_path, "projector.pt")
         if os.path.exists(projector_path):
             model.projector.load_state_dict(torch.load(projector_path))
+        else:
+            raise FileNotFoundError(f"Missing projector weights: {projector_path}")
 
         compressor_path = os.path.join(save_path, "token_compressor.pt")
         if os.path.exists(compressor_path):
             model.token_compressor.load_state_dict(torch.load(compressor_path))
+        else:
+            raise FileNotFoundError(f"Missing token compressor weights: {compressor_path}")
 
         llm_path = os.path.join(save_path, "llm")
         if os.path.exists(llm_path):
             base_model = model.llm.model
-            if hasattr(base_model, "base_model"):
-                base_model = base_model.base_model
+            if hasattr(base_model, "peft_config") and hasattr(base_model, "unload"):
+                base_model = base_model.unload()
             model.llm.model = PeftModel.from_pretrained(base_model, llm_path)
         return model

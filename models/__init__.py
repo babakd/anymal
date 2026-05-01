@@ -10,6 +10,7 @@ This module provides the core model architecture:
 
 from .anymal import AnyMAL
 from .anymal_v2 import AnyMALv2
+from .anymal_v3 import AnyMALv3
 from .factory import create_model, create_model_from_config
 from .encoders import ImageEncoder
 from .projectors import (
@@ -23,6 +24,7 @@ from .llm import LlamaWrapper
 __all__ = [
     "AnyMAL",
     "AnyMALv2",
+    "AnyMALv3",
     "create_model",
     "create_model_from_config",
     "ImageEncoder",

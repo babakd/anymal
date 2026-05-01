@@ -1,0 +1,67 @@
+# AnyMALv3 Stage 1A: Caption Alignment Configuration
+
+defaults:
+  - base
+
+stage: 1
+stage_name: "caption_alignment_v3"
+
+model:
+  architecture: "anymal_v3"
+  llm_model_name: "./checkpoints/llama3-8b-instruct"
+  use_qlora: false
+  use_flash_attention: true
+  gradient_checkpointing: true
+
+  vision_encoder_type: "siglip2"
+  vision_model_name: "google/siglip2-so400m-patch14-384"
+  connector_type: "perceiver_resampler"
+  num_image_tokens: 128
+  connector_layers: 6
+  connector_heads: 16
+  connector_ff_mult: 4
+  project_directly_to_llm_dim: true
+
+data:
+  dataset_type: "llava_pretrain_caption"
+  train_data_path: "./data/LLaVA-Pretrain/blip_laion_cc_sbu_558k.json"
+  image_dir: "./data/LLaVA-Pretrain/images"
+  eval_data_path: null
+  streaming: false
+  caption_prompt: ""
+  filter_to_available_images: true
+  min_caption_chars: 3
+  deduplicate_captions: true
+  image_size: 384
+  max_length: 512
+  per_device_batch_size: 16
+  gradient_accumulation_steps: 4
+  dataloader_num_workers: 8
+  pin_memory: true
+
+training:
+  learning_rate: 2.0e-4
+  lr_scheduler_type: "cosine"
+  warmup_steps: 1000
+  weight_decay: 0.01
+  max_steps: 20000
+  num_epochs: null
+  train_projector_only: true
+  use_amp: true
+  amp_dtype: "bfloat16"
+  seed: 42
+
+logging:
+  logging_steps: 100
+  use_wandb: true
+  wandb_project: "anymal-pretrain-v3"
+  wandb_run_name: "stage1a-v3-caption-alignment"
+
+checkpointing:
+  save_steps: 2000
+  save_total_limit: 5
+  output_dir: "./outputs/pretrain_v3_alignment"
+
+evaluation:
+  eval_steps: null
+  eval_strategy: "no"

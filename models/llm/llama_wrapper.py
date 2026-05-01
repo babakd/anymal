@@ -290,6 +290,17 @@ class LlamaWrapper(nn.Module):
         Returns:
             Generated token IDs [B, seq_len]
         """
+        if "eos_token_id" not in kwargs:
+            stop_ids = []
+            if self.tokenizer.eos_token_id is not None:
+                stop_ids.append(int(self.tokenizer.eos_token_id))
+            eot_id = self.tokenizer.get_vocab().get("<|eot_id|>")
+            if eot_id is not None:
+                stop_ids.append(int(eot_id))
+            # LLaMA-3-Instruct turns end with <|eot_id|>; end-of-text alone
+            # does not match the token supervised during chat fine-tuning.
+            if stop_ids:
+                kwargs["eos_token_id"] = list(dict.fromkeys(stop_ids))
         return self.model.generate(
             inputs_embeds=inputs_embeds,
             input_ids=input_ids,
@@ -299,7 +310,6 @@ class LlamaWrapper(nn.Module):
             top_p=top_p,
             do_sample=do_sample,
             pad_token_id=self.tokenizer.pad_token_id,
-            eos_token_id=self.tokenizer.eos_token_id,
             **kwargs,
         )
 

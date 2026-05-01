@@ -179,7 +179,25 @@ class InstructionDataset(Dataset):
         else:
             raise ValueError(f"Data path not found: {data_path}")
 
-        return data
+        normalized = []
+        for sample in data:
+            if "conversations" in sample:
+                normalized.append(sample)
+                continue
+            if "image" in sample and "caption" in sample:
+                normalized.append(
+                    {
+                        "image": sample["image"],
+                        "conversations": [
+                            {"from": "human", "value": "<image>\nDescribe the image."},
+                            {"from": "gpt", "value": sample["caption"]},
+                        ],
+                    }
+                )
+                continue
+            normalized.append(sample)
+
+        return normalized
 
     def _filter_to_available_images(self) -> List[Dict]:
         """Filter samples to only those with available image files."""
@@ -227,15 +245,16 @@ class InstructionDataset(Dataset):
         # Get conversations
         conversations = sample["conversations"]
 
-        # Format conversation for training
-        formatted_text, response_indices, image_sentinel = self._format_conversation(conversations)
+        # Format conversation for training. Segment-wise encoding is used so
+        # role masks do not depend on tokenizer offset mappings around the
+        # expanded image-placeholder block.
+        segments, image_sentinel = self._format_conversation_segments(conversations)
 
         num_image_tokens = self._sample_num_image_tokens()
 
         # Encode text
-        encoding = self._encode_with_response_masking(
-            formatted_text,
-            response_indices,
+        encoding = self._encode_segments_with_response_masking(
+            segments,
             image_sentinel=image_sentinel,
             num_image_tokens=num_image_tokens,
         )
@@ -362,6 +381,130 @@ class InstructionDataset(Dataset):
 
         formatted_text = "".join(parts)
         return formatted_text, response_indices, IMAGE_SENTINEL
+
+    def _format_conversation_segments(
+        self,
+        conversations: List[Dict[str, str]],
+    ) -> Tuple[List[Tuple[str, bool]], str]:
+        """Format a conversation as tokenization segments with explicit masks."""
+        segments = []
+        IMAGE_SENTINEL = "<|image_sentinel|>"
+
+        segments.append(
+            (
+                f"{self.text_processor.SYSTEM_HEADER}"
+                f"{self.system_prompt}"
+                f"{self.text_processor.END_TURN}",
+                False,
+            )
+        )
+
+        for turn in conversations:
+            role = turn.get("from", turn.get("role", ""))
+            content = turn.get("value", turn.get("content", ""))
+
+            if self.image_placeholder_token_id is not None:
+                content = content.replace(self.IMAGE_PLACEHOLDER, IMAGE_SENTINEL).strip()
+            else:
+                content = content.replace(self.IMAGE_PLACEHOLDER, "").strip()
+
+            if role in ["human", "user"]:
+                segments.append(
+                    (
+                        f"{self.text_processor.USER_HEADER}"
+                        f"{content}"
+                        f"{self.text_processor.END_TURN}",
+                        False,
+                    )
+                )
+            elif role in ["gpt", "assistant"]:
+                segments.append((self.text_processor.ASSISTANT_HEADER, False))
+                segments.append((f"{content}{self.text_processor.END_TURN}", True))
+
+        return segments, IMAGE_SENTINEL
+
+    def _tokenize_segment(self, text: str) -> List[int]:
+        if not text:
+            return []
+        token_ids = self.tokenizer(
+            text,
+            add_special_tokens=False,
+            return_attention_mask=False,
+        )["input_ids"]
+        if token_ids and isinstance(token_ids[0], list):
+            token_ids = token_ids[0]
+        return list(token_ids)
+
+    def _append_segment_tokens(
+        self,
+        input_ids: List[int],
+        labels: List[int],
+        text: str,
+        supervise: bool,
+        image_sentinel: str,
+        num_image_tokens: int,
+    ) -> None:
+        pieces = text.split(image_sentinel) if image_sentinel else [text]
+        for piece_idx, piece in enumerate(pieces):
+            piece_ids = self._tokenize_segment(piece)
+            input_ids.extend(piece_ids)
+            labels.extend(piece_ids if supervise else [-100] * len(piece_ids))
+
+            if piece_idx < len(pieces) - 1 and self.image_placeholder_token_id is not None:
+                input_ids.extend([self.image_placeholder_token_id] * num_image_tokens)
+                labels.extend([-100] * num_image_tokens)
+
+    def _encode_segments_with_response_masking(
+        self,
+        segments: List[Tuple[str, bool]],
+        image_sentinel: str = "",
+        num_image_tokens: Optional[int] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Encode pre-segmented conversation text with explicit role masks."""
+        if num_image_tokens is None:
+            num_image_tokens = self.num_image_tokens
+
+        input_ids = []
+        labels = []
+
+        bos_token_id = getattr(self.tokenizer, "bos_token_id", None)
+        if bos_token_id is not None:
+            input_ids.append(int(bos_token_id))
+            labels.append(-100)
+
+        for text, supervise in segments:
+            self._append_segment_tokens(
+                input_ids=input_ids,
+                labels=labels,
+                text=text,
+                supervise=supervise,
+                image_sentinel=image_sentinel,
+                num_image_tokens=num_image_tokens,
+            )
+
+        input_ids = input_ids[: self.max_length]
+        labels = labels[: self.max_length]
+        attention_mask = [1] * len(input_ids)
+
+        if len(input_ids) < self.max_length:
+            pad_len = self.max_length - len(input_ids)
+            input_ids.extend([self.tokenizer.pad_token_id] * pad_len)
+            labels.extend([-100] * pad_len)
+            attention_mask.extend([0] * pad_len)
+
+        input_ids = torch.tensor(input_ids, dtype=torch.long)
+        attention_mask = torch.tensor(attention_mask, dtype=torch.long)
+        labels = torch.tensor(labels, dtype=torch.long)
+
+        labels[input_ids == self.tokenizer.pad_token_id] = -100
+        if self.image_placeholder_token_id is not None:
+            labels[input_ids == self.image_placeholder_token_id] = -100
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
 
     def _encode_with_response_masking(
         self,
@@ -559,7 +702,8 @@ class InstructionMixtureDataset(Dataset):
     Small wrapper for Stage 2 instruction mixtures.
 
     `concat` preserves natural dataset sizes. `balanced` round-robins sources
-    and oversamples smaller datasets to the largest source length.
+    and oversamples smaller datasets to the largest source length. `weighted`
+    uses integerized per-source weights for an explicit sampling mix.
     """
 
     def __init__(
@@ -567,11 +711,12 @@ class InstructionMixtureDataset(Dataset):
         datasets: List[Dataset],
         strategy: str = "balanced",
         source_names: Optional[List[str]] = None,
+        source_weights: Optional[List[float]] = None,
     ):
         if not datasets:
             raise ValueError("InstructionMixtureDataset requires at least one dataset")
-        if strategy not in {"balanced", "concat"}:
-            raise ValueError("strategy must be one of ['balanced', 'concat']")
+        if strategy not in {"balanced", "concat", "weighted"}:
+            raise ValueError("strategy must be one of ['balanced', 'concat', 'weighted']")
         if any(len(dataset) == 0 for dataset in datasets):
             raise ValueError("InstructionMixtureDataset cannot include empty datasets")
 
@@ -582,6 +727,26 @@ class InstructionMixtureDataset(Dataset):
         if len(self.source_names) != len(self.datasets):
             raise ValueError("source_names length must match datasets length")
 
+        self._weighted_cycle = None
+        if self.strategy == "weighted":
+            if source_weights is None:
+                source_weights = [1.0] * len(datasets)
+            if len(source_weights) != len(datasets):
+                raise ValueError("source_weights length must match datasets length")
+            if any(float(weight) <= 0 for weight in source_weights):
+                raise ValueError("source_weights must all be > 0")
+
+            total_weight = sum(float(weight) for weight in source_weights)
+            slots = [
+                max(1, round(float(weight) / total_weight * 100))
+                for weight in source_weights
+            ]
+            self._weighted_cycle = [
+                source_idx
+                for source_idx, slot_count in enumerate(slots)
+                for _ in range(slot_count)
+            ]
+
         self._cumulative_lengths = []
         total = 0
         for dataset in datasets:
@@ -590,6 +755,8 @@ class InstructionMixtureDataset(Dataset):
 
         if self.strategy == "balanced":
             self._length = max(len(dataset) for dataset in datasets) * len(datasets)
+        elif self.strategy == "weighted":
+            self._length = max(len(dataset) for dataset in datasets) * len(self._weighted_cycle)
         else:
             self._length = total
 
@@ -610,6 +777,11 @@ class InstructionMixtureDataset(Dataset):
             local_idx = (idx // len(self.datasets)) % len(self.datasets[source_idx])
             return self.datasets[source_idx][local_idx]
 
+        if self.strategy == "weighted":
+            source_idx = self._weighted_cycle[idx % len(self._weighted_cycle)]
+            local_idx = (idx // len(self._weighted_cycle)) % len(self.datasets[source_idx])
+            return self.datasets[source_idx][local_idx]
+
         for source_idx, end in enumerate(self._cumulative_lengths):
             start = 0 if source_idx == 0 else self._cumulative_lengths[source_idx - 1]
             if idx < end:
@@ -625,7 +797,7 @@ def build_instruction_mixture_dataset(
     simple: bool = False,
     **kwargs,
 ) -> InstructionMixtureDataset:
-    """Build a balanced/concat instruction mixture from config dictionaries."""
+    """Build a balanced/concat/weighted instruction mixture from config dictionaries."""
     entries = mixture_config.get("datasets", mixture_config.get("sources", []))
     strategy = mixture_config.get("strategy", "balanced")
     if not entries:
@@ -633,6 +805,7 @@ def build_instruction_mixture_dataset(
 
     datasets = []
     names = []
+    weights = []
     for i, entry in enumerate(entries):
         if isinstance(entry, str):
             entry = {"data_path": entry}
@@ -663,15 +836,27 @@ def build_instruction_mixture_dataset(
 
         max_samples = entry.get("max_samples")
         if max_samples is not None:
-            dataset.samples = dataset.samples[: int(max_samples)]
+            if not hasattr(dataset, "samples"):
+                raise ValueError(
+                    f"Cannot apply max_samples to mixture source {entry.get('name', i)} "
+                    "because the dataset does not expose a samples list."
+                )
+            samples = list(dataset.samples)
+            sample_seed = entry.get("sample_seed")
+            if sample_seed is not None:
+                rng = random.Random(int(sample_seed))
+                rng.shuffle(samples)
+            dataset.samples = samples[: int(max_samples)]
 
         datasets.append(dataset)
         names.append(entry.get("name", f"source_{i}"))
+        weights.append(float(entry.get("weight", 1.0)))
 
     return InstructionMixtureDataset(
         datasets=datasets,
         strategy=strategy,
         source_names=names,
+        source_weights=weights,
     )
 
 

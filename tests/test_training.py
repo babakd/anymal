@@ -681,7 +681,7 @@ class TestCheckpointMetadataCompatibility:
         with pytest.raises(RuntimeError, match="legacy checkpoints are treated as anymal_v1-only"):
             validate_checkpoint_architecture(
                 checkpoint_dir=str(tmp_path),
-                expected_architecture="anymal_v2",
+                expected_architecture="anymal_v3",
             )
 
         # v1 should still be accepted.
@@ -697,8 +697,81 @@ class TestCheckpointMetadataCompatibility:
         with pytest.raises(RuntimeError, match="architecture mismatch"):
             validate_checkpoint_architecture(
                 checkpoint_dir=str(tmp_path),
-                expected_architecture="anymal_v2",
+                expected_architecture="anymal_v3",
             )
+
+    def test_v3_metadata_value_mismatch_fails(self, tmp_path):
+        from model_metadata import (
+            validate_checkpoint_metadata_values,
+            write_model_metadata,
+        )
+
+        write_model_metadata(
+            str(tmp_path),
+            architecture="anymal_v3",
+            extra={
+                "connector_type": "perceiver_resampler",
+                "num_image_tokens": 128,
+                "connector_layers": 6,
+            },
+        )
+
+        with pytest.raises(RuntimeError, match="num_image_tokens"):
+            validate_checkpoint_metadata_values(
+                checkpoint_dir=str(tmp_path),
+                expected_architecture="anymal_v3",
+                expected_values={
+                    "connector_type": "perceiver_resampler",
+                    "num_image_tokens": 64,
+                    "connector_layers": 6,
+                },
+            )
+
+        meta = validate_checkpoint_metadata_values(
+            checkpoint_dir=str(tmp_path),
+            expected_architecture="anymal_v3",
+            expected_values={
+                "connector_type": "perceiver_resampler",
+                "num_image_tokens": 128,
+                "connector_layers": 6,
+            },
+        )
+        assert meta["num_image_tokens"] == 128
+
+    def test_v2_metadata_value_mismatch_fails(self, tmp_path):
+        from model_metadata import (
+            validate_checkpoint_metadata_values,
+            write_model_metadata,
+        )
+
+        write_model_metadata(
+            str(tmp_path),
+            architecture="anymal_v2",
+            extra={
+                "token_compressor_type": "learned",
+                "max_image_tokens": 256,
+            },
+        )
+
+        with pytest.raises(RuntimeError, match="max_image_tokens"):
+            validate_checkpoint_metadata_values(
+                checkpoint_dir=str(tmp_path),
+                expected_architecture="anymal_v2",
+                expected_values={
+                    "token_compressor_type": "learned",
+                    "max_image_tokens": 384,
+                },
+            )
+
+        meta = validate_checkpoint_metadata_values(
+            checkpoint_dir=str(tmp_path),
+            expected_architecture="anymal_v2",
+            expected_values={
+                "token_compressor_type": "learned",
+                "max_image_tokens": 256,
+            },
+        )
+        assert meta["max_image_tokens"] == 256
 
 
 class TestTrainingConfigs:

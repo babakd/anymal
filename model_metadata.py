@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, Tuple
 
 MODEL_META_FILENAME = "model_meta.json"
 DEFAULT_LEGACY_ARCHITECTURE = "anymal_v1"
-VALID_ARCHITECTURES = {"anymal_v1", "anymal_v2"}
+VALID_ARCHITECTURES = {"anymal_v1", "anymal_v2", "anymal_v3"}
 
 
 def normalize_architecture_name(name: Optional[str]) -> str:
@@ -26,6 +26,9 @@ def normalize_architecture_name(name: Optional[str]) -> str:
         "v2": "anymal_v2",
         "anymal_v2": "anymal_v2",
         "anymalv2": "anymal_v2",
+        "v3": "anymal_v3",
+        "anymal_v3": "anymal_v3",
+        "anymalv3": "anymal_v3",
     }
     normalized = aliases.get(normalized, normalized)
     if normalized not in VALID_ARCHITECTURES:
@@ -101,3 +104,33 @@ def validate_checkpoint_architecture(
             f"checkpoint={found}, model={expected}."
         )
     return found
+
+
+def validate_checkpoint_metadata_values(
+    checkpoint_dir: str,
+    expected_architecture: str,
+    expected_values: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Validate checkpoint architecture and selected metadata values.
+
+    This keeps architecture compatibility as the first hard gate, then lets V2
+    loaders assert connector/token-budget fields that affect tensor shapes and
+    prompt construction.
+    """
+    validate_checkpoint_architecture(
+        checkpoint_dir=checkpoint_dir,
+        expected_architecture=expected_architecture,
+    )
+
+    meta = read_model_metadata(checkpoint_dir) or {}
+    for key, expected in (expected_values or {}).items():
+        if expected is None:
+            continue
+        found = meta.get(key)
+        if found != expected:
+            raise RuntimeError(
+                f"Checkpoint metadata mismatch for {checkpoint_dir}: "
+                f"{key}={found!r}, expected={expected!r}."
+            )
+    return meta

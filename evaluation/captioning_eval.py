@@ -38,6 +38,29 @@ from typing import Optional, Dict, Any, List
 from tqdm import tqdm
 
 
+def _special_stop_token_ids(tokenizer) -> List[int]:
+    stop_ids = []
+    eos_id = getattr(tokenizer, "eos_token_id", None)
+    if eos_id is not None:
+        stop_ids.append(int(eos_id))
+    get_vocab = getattr(tokenizer, "get_vocab", None)
+    if callable(get_vocab):
+        eot_id = get_vocab().get("<|eot_id|>")
+        if eot_id is not None:
+            stop_ids.append(int(eot_id))
+    return list(dict.fromkeys(stop_ids))
+
+
+def _trim_at_stop_token(token_ids: torch.Tensor, stop_token_ids: List[int]) -> torch.Tensor:
+    if token_ids.numel() == 0 or not stop_token_ids:
+        return token_ids
+    stop = set(stop_token_ids)
+    for idx, token_id in enumerate(token_ids.tolist()):
+        if int(token_id) in stop:
+            return token_ids[: idx + 1]
+    return token_ids
+
+
 class COCOCaptionDataset(Dataset):
     """
     Dataset for COCO captioning evaluation.
@@ -168,6 +191,7 @@ class CaptioningEvaluator:
         self.model = model
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.max_new_tokens = max_new_tokens
+        self.stop_token_ids = _special_stop_token_ids(self.model.tokenizer)
 
         self.model.to(self.device)
         self.model.eval()
@@ -193,6 +217,7 @@ class CaptioningEvaluator:
         references = {}
         generated_token_counts = []
         clean_eos_count = 0
+        hit_max_new_tokens_count = 0
 
         for batch in tqdm(dataloader, desc="Generating captions"):
             if batch is None:
@@ -218,9 +243,13 @@ class CaptioningEvaluator:
                 # When generating from `inputs_embeds` (multimodal), HF may return only new tokens.
                 seq = generated_ids[i]
                 generated = seq[prompt_len:] if seq.shape[0] > prompt_len else seq
+                generated = _trim_at_stop_token(generated, self.stop_token_ids)
                 generated_token_counts.append(int(generated.shape[0]))
-                if generated.numel() > 0 and generated[-1].item() == self.model.tokenizer.eos_token_id:
+                hit_stop = generated.numel() > 0 and int(generated[-1].item()) in set(self.stop_token_ids)
+                if hit_stop:
                     clean_eos_count += 1
+                elif generated.shape[0] >= self.max_new_tokens:
+                    hit_max_new_tokens_count += 1
 
                 caption = self.model.tokenizer.decode(
                     generated,
@@ -239,6 +268,9 @@ class CaptioningEvaluator:
             if generated_token_counts else 0.0
         )
         eos_rate = clean_eos_count / len(generated_token_counts) if generated_token_counts else 0.0
+        hit_max_new_tokens_rate = (
+            hit_max_new_tokens_count / len(generated_token_counts) if generated_token_counts else 0.0
+        )
 
         if not predictions:
             metrics = {"num_samples": 0}
@@ -249,6 +281,7 @@ class CaptioningEvaluator:
         metrics["num_samples"] = len(predictions)
         metrics["avg_generated_tokens"] = avg_generated_tokens
         metrics["eos_rate"] = eos_rate
+        metrics["hit_max_new_tokens_rate"] = hit_max_new_tokens_rate
 
         # Save predictions
         if output_file:
@@ -423,13 +456,13 @@ def evaluate_coco_captioning(
     """
     from data import get_vision_transform
 
-    is_v2 = getattr(model, "architecture", "") == "anymal_v2"
+    is_siglip_arch = getattr(model, "architecture", "") in {"anymal_v2", "anymal_v3"}
     vision_type = getattr(model, "vision_encoder_type", "clip")
     vision_model = getattr(getattr(model, "image_encoder", None), "model_name", None)
     transform = get_vision_transform(
         vision_encoder_type=vision_type,
         vision_model_name=vision_model,
-        image_size=384 if is_v2 else 224,
+        image_size=384 if is_siglip_arch else 224,
         is_train=False,
         use_augmentation=False,
     )
@@ -440,7 +473,7 @@ def evaluate_coco_captioning(
         transform=transform,
         tokenizer=model.tokenizer,
         image_placeholder_token_id=getattr(model, "image_placeholder_token_id", None),
-        num_image_tokens=getattr(model, "num_image_tokens", 0) if is_v2 else 0,
+        num_image_tokens=getattr(model, "num_image_tokens", 0) if is_siglip_arch else 0,
     )
 
     pad_token_id = model.tokenizer.pad_token_id or model.tokenizer.eos_token_id

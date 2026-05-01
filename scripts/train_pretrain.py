@@ -198,7 +198,7 @@ def main():
         "image_size": config["data"].get("image_size", 224),
         "max_length": config["data"].get("max_length", 256),
         "caption_prompt": config["data"].get("caption_prompt", "A photo of"),
-        "vision_encoder_type": "siglip2" if architecture == "anymal_v2" else "clip",
+        "vision_encoder_type": "siglip2" if architecture in {"anymal_v2", "anymal_v3"} else "clip",
         "vision_model_name": config["model"].get("vision_model_name"),
     }
     if not streaming:
@@ -210,9 +210,12 @@ def main():
                 "deduplicate_captions": config["data"].get("deduplicate_captions", False),
             }
         )
-    if architecture == "anymal_v2":
+    if architecture in {"anymal_v2", "anymal_v3"}:
         dataset_kwargs["insert_image_placeholders"] = True
-        dataset_kwargs["num_image_tokens"] = config["model"].get("max_image_tokens", 256)
+        dataset_kwargs["num_image_tokens"] = config["model"].get(
+            "max_image_tokens",
+            config["model"].get("num_image_tokens", 256),
+        )
     if streaming:
         dataset_kwargs["buffer_size"] = config["data"].get("shuffle_buffer_size", 10000)
 

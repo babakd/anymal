@@ -62,6 +62,9 @@ class FinetuneConfig(TrainerConfig):
     # Continue from Stage 1 checkpoint
     pretrain_checkpoint: Optional[str] = None
 
+    # Continue from a full Stage 2 checkpoint (projector, compressor, LoRA).
+    finetune_checkpoint: Optional[str] = None
+
     # Adapter warmup: zero multimodal adapter grads for N steps to let LoRA warm up first
     projector_warmup_steps: int = 200
 
@@ -98,8 +101,10 @@ class FinetuneTrainer(Trainer):
         train_dataloader: DataLoader,
         eval_dataloader: Optional[DataLoader] = None,
     ):
-        # Load Stage 1 checkpoint if provided
-        if config.pretrain_checkpoint:
+        # Load Stage 1 checkpoint if provided. Full Stage 2 checkpoint loading is
+        # handled by the Modal runner before trainer construction because it can
+        # change the PEFT wrapper around the LLM.
+        if config.pretrain_checkpoint and not config.finetune_checkpoint:
             self._load_pretrain_checkpoint(model, config.pretrain_checkpoint)
 
         # Configure model for Stage 2
@@ -144,6 +149,16 @@ class FinetuneTrainer(Trainer):
                     f"Checkpoint token_compressor_type mismatch for {checkpoint_path}: "
                     f"checkpoint={checkpoint_compressor}, model={model_compressor}."
                 )
+        elif expected_arch == "anymal_v3":
+            meta = read_model_metadata(checkpoint_path) or {}
+            for key in ("connector_type", "num_image_tokens", "connector_layers"):
+                checkpoint_value = meta.get(key)
+                model_value = getattr(model, key, None)
+                if checkpoint_value is not None and model_value is not None and checkpoint_value != model_value:
+                    raise RuntimeError(
+                        f"Checkpoint {key} mismatch for {checkpoint_path}: "
+                        f"checkpoint={checkpoint_value}, model={model_value}."
+                    )
 
         projector_path = os.path.join(checkpoint_path, "projector.pt")
 

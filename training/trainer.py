@@ -90,6 +90,7 @@ class TrainerConfig:
     save_llm_checkpoint: bool = True
     save_llm_base_weights: bool = False
     commit_on_save: bool = False
+    preserve_checkpoint_steps: tuple = field(default_factory=lambda: (300, 1000, 2000, 3000))
 
     # Logging
     logging_steps: int = 10
@@ -790,10 +791,16 @@ class Trainer:
                 checkpoints.append((step, os.path.join(self.config.output_dir, name)))
 
         checkpoints.sort(key=lambda x: x[0])
+        preserve_steps = set(int(step) for step in (self.config.preserve_checkpoint_steps or ()))
+        if self.config.max_steps:
+            preserve_steps.add(int(self.config.max_steps))
 
-        # Remove oldest checkpoints
-        while len(checkpoints) > self.config.save_total_limit:
-            _, path = checkpoints.pop(0)
+        # Remove oldest non-preserved checkpoints. Milestone checkpoints are
+        # scheduled eval points, so deleting them invites accidental fishing.
+        removable = [(step, path) for step, path in checkpoints if step not in preserve_steps]
+        while len(removable) > self.config.save_total_limit:
+            step, path = removable.pop(0)
+            checkpoints = [(s, p) for s, p in checkpoints if s != step]
             import shutil
             shutil.rmtree(path)
 

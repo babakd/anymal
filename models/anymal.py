@@ -668,11 +668,9 @@ class AnyMAL(nn.Module):
         llm_path = os.path.join(save_path, "llm")
         if os.path.exists(llm_path):
             from peft import PeftModel
-            # Check if model already has LoRA (is a PeftModel)
             base_model = model.llm.model
-            if hasattr(base_model, "base_model"):
-                # Model is already a PeftModel, get the underlying base model
-                base_model = base_model.base_model
+            if hasattr(base_model, "peft_config") and hasattr(base_model, "unload"):
+                base_model = base_model.unload()
             model.llm.model = PeftModel.from_pretrained(
                 base_model,
                 llm_path,

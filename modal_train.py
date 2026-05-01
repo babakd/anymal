@@ -16,6 +16,7 @@ Options:
 
 import modal
 import os
+import random
 import secrets
 from datetime import datetime
 from pathlib import Path
@@ -69,10 +70,9 @@ GPU_MODAL_RESOURCES = {
     "h100": {"single": "H100", "distributed": "H100:4"},
 }
 
-# Full V2 runs are longer than the original smoke/canary budget. Keep Stage 1
-# comfortably above the observed 250-step zip canary extrapolation, and give
-# Stage 2 enough room for 3000 QLoRA steps plus eval/checkpoint overhead.
-STAGE1_PRETRAIN_TIMEOUT_SECONDS = 8 * 60 * 60
+# Full V2/V3 runs are longer than the original smoke/canary budget. V3 Stage 1A
+# is a 20k-step H100 run, so give it the same day-scale budget as Stage 2.
+STAGE1_PRETRAIN_TIMEOUT_SECONDS = 24 * 60 * 60
 STAGE2_TRAINER_TIMEOUT_SECONDS = 24 * 60 * 60
 
 
@@ -84,6 +84,13 @@ def _normalize_gpu_type(gpu_type: str) -> str:
         supported = ", ".join(sorted(GPU_MODAL_RESOURCES.keys()))
         raise ValueError(f"Unsupported gpu_type '{gpu_type}'. Supported values: {supported}")
     return key
+
+
+def _normalize_architecture_key(architecture: str) -> str:
+    """Normalize Modal architecture flags to canonical model metadata names."""
+    from model_metadata import normalize_architecture_name
+
+    return normalize_architecture_name(architecture)
 
 
 def _resolve_modal_gpu(stage: str, gpu_type: str) -> str:
@@ -221,6 +228,23 @@ def _resolve_effective_resume_checkpoint(
     if latest_checkpoint:
         print(f"Auto-resuming from latest checkpoint in run dir: {latest_checkpoint}")
     return latest_checkpoint
+
+
+def _invoke_modal_call(call, background: bool = False, **kwargs):
+    """Run a Modal call now.
+
+    Long-running jobs should be detached at the CLI level with
+    ``modal run --detach ...``. Spawning from this local entrypoint can return
+    before the app has a durable worker, which makes training appear launched
+    even though no checkpoint is ever written.
+    """
+    if background:
+        raise ValueError(
+            "--background is disabled because Modal local-entrypoint spawn did "
+            "not reliably keep training jobs alive. Use `modal run --detach "
+            "modal_train.py ...` instead."
+        )
+    return call.remote(**kwargs)
 
 
 def _checkpoint_save_interval(max_steps: int, max_interval: int = 250) -> int:
@@ -474,7 +498,7 @@ class Trainer:
         volume.commit()
         print(f"COCO images cached to {image_dir}")
 
-    def _ensure_vqa_data_cached(self, num_val_images: int = 500):
+    def _ensure_vqa_data_cached(self, num_val_images: int = 2000):
         """Download VQAv2 evaluation data and a subset of COCO val2014 images."""
         import json
         import zipfile
@@ -608,11 +632,14 @@ class Trainer:
         use_dummy_data: bool = False,
         wandb_api_key: str = None,
         track_per_layer_grad_norms: bool = True,
-        run_eval_benchmarks: bool = True,
+        run_eval_benchmarks: bool = False,
         pretrain_checkpoint: str = None,
+        finetune_checkpoint: str = None,
         resume_checkpoint: str = None,
         dataset: str = "instruct_150k",
         run_name: str = None,
+        pretrain_image_tokens: int = None,
+        projector_warmup_steps: int = None,
     ):
         """
         Run AnyMAL training on Modal.
@@ -628,8 +655,10 @@ class Trainer:
             use_dummy_data: Use dummy data instead of real dataset (for testing)
             wandb_api_key: Weights & Biases API key (optional, pass directly)
             pretrain_checkpoint: Path to Stage 1 checkpoint for Stage 2 (auto-discovered if None)
+            finetune_checkpoint: Full Stage 2 checkpoint to continue from in a new run
             resume_checkpoint: Path to checkpoint to resume training from
             dataset: Dataset to use for finetune ("instruct_150k" or "mix_665k")
+            projector_warmup_steps: Zero connector gradients for this many Stage 2 steps
         """
         import sys
         sys.path.insert(0, "/root/anymal")
@@ -647,6 +676,12 @@ class Trainer:
 
         from training.distributed import print_rank_0
 
+        arch_key = _normalize_architecture_key(architecture)
+        if arch_key == "anymal_v3" and dataset == "instruct_150k":
+            dataset = "v3_grounded"
+        if pretrain_image_tokens is None:
+            pretrain_image_tokens = 128 if arch_key == "anymal_v3" else 256
+
         print_rank_0("=" * 60)
         print_rank_0(f"AnyMAL Training on Modal")
         print_rank_0(f"Stage: {stage}")
@@ -660,7 +695,7 @@ class Trainer:
             lora_lr = lora_learning_rate or 2e-4
             run_finetune(
                 llama_path=self.llama_path,
-                architecture=architecture,
+                architecture=arch_key,
                 max_steps=max_steps,
                 learning_rate=lr,
                 lora_learning_rate=lora_lr,
@@ -671,12 +706,19 @@ class Trainer:
                 track_per_layer_grad_norms=track_per_layer_grad_norms,
                 run_eval_benchmarks=run_eval_benchmarks,
                 pretrain_checkpoint=pretrain_checkpoint,
+                finetune_checkpoint=finetune_checkpoint,
                 resume_checkpoint=resume_checkpoint,
                 dataset=dataset,
                 run_name=run_name,
+                projector_warmup_steps=projector_warmup_steps,
             )
         else:
             lr = learning_rate or 2e-4
+            effective_pretrain_image_tokens = (
+                pretrain_image_tokens
+                if pretrain_image_tokens is not None
+                else (128 if arch_key == "anymal_v3" else 256)
+            )
             pretrain_output_dir = _resolve_run_output_dir(
                 base_dir="/checkpoints/pretrain-output",
                 resume_checkpoint=resume_checkpoint,
@@ -685,7 +727,7 @@ class Trainer:
             )
             run_pretrain(
                 llama_path=self.llama_path,
-                architecture=architecture,
+                architecture=arch_key,
                 max_steps=max_steps,
                 learning_rate=lr,
                 batch_size=batch_size,
@@ -693,7 +735,10 @@ class Trainer:
                 use_dummy_data=use_dummy_data,
                 token_compressor_type=token_compressor_type,
                 resume_checkpoint=resume_checkpoint,
+                pretrain_checkpoint=pretrain_checkpoint,
                 output_dir=pretrain_output_dir,
+                pretrain_image_tokens=effective_pretrain_image_tokens,
+                dataset=dataset,
             )
 
         # Save outputs to volume
@@ -791,9 +836,12 @@ def _diagnose_dataset_sample(dataset, tokenizer, num_samples=3):
         supervised_mask = labels != -100
         if supervised_mask.any():
             first_sup_idx = supervised_mask.nonzero(as_tuple=True)[0][0].item()
-            supervised_window = ids[first_sup_idx:first_sup_idx+20]
-            decoded = tokenizer.decode(supervised_window, skip_special_tokens=False)
-            print(f"    first supervised tokens: {repr(decoded[:100])}")
+            supervised_ids = labels[supervised_mask][:20]
+            raw_window = ids[first_sup_idx:first_sup_idx+20]
+            decoded_supervised = tokenizer.decode(supervised_ids, skip_special_tokens=False)
+            decoded_window = tokenizer.decode(raw_window, skip_special_tokens=False)
+            print(f"    first supervised-only tokens: {repr(decoded_supervised[:100])}")
+            print(f"    raw window from first supervised token: {repr(decoded_window[:100])}")
 
         # Check that eos_token is NOT masked (should be supervised if at end of response)
         eos_id = tokenizer.eos_token_id
@@ -825,12 +873,65 @@ def _diagnose_batch(batch, tokenizer, step_name="first batch"):
     print("---\n")
 
 
+def _load_full_finetune_checkpoint(model, checkpoint_path: str):
+    """Load projector, compressor, and LoRA adapter from a full Stage 2 checkpoint."""
+    import torch
+    from peft import PeftModel
+    from model_metadata import validate_checkpoint_metadata_values
+
+    expected_arch = getattr(model, "architecture", "anymal_v1")
+    expected_values = {}
+    if expected_arch == "anymal_v2":
+        expected_values = {
+            "vision_encoder_type": getattr(model, "vision_encoder_type", None),
+            "token_compressor_type": getattr(model, "token_compressor_type", None),
+            "max_image_tokens": getattr(model, "max_image_tokens", None),
+            "min_image_tokens": getattr(model, "min_image_tokens", None),
+        }
+    elif expected_arch == "anymal_v3":
+        expected_values = {
+            "vision_encoder_type": getattr(model, "vision_encoder_type", None),
+            "connector_type": getattr(model, "connector_type", None),
+            "num_image_tokens": getattr(model, "num_image_tokens", None),
+            "connector_layers": getattr(model, "connector_layers", None),
+            "connector_heads": getattr(model, "connector_heads", None),
+            "connector_ff_mult": getattr(model, "connector_ff_mult", None),
+        }
+    validate_checkpoint_metadata_values(
+        checkpoint_dir=checkpoint_path,
+        expected_architecture=expected_arch,
+        expected_values=expected_values,
+    )
+
+    projector_path = os.path.join(checkpoint_path, "projector.pt")
+    if not os.path.exists(projector_path):
+        raise FileNotFoundError(f"Missing projector weights: {projector_path}")
+    print(f"Loading finetune projector from {projector_path}")
+    model.projector.load_state_dict(torch.load(projector_path, map_location="cpu"))
+
+    compressor_path = os.path.join(checkpoint_path, "token_compressor.pt")
+    if hasattr(model, "token_compressor"):
+        if not os.path.exists(compressor_path):
+            raise FileNotFoundError(f"Missing token compressor weights: {compressor_path}")
+        print(f"Loading finetune token compressor from {compressor_path}")
+        model.token_compressor.load_state_dict(torch.load(compressor_path, map_location="cpu"))
+
+    llm_path = os.path.join(checkpoint_path, "llm")
+    if not os.path.isdir(llm_path):
+        raise FileNotFoundError(f"Missing LoRA adapter directory: {llm_path}")
+    print(f"Loading finetune LoRA adapter from {llm_path}")
+    base_model = model.llm.model
+    if hasattr(base_model, "peft_config") and hasattr(base_model, "unload"):
+        base_model = base_model.unload()
+    model.llm.model = PeftModel.from_pretrained(base_model, llm_path, is_trainable=True)
+
+
 def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size, use_wandb, use_dummy_data,
                   token_compressor_type="learned",
-                  track_per_layer_grad_norms=True, run_eval_benchmarks=True,
-                  pretrain_checkpoint=None, resume_checkpoint=None,
+                  track_per_layer_grad_norms=True, run_eval_benchmarks=False,
+                  pretrain_checkpoint=None, finetune_checkpoint=None, resume_checkpoint=None,
                   lora_learning_rate=None, dataset="instruct_150k",
-                  run_name=None):
+                  run_name=None, projector_warmup_steps=None):
     """Run Stage 2 fine-tuning with real COCO images."""
     import torch
     from models import create_model_from_config
@@ -845,8 +946,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
 
     # Initialize model
     print("Initializing model...")
-    architecture = str(architecture).strip().lower()
-    arch_key = "anymal_v2" if architecture in {"v2", "anymal_v2", "anymalv2"} else "anymal_v1"
+    arch_key = _normalize_architecture_key(architecture)
     model_cfg = {
         "model": {
             "architecture": arch_key,
@@ -854,6 +954,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
             "use_qlora": True,
             "lora_r": 64,
             "lora_alpha": 16,
+            "use_lora": False if finetune_checkpoint else None,
             "gradient_checkpointing": True,
             "use_flash_attention": False,  # Skip flash-attn, use SDPA instead
         }
@@ -875,7 +976,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         dataset_vision_type = "clip"
         dataset_vision_model = "ViT-L-14"
         dataset_max_length = 1024
-    else:
+    elif arch_key == "anymal_v2":
         model_cfg["model"].update(
             {
                 "vision_encoder_type": "siglip2",
@@ -894,8 +995,32 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         dataset_vision_type = "siglip2"
         dataset_vision_model = "google/siglip2-so400m-patch14-384"
         dataset_max_length = 2304
+    else:
+        model_cfg["model"].update(
+            {
+                "vision_encoder_type": "siglip2",
+                "vision_model_name": "google/siglip2-so400m-patch14-384",
+                "connector_type": "perceiver_resampler",
+                "num_image_tokens": 128,
+                "connector_layers": 6,
+                "connector_heads": 16,
+                "connector_ff_mult": 4,
+                "project_directly_to_llm_dim": True,
+            }
+        )
+        dataset_num_image_tokens = 128
+        dataset_policy = "fixed"
+        dataset_min_tokens = 128
+        dataset_max_tokens = 128
+        dataset_image_size = 384
+        dataset_vision_type = "siglip2"
+        dataset_vision_model = "google/siglip2-so400m-patch14-384"
+        dataset_max_length = 1536
 
     model = create_model_from_config(model_cfg)
+    if finetune_checkpoint:
+        print(f"Continuing from full Stage 2 checkpoint: {finetune_checkpoint}")
+        _load_full_finetune_checkpoint(model, finetune_checkpoint)
 
     # Diagnose model
     _diagnose_model(model)
@@ -965,7 +1090,10 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
     print(f"Finetune checkpoints will be written to: {finetune_output_dir}")
 
     # Auto-discover pretrain checkpoint if not explicitly provided
-    if pretrain_checkpoint is None:
+    if finetune_checkpoint:
+        pretrain_checkpoint = None
+        print("Skipping Stage 1 checkpoint load because full Stage 2 checkpoint is loaded.")
+    elif pretrain_checkpoint is None:
         pretrain_dir = "/checkpoints/pretrain-output"
         candidates = _collect_checkpoint_candidates(pretrain_dir)
         compatible_candidates = []
@@ -985,12 +1113,18 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
 
     if pretrain_checkpoint:
         print(f"Will load Stage 1 projector from: {pretrain_checkpoint}")
+    elif finetune_checkpoint:
+        print("Full Stage 2 checkpoint loaded; no Stage 1 checkpoint load needed.")
     else:
         print("WARNING: No pretrain checkpoint found. Perceiver resampler has random weights.")
         print("Stage 1 pretraining is strongly recommended before Stage 2.")
 
     # Create trainer config
     eval_steps = max(50, max_steps // 10)  # ~10 eval points during training
+    default_projector_warmup_steps = 0 if arch_key in {"anymal_v2", "anymal_v3"} else 200
+    if projector_warmup_steps is None:
+        projector_warmup_steps = default_projector_warmup_steps
+
     config = FinetuneConfig(
         max_steps=max_steps,
         gradient_accumulation_steps=8,
@@ -1012,8 +1146,9 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         wandb_project="anymal-finetune",
         track_per_layer_grad_norms=track_per_layer_grad_norms,
         pretrain_checkpoint=pretrain_checkpoint,
+        finetune_checkpoint=finetune_checkpoint,
         resume_from_checkpoint=resume_checkpoint,
-        projector_warmup_steps=0 if arch_key == "anymal_v2" else 200,
+        projector_warmup_steps=projector_warmup_steps,
     )
 
     # Train
@@ -1038,25 +1173,32 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                     vqa_questions_file=vqa_questions,
                     vqa_annotations_file=vqa_annotations,
                     vqa_image_dir=vqa_image_dir,
+                    max_eval_samples=1000,
+                    min_eval_samples=500,
+                    subset_seed=42,
+                    raise_on_error=True,
                 )
                 print(f"VQA eval runner initialized (will run every {eval_steps} steps)")
             else:
-                print("VQA data not found, skipping benchmark evaluation")
+                missing = [
+                    path for path in (vqa_questions, vqa_annotations, vqa_image_dir)
+                    if not os.path.exists(path)
+                ]
+                raise RuntimeError(f"VQA data not found for benchmark evaluation: {missing}")
         except Exception as e:
-            print(f"Could not initialize eval runner: {e}")
+            raise RuntimeError(f"Could not initialize eval runner: {e}") from e
 
     metrics = trainer.train()
 
     # Run final VQA eval
     if eval_runner is not None:
         print("\nRunning final VQA evaluation...")
-        try:
-            vqa_metrics = eval_runner.run(["vqa"])
-            if vqa_metrics and trainer.logger is not None:
-                trainer.logger.log(vqa_metrics)
-            print(f"Final VQA metrics: {vqa_metrics}")
-        except Exception as e:
-            print(f"Final VQA eval failed: {e}")
+        vqa_metrics = eval_runner.run(["vqa"])
+        if not vqa_metrics or "eval/vqa_error" in vqa_metrics:
+            raise RuntimeError(f"Final VQA eval failed or returned empty metrics: {vqa_metrics}")
+        if trainer.logger is not None:
+            trainer.logger.log(vqa_metrics)
+        print(f"Final VQA metrics: {vqa_metrics}")
 
     print(f"\nTraining complete! Final metrics: {metrics}")
 
@@ -1072,7 +1214,10 @@ def run_pretrain(
     token_compressor_type="learned",
     distributed=False,
     resume_checkpoint=None,
+    pretrain_checkpoint=None,
     output_dir="/checkpoints/pretrain-output",
+    pretrain_image_tokens=None,
+    dataset="llava_pretrain",
 ):
     """Run Stage 1 pretraining with real COCO images."""
     import torch
@@ -1096,8 +1241,7 @@ def run_pretrain(
     print("Initializing model...")
     # For DDP, disable device_map so each process places model on its own GPU
     device_map = None if distributed else "auto"
-    architecture = str(architecture).strip().lower()
-    arch_key = "anymal_v2" if architecture in {"v2", "anymal_v2", "anymalv2"} else "anymal_v1"
+    arch_key = _normalize_architecture_key(architecture)
     model_cfg = {
         "model": {
             "architecture": arch_key,
@@ -1123,20 +1267,43 @@ def run_pretrain(
         pretrain_image_size = 224
         pretrain_vision_type = "clip"
         pretrain_vision_model = "ViT-L-14"
-    else:
+    elif arch_key == "anymal_v2":
+        pretrain_num_image_tokens = int(pretrain_image_tokens or 256)
+        if pretrain_num_image_tokens <= 0:
+            raise ValueError(f"pretrain_image_tokens must be > 0, got {pretrain_image_tokens}")
         model_cfg["model"].update(
             {
                 "vision_encoder_type": "siglip2",
                 "vision_model_name": "google/siglip2-so400m-patch14-384",
                 "token_compressor_type": token_compressor_type,
                 "bottleneck_dim": 2048,
-                "max_image_tokens": 256,
-                "min_image_tokens": 256,
+                "max_image_tokens": pretrain_num_image_tokens,
+                "min_image_tokens": pretrain_num_image_tokens,
             }
         )
-        pretrain_num_image_tokens = 256
         insert_placeholders = True
-        pretrain_max_length = 640
+        pretrain_max_length = pretrain_num_image_tokens + 384
+        pretrain_image_size = 384
+        pretrain_vision_type = "siglip2"
+        pretrain_vision_model = "google/siglip2-so400m-patch14-384"
+    else:
+        pretrain_num_image_tokens = int(pretrain_image_tokens or 128)
+        if pretrain_num_image_tokens <= 0:
+            raise ValueError(f"pretrain_image_tokens must be > 0, got {pretrain_image_tokens}")
+        model_cfg["model"].update(
+            {
+                "vision_encoder_type": "siglip2",
+                "vision_model_name": "google/siglip2-so400m-patch14-384",
+                "connector_type": "perceiver_resampler",
+                "num_image_tokens": pretrain_num_image_tokens,
+                "connector_layers": 6,
+                "connector_heads": 16,
+                "connector_ff_mult": 4,
+                "project_directly_to_llm_dim": True,
+            }
+        )
+        insert_placeholders = True
+        pretrain_max_length = pretrain_num_image_tokens + 384
         pretrain_image_size = 384
         pretrain_vision_type = "siglip2"
         pretrain_vision_model = "google/siglip2-so400m-patch14-384"
@@ -1149,22 +1316,54 @@ def run_pretrain(
     # Configure for Stage 1: only train projector
     model.set_training_stage(1)
 
+    if pretrain_checkpoint:
+        from model_metadata import validate_checkpoint_architecture
+
+        print(f"Loading Stage 1 connector weights from: {pretrain_checkpoint}")
+        validate_checkpoint_architecture(
+            checkpoint_dir=pretrain_checkpoint,
+            expected_architecture=arch_key,
+        )
+        projector_path = os.path.join(pretrain_checkpoint, "projector.pt")
+        if not os.path.exists(projector_path):
+            raise FileNotFoundError(
+                f"Expected projector.pt in pretrain checkpoint: {pretrain_checkpoint}"
+            )
+        model.projector.load_state_dict(torch.load(projector_path, map_location="cpu"))
+        print("Loaded Stage 1 connector weights")
+
     # Diagnose model (rank 0 only)
     from training.distributed import is_main_process as _is_main
     if _is_main():
         _diagnose_model(model)
 
     # Always load real images
-    print("Loading dataset with real COCO images...")
-    dataset = load_llava_pretrain_dataset(
-        model.tokenizer,
-        insert_image_placeholders=insert_placeholders,
-        num_image_tokens=pretrain_num_image_tokens,
-        max_length=pretrain_max_length,
-        image_size=pretrain_image_size,
-        vision_encoder_type=pretrain_vision_type,
-        vision_model_name=pretrain_vision_model,
-    )
+    print(f"Loading dataset ({dataset}) with real images...")
+    if dataset in {"llava_pretrain", "caption_alignment", "v3_caption_alignment"}:
+        dataset = load_llava_pretrain_dataset(
+            model.tokenizer,
+            insert_image_placeholders=insert_placeholders,
+            num_image_tokens=pretrain_num_image_tokens,
+            max_length=pretrain_max_length,
+            image_size=pretrain_image_size,
+            vision_encoder_type=pretrain_vision_type,
+            vision_model_name=pretrain_vision_model,
+        )
+    elif dataset in {"v3_grounding", "v3_grounding_alignment"}:
+        dataset = load_finetune_dataset(
+            model.tokenizer,
+            dataset="v3_grounding",
+            num_image_tokens=pretrain_num_image_tokens,
+            image_token_policy="fixed",
+            min_image_tokens=pretrain_num_image_tokens,
+            max_image_tokens=pretrain_num_image_tokens,
+            image_size=pretrain_image_size,
+            max_length=512,
+            vision_encoder_type=pretrain_vision_type,
+            vision_model_name=pretrain_vision_model,
+        )
+    else:
+        raise ValueError(f"Unsupported pretrain dataset: {dataset}")
 
     # Split into train/val
     train_dataset, val_dataset = deterministic_train_val_split(dataset, val_fraction=0.05)
@@ -1279,6 +1478,11 @@ def load_finetune_dataset(
     if num_images == 0:
         raise RuntimeError(f"No JPEG images found in {image_dir}. Cannot train without real images.")
 
+    direct_system_prompt = (
+        "Answer directly and briefly. Do not greet the user. Do not ask follow-up questions."
+    )
+    training_system_prompt = InstructionDataset.DEFAULT_SYSTEM_PROMPT
+
     def _build_instruction_dataset(json_path):
         return InstructionDataset(
             data_path=json_path,
@@ -1340,6 +1544,595 @@ def load_finetune_dataset(
             _json.dump(filtered, f)
         return filtered_path
 
+    def _first_human_and_gpt(sample):
+        question = ""
+        answer = ""
+        for turn in sample.get("conversations", []):
+            role = turn.get("from", turn.get("role", ""))
+            value = turn.get("value", turn.get("content", ""))
+            value = value.replace("<image>", "").strip()
+            if role in {"human", "user"} and not question:
+                question = value
+            elif role in {"gpt", "assistant"} and not answer:
+                answer = value
+        return question, answer
+
+    def _has_reserved_chat_markers(text):
+        return any(
+            marker in text
+            for marker in ("<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>")
+        )
+
+    def _direct_task_type(question):
+        q = " ".join(question.lower().split())
+        if "how many" in q or q.startswith("count"):
+            return "count"
+        if "what color" in q or "colour" in q:
+            return "color"
+        if any(term in q for term in ("left", "right", "behind", "front", "next to", "where")):
+            return "spatial"
+        if any(term in q for term in ("what is", "what object", "what vehicle", "which")):
+            return "short_object"
+        if any(term in q for term in ("is there", "are there", "can you see")):
+            return "yes_no"
+        return "other"
+
+    def _filtered_direct_answer_path():
+        mix_path = _filtered_mix665k_path()
+        direct_path = "/checkpoints/llava_data/mix665k_direct_answer_filtered.json"
+        with open(mix_path, "r") as f:
+            raw_data = _json.load(f)
+
+        kept = []
+        task_counts = {}
+        skipped_reserved_markers = 0
+        for sample in raw_data:
+            question, answer = _first_human_and_gpt(sample)
+            task = _direct_task_type(question)
+            answer_words = answer.split()
+            is_direct_task = task in {"count", "color", "spatial", "short_object", "yes_no"}
+            is_short_answer = 0 < len(answer_words) <= 8
+            if is_direct_task and is_short_answer:
+                if _has_reserved_chat_markers(question) or _has_reserved_chat_markers(answer):
+                    skipped_reserved_markers += 1
+                    continue
+                kept.append(
+                    {
+                        "id": f"{sample.get('id', 'sample')}_direct_{task}",
+                        "image": sample["image"],
+                        "conversations": [
+                            {"from": "human", "value": f"<image>\n{question.strip()}"},
+                            {"from": "gpt", "value": answer.strip()},
+                        ],
+                    }
+                )
+                task_counts[task] = task_counts.get(task, 0) + 1
+
+        if not kept:
+            raise RuntimeError("Direct-answer Mix-665K filter produced no samples.")
+
+        with open(direct_path, "w") as f:
+            _json.dump(kept, f)
+        print(
+            f"Mix-665K direct-answer filter kept {len(kept)}/{len(raw_data)} samples; "
+            f"tasks={task_counts}; skipped_reserved_markers={skipped_reserved_markers}"
+        )
+        return direct_path
+
+    def _pluralize_category(name):
+        irregular = {
+            "person": "people",
+            "mouse": "mice",
+            "sheep": "sheep",
+            "skis": "skis",
+            "scissors": "scissors",
+        }
+        if name in irregular:
+            return irregular[name]
+        if name.endswith("y") and name[-2:] not in {"ay", "ey", "oy", "uy"}:
+            return f"{name[:-1]}ies"
+        if name.endswith(("s", "x", "ch", "sh")):
+            return f"{name}es"
+        return f"{name}s"
+
+    def _ensure_coco_instance_annotations():
+        import requests
+        import zipfile
+
+        annotation_dir = "/checkpoints/coco_annotations"
+        instances_path = os.path.join(annotation_dir, "annotations", "instances_train2017.json")
+        if os.path.exists(instances_path):
+            return instances_path
+
+        os.makedirs(annotation_dir, exist_ok=True)
+        zip_path = os.path.join(annotation_dir, "annotations_trainval2017.zip")
+        if not os.path.exists(zip_path):
+            url = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
+            print(f"Downloading COCO instance annotations from {url}...")
+            response = requests.get(url, timeout=600)
+            response.raise_for_status()
+            with open(zip_path, "wb") as f:
+                f.write(response.content)
+
+        print(f"Extracting COCO instance annotations from {zip_path}...")
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(annotation_dir)
+        volume.commit()
+        if not os.path.exists(instances_path):
+            raise FileNotFoundError(f"Expected COCO instances at {instances_path}")
+        return instances_path
+
+    def _coco_object_direct_answer_path():
+        """Build short-answer object/category supervision from COCO instances."""
+        output_path = "/checkpoints/llava_data/coco_object_direct_train2017.json"
+        if os.path.exists(output_path):
+            return output_path
+
+        instances_path = _ensure_coco_instance_annotations()
+        print(f"Building COCO object direct-answer data from {instances_path}")
+        with open(instances_path, "r") as f:
+            instances = _json.load(f)
+
+        available_images = {
+            f for f in os.listdir(image_dir)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        }
+        images = {
+            image["id"]: image
+            for image in instances.get("images", [])
+            if image.get("file_name") in available_images
+        }
+        categories = {
+            category["id"]: category["name"]
+            for category in instances.get("categories", [])
+        }
+        per_image = {}
+        for ann in instances.get("annotations", []):
+            if ann.get("iscrowd"):
+                continue
+            image_id = ann.get("image_id")
+            if image_id not in images:
+                continue
+            category_name = categories.get(ann.get("category_id"))
+            if not category_name:
+                continue
+            per_image.setdefault(image_id, {}).setdefault(
+                category_name,
+                {"count": 0, "area": 0.0},
+            )
+            per_image[image_id][category_name]["count"] += 1
+            per_image[image_id][category_name]["area"] += float(ann.get("area", 0.0))
+
+        vehicle_categories = {
+            "bicycle",
+            "car",
+            "motorcycle",
+            "airplane",
+            "bus",
+            "train",
+            "truck",
+            "boat",
+        }
+        samples = []
+        for image_id, category_stats in sorted(per_image.items()):
+            if not category_stats:
+                continue
+            image = images[image_id]
+            filename = image["file_name"]
+            ranked = sorted(
+                category_stats.items(),
+                key=lambda item: (item[1]["area"], item[1]["count"]),
+                reverse=True,
+            )
+            dominant_name, dominant_stats = ranked[0]
+            image_area = max(float(image.get("width", 1) * image.get("height", 1)), 1.0)
+            dominant_area_fraction = dominant_stats["area"] / image_area
+
+            # Singular generic object questions are noisy in crowded scenes. Keep
+            # them only when one category is visually dominant.
+            if dominant_area_fraction >= 0.18 or len(ranked) == 1:
+                samples.append(
+                    {
+                        "id": f"coco_object_{image_id}_dominant",
+                        "image": filename,
+                        "conversations": [
+                            {"from": "human", "value": "<image>\nWhat object is this?"},
+                            {"from": "gpt", "value": dominant_name},
+                        ],
+                    }
+                )
+
+            visible = [name for name, _stats in ranked[:3]]
+            if visible:
+                samples.append(
+                    {
+                        "id": f"coco_object_{image_id}_visible",
+                        "image": filename,
+                        "conversations": [
+                            {"from": "human", "value": "<image>\nWhat objects are visible?"},
+                            {"from": "gpt", "value": ", ".join(visible)},
+                        ],
+                    }
+                )
+
+            vehicles = [
+                (name, stats)
+                for name, stats in ranked
+                if name in vehicle_categories
+            ]
+            if vehicles:
+                vehicle_name = vehicles[0][0]
+                samples.append(
+                    {
+                        "id": f"coco_object_{image_id}_vehicle",
+                        "image": filename,
+                        "conversations": [
+                            {"from": "human", "value": "<image>\nWhat vehicle is shown?"},
+                            {"from": "gpt", "value": vehicle_name},
+                        ],
+                    }
+                )
+
+            for name, stats in ranked[:2]:
+                count = int(stats["count"])
+                if 1 <= count <= 5:
+                    samples.append(
+                        {
+                            "id": f"coco_object_{image_id}_count_{name.replace(' ', '_')}",
+                            "image": filename,
+                            "conversations": [
+                                {
+                                    "from": "human",
+                                    "value": f"<image>\nHow many {_pluralize_category(name)} are visible?",
+                                },
+                                {"from": "gpt", "value": str(count)},
+                            ],
+                        }
+                    )
+
+        if not samples:
+            raise RuntimeError("COCO object direct-answer generation produced no samples.")
+
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(f"Built {len(samples)} COCO object direct-answer samples at {output_path}")
+        volume.commit()
+        return output_path
+
+    def _ensure_vqa_train_files():
+        import requests
+        import zipfile
+
+        vqa_dir = "/checkpoints/vqa_data"
+        os.makedirs(vqa_dir, exist_ok=True)
+
+        files = {
+            "questions": {
+                "path": os.path.join(vqa_dir, "v2_OpenEnded_mscoco_train2014_questions.json"),
+                "url": "https://cvmlp.s3.amazonaws.com/vqa/mscoco/vqa/v2_Questions_Train_mscoco.zip",
+                "zip": os.path.join(vqa_dir, "train_questions.zip"),
+            },
+            "annotations": {
+                "path": os.path.join(vqa_dir, "v2_mscoco_train2014_annotations.json"),
+                "url": "https://cvmlp.s3.amazonaws.com/vqa/mscoco/vqa/v2_Annotations_Train_mscoco.zip",
+                "zip": os.path.join(vqa_dir, "train_annotations.zip"),
+            },
+        }
+
+        for name, info in files.items():
+            if os.path.exists(info["path"]):
+                continue
+            print(f"Downloading VQAv2 train2014 {name}...")
+            resp = requests.get(info["url"], timeout=600)
+            resp.raise_for_status()
+            with open(info["zip"], "wb") as f:
+                f.write(resp.content)
+            with zipfile.ZipFile(info["zip"], "r") as zf:
+                zf.extractall(vqa_dir)
+            os.remove(info["zip"])
+            volume.commit()
+
+        return files["questions"]["path"], files["annotations"]["path"]
+
+    def _ensure_vqa_train_images(questions_path, num_images=30000, image_sample_seed=20260429):
+        import requests
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        image_dir_vqa = "/checkpoints/coco_train2014_vqa"
+        os.makedirs(image_dir_vqa, exist_ok=True)
+        manifest_path = os.path.join(
+            image_dir_vqa,
+            f"manifest_seed{image_sample_seed}_n{num_images}.json",
+        )
+        if os.path.exists(manifest_path):
+            with open(manifest_path) as f:
+                manifest = _json.load(f)
+            if manifest.get("requested", 0) >= num_images:
+                print(f"Using cached VQAv2 train image manifest: {manifest_path}")
+                return image_dir_vqa
+
+        with open(questions_path) as f:
+            questions = _json.load(f)["questions"]
+        image_ids = sorted({int(q["image_id"]) for q in questions})
+        rng = random.Random(int(image_sample_seed))
+        rng.shuffle(image_ids)
+        image_ids = image_ids[: int(num_images)]
+
+        base_url = "http://images.cocodataset.org/train2014"
+
+        def download_one(image_id):
+            filename = f"COCO_train2014_{image_id:012d}.jpg"
+            path = os.path.join(image_dir_vqa, filename)
+            if os.path.exists(path):
+                return filename, "skip"
+            try:
+                resp = requests.get(f"{base_url}/{filename}", timeout=30)
+                resp.raise_for_status()
+                with open(path, "wb") as f:
+                    f.write(resp.content)
+                return filename, "ok"
+            except Exception as e:
+                return filename, f"fail: {e}"
+
+        print(
+            f"Ensuring {len(image_ids)} VQAv2 train2014 images in {image_dir_vqa} "
+            f"(image_sample_seed={image_sample_seed})"
+        )
+        ok_count, skip_count, fail_count = 0, 0, 0
+        with ThreadPoolExecutor(max_workers=24) as executor:
+            futures = [executor.submit(download_one, image_id) for image_id in image_ids]
+            for i, future in enumerate(as_completed(futures)):
+                _filename, status = future.result()
+                if status == "ok":
+                    ok_count += 1
+                elif status == "skip":
+                    skip_count += 1
+                else:
+                    fail_count += 1
+                if (i + 1) % 1000 == 0:
+                    print(
+                        f"  VQAv2 train images: {i + 1}/{len(image_ids)} "
+                        f"(ok={ok_count}, skip={skip_count}, fail={fail_count})"
+                    )
+
+        with open(manifest_path, "w") as f:
+            _json.dump(
+                {
+                    "requested": int(num_images),
+                    "image_sample_seed": int(image_sample_seed),
+                    "downloaded": ok_count,
+                    "skipped": skip_count,
+                    "failed": fail_count,
+                    "image_ids": image_ids,
+                },
+                f,
+                indent=2,
+            )
+        volume.commit()
+        return image_dir_vqa
+
+    def _vqa_train_direct_answer_path(max_samples=150000):
+        output_path = f"/checkpoints/vqa_data/vqa_train2014_direct_{int(max_samples)}.json"
+        if os.path.exists(output_path):
+            questions_path, _annotations_path = _ensure_vqa_train_files()
+            vqa_image_dir = _ensure_vqa_train_images(questions_path)
+            return output_path, vqa_image_dir
+
+        questions_path, annotations_path = _ensure_vqa_train_files()
+        vqa_image_dir = _ensure_vqa_train_images(questions_path)
+
+        available_images = {
+            f for f in os.listdir(vqa_image_dir)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        }
+        with open(questions_path) as f:
+            questions = {
+                int(q["question_id"]): q
+                for q in _json.load(f)["questions"]
+            }
+        with open(annotations_path) as f:
+            annotations = _json.load(f)["annotations"]
+
+        samples = []
+        skipped_reserved_markers = 0
+        skipped_missing_image = 0
+        for ann in annotations:
+            question_id = int(ann["question_id"])
+            question = questions.get(question_id)
+            if question is None:
+                continue
+            filename = f"COCO_train2014_{int(question['image_id']):012d}.jpg"
+            if filename not in available_images:
+                skipped_missing_image += 1
+                continue
+            prompt = " ".join(str(question["question"]).split())
+            answer = " ".join(str(ann.get("multiple_choice_answer", "")).split())
+            if not prompt or not answer:
+                continue
+            if _has_reserved_chat_markers(prompt) or _has_reserved_chat_markers(answer):
+                skipped_reserved_markers += 1
+                continue
+            samples.append(
+                {
+                    "id": f"vqa_train2014_{question_id}",
+                    "image": filename,
+                    "conversations": [
+                        {"from": "human", "value": f"<image>\n{prompt}"},
+                        {"from": "gpt", "value": answer},
+                    ],
+                }
+            )
+
+        rng = random.Random(4201)
+        rng.shuffle(samples)
+        samples = samples[: int(max_samples)]
+        if not samples:
+            raise RuntimeError("VQAv2 train direct-answer generation produced no samples.")
+
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(
+            f"Built {len(samples)} VQAv2 train direct-answer samples at {output_path}; "
+            f"skipped_missing_image={skipped_missing_image}; "
+            f"skipped_reserved_markers={skipped_reserved_markers}"
+        )
+        volume.commit()
+        return output_path, vqa_image_dir
+
+    def _llava_caption_long_form_path(max_samples=50000):
+        output_path = f"/checkpoints/llava_data/llava_caption_long_form_{int(max_samples)}.json"
+        if os.path.exists(output_path):
+            return output_path
+
+        instruct_path = "/checkpoints/llava_data/llava_instruct_150k.json"
+        if not os.path.exists(instruct_path):
+            raise RuntimeError(f"LLaVA-Instruct JSON not found at {instruct_path}")
+
+        available_images = {
+            f for f in os.listdir(image_dir)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        }
+        with open(instruct_path, "r") as f:
+            raw_data = _json.load(f)
+
+        samples = []
+        for sample in raw_data:
+            image = sample.get("image")
+            if image not in available_images:
+                continue
+            _question, answer = _first_human_and_gpt(sample)
+            if not answer or _has_reserved_chat_markers(answer):
+                continue
+            if len(answer.split()) < 8:
+                continue
+            samples.append(
+                {
+                    "id": f"{sample.get('id', 'sample')}_caption_long",
+                    "image": image,
+                    "conversations": [
+                        {"from": "human", "value": "<image>\nDescribe the image."},
+                        {"from": "gpt", "value": answer.strip()},
+                    ],
+                }
+            )
+
+        rng = random.Random(4202)
+        rng.shuffle(samples)
+        samples = samples[: int(max_samples)]
+        if not samples:
+            raise RuntimeError("LLaVA caption long-form extraction produced no samples.")
+
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(f"Built {len(samples)} LLaVA long-form caption samples at {output_path}")
+        volume.commit()
+        return output_path
+
+    if dataset in {"v3_grounding", "v3_grounding_alignment"}:
+        vqa_direct_path, vqa_image_dir = _vqa_train_direct_answer_path(max_samples=150000)
+        coco_direct_path = _coco_object_direct_answer_path()
+        short_direct_path = _filtered_direct_answer_path()
+
+        ds = create_instruction_dataset(
+            data_path=None,
+            image_dir=image_dir,
+            tokenizer=tokenizer,
+            mixture_config={
+                "strategy": "weighted",
+                "datasets": [
+                    {
+                        "name": "vqa_train_direct",
+                        "weight": 0.50,
+                        "data_path": vqa_direct_path,
+                        "image_dir": vqa_image_dir,
+                        "system_prompt": training_system_prompt,
+                    },
+                    {
+                        "name": "coco_object_count_color_direct",
+                        "weight": 0.30,
+                        "data_path": coco_direct_path,
+                        "system_prompt": training_system_prompt,
+                    },
+                    {
+                        "name": "short_llava_mix",
+                        "weight": 0.20,
+                        "data_path": short_direct_path,
+                        "system_prompt": training_system_prompt,
+                    },
+                ],
+            },
+            image_size=image_size,
+            max_length=max_length,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+            filter_to_available_images=True,
+        )
+        print(f"Loaded {len(ds)} V3 grounding-alignment instruction samples")
+        return ds
+
+    if dataset in {"v3_grounded", "v3_weighted_grounded", "grounded_weighted"}:
+        instruct_path = "/checkpoints/llava_data/llava_instruct_150k.json"
+        mix_path = _filtered_mix665k_path()
+        vqa_direct_path, vqa_image_dir = _vqa_train_direct_answer_path(max_samples=150000)
+        coco_direct_path = _coco_object_direct_answer_path()
+        short_direct_path = _filtered_direct_answer_path()
+        caption_path = _llava_caption_long_form_path()
+
+        ds = create_instruction_dataset(
+            data_path=None,
+            image_dir=image_dir,
+            tokenizer=tokenizer,
+            mixture_config={
+                "strategy": "weighted",
+                "datasets": [
+                    {
+                        "name": "vqa_train_direct",
+                        "weight": 0.30,
+                        "data_path": vqa_direct_path,
+                        "image_dir": vqa_image_dir,
+                        "system_prompt": training_system_prompt,
+                    },
+                    {
+                        "name": "coco_object_count_color_direct",
+                        "weight": 0.20,
+                        "data_path": coco_direct_path,
+                        "system_prompt": training_system_prompt,
+                    },
+                    {
+                        "name": "short_llava_mix",
+                        "weight": 0.20,
+                        "data_path": short_direct_path,
+                        "system_prompt": training_system_prompt,
+                    },
+                    {
+                        "name": "llava_instruct_general",
+                        "weight": 0.20,
+                        "data_path": mix_path,
+                    },
+                    {
+                        "name": "caption_long_form",
+                        "weight": 0.10,
+                        "data_path": caption_path,
+                    },
+                ],
+            },
+            image_size=image_size,
+            max_length=max_length,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+            filter_to_available_images=True,
+        )
+        print(f"Loaded {len(ds)} V3 weighted grounded instruction samples")
+        return ds
+
     if dataset in {"balanced_mix", "balanced_mixture", "mixture"}:
         instruct_path = "/checkpoints/llava_data/llava_instruct_150k.json"
         if not os.path.exists(instruct_path):
@@ -1377,6 +2170,195 @@ def load_finetune_dataset(
             filter_to_available_images=True,
         )
         print(f"Loaded {len(ds)} balanced instruction-mixture samples")
+        return ds
+
+    if dataset in {
+        "balanced_mix_direct",
+        "direct_balanced_mix",
+        "balanced_mix_direct_trainprompt",
+        "direct_balanced_mix_trainprompt",
+        "balanced_mix_direct_dualprompt",
+        "direct_balanced_mix_dualprompt",
+        "balanced_mix_object_trainprompt",
+        "object_balanced_mix_trainprompt",
+        "balanced_mix_direct_object_trainprompt",
+        "direct_object_balanced_mix_trainprompt",
+        "balanced_mix_vqa_direct_object_trainprompt",
+        "vqa_direct_object_balanced_mix_trainprompt",
+        "concat_mix_direct_object_light_trainprompt",
+        "light_direct_object_concat_trainprompt",
+    }:
+        instruct_path = "/checkpoints/llava_data/llava_instruct_150k.json"
+        mix_path = _filtered_mix665k_path()
+        direct_path = _filtered_direct_answer_path()
+        mixture_strategy = "balanced"
+        if dataset in {"balanced_mix_direct_trainprompt", "direct_balanced_mix_trainprompt"}:
+            direct_datasets = [
+                {
+                    "name": "mix_665k_direct_trainprompt",
+                    "data_path": direct_path,
+                    "system_prompt": training_system_prompt,
+                }
+            ]
+        elif dataset in {"balanced_mix_object_trainprompt", "object_balanced_mix_trainprompt"}:
+            direct_datasets = [
+                {
+                    "name": "coco_object_direct_trainprompt",
+                    "data_path": _coco_object_direct_answer_path(),
+                    "system_prompt": training_system_prompt,
+                }
+            ]
+        elif dataset in {
+            "balanced_mix_direct_object_trainprompt",
+            "direct_object_balanced_mix_trainprompt",
+        }:
+            direct_datasets = [
+                {
+                    "name": "mix_665k_direct_trainprompt",
+                    "data_path": direct_path,
+                    "system_prompt": training_system_prompt,
+                },
+                {
+                    "name": "coco_object_direct_trainprompt",
+                    "data_path": _coco_object_direct_answer_path(),
+                    "system_prompt": training_system_prompt,
+                },
+            ]
+        elif dataset in {
+            "balanced_mix_vqa_direct_object_trainprompt",
+            "vqa_direct_object_balanced_mix_trainprompt",
+        }:
+            vqa_direct_path, vqa_image_dir = _vqa_train_direct_answer_path(max_samples=150000)
+            direct_datasets = [
+                {
+                    "name": "mix_665k_direct_trainprompt",
+                    "data_path": direct_path,
+                    "system_prompt": training_system_prompt,
+                },
+                {
+                    "name": "coco_object_direct_trainprompt",
+                    "data_path": _coco_object_direct_answer_path(),
+                    "system_prompt": training_system_prompt,
+                },
+                {
+                    "name": "vqa_train2014_direct_trainprompt",
+                    "data_path": vqa_direct_path,
+                    "image_dir": vqa_image_dir,
+                    "system_prompt": training_system_prompt,
+                },
+            ]
+        elif dataset in {
+            "concat_mix_direct_object_light_trainprompt",
+            "light_direct_object_concat_trainprompt",
+        }:
+            mixture_strategy = "concat"
+            direct_datasets = [
+                {
+                    "name": "mix_665k_direct_trainprompt_light",
+                    "data_path": direct_path,
+                    "system_prompt": training_system_prompt,
+                    "max_samples": 75000,
+                    "sample_seed": 2901,
+                },
+                {
+                    "name": "coco_object_direct_trainprompt_light",
+                    "data_path": _coco_object_direct_answer_path(),
+                    "system_prompt": training_system_prompt,
+                    "max_samples": 75000,
+                    "sample_seed": 2902,
+                },
+            ]
+        elif dataset in {"balanced_mix_direct_dualprompt", "direct_balanced_mix_dualprompt"}:
+            direct_datasets = [
+                {
+                    "name": "mix_665k_direct_strict",
+                    "data_path": direct_path,
+                    "system_prompt": direct_system_prompt,
+                },
+                {
+                    "name": "mix_665k_direct_trainprompt",
+                    "data_path": direct_path,
+                    "system_prompt": training_system_prompt,
+                },
+            ]
+        else:
+            direct_datasets = [
+                {
+                    "name": "mix_665k_direct",
+                    "data_path": direct_path,
+                    "system_prompt": direct_system_prompt,
+                }
+            ]
+        ds = create_instruction_dataset(
+            data_path=None,
+            image_dir=image_dir,
+            tokenizer=tokenizer,
+            mixture_config={
+                "strategy": mixture_strategy,
+                "datasets": [
+                    {"name": "instruct_150k", "data_path": instruct_path},
+                    {"name": "mix_665k", "data_path": mix_path},
+                    *direct_datasets,
+                ],
+            },
+            image_size=image_size,
+            max_length=max_length,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+            filter_to_available_images=True,
+        )
+        print(f"Loaded {len(ds)} direct-balanced instruction-mixture samples")
+        return ds
+
+    if dataset in {
+        "direct_answer_mix",
+        "mix_665k_direct",
+        "direct_answer_trainprompt",
+        "mix_665k_direct_trainprompt",
+        "coco_object_direct_trainprompt",
+        "object_direct_trainprompt",
+        "vqa_train_direct",
+        "vqa_train_direct_trainprompt",
+    }:
+        system_prompt = (
+            training_system_prompt
+            if dataset in {
+                "direct_answer_trainprompt",
+                "mix_665k_direct_trainprompt",
+                "coco_object_direct_trainprompt",
+                "object_direct_trainprompt",
+                "vqa_train_direct_trainprompt",
+            }
+            else direct_system_prompt
+        )
+        if dataset in {"coco_object_direct_trainprompt", "object_direct_trainprompt"}:
+            data_path = _coco_object_direct_answer_path()
+            direct_image_dir = image_dir
+        elif dataset in {"vqa_train_direct", "vqa_train_direct_trainprompt"}:
+            data_path, direct_image_dir = _vqa_train_direct_answer_path(max_samples=150000)
+        else:
+            data_path = _filtered_direct_answer_path()
+            direct_image_dir = image_dir
+        ds = create_instruction_dataset(
+            data_path=data_path,
+            image_dir=direct_image_dir,
+            tokenizer=tokenizer,
+            image_size=image_size,
+            max_length=max_length,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+            system_prompt=system_prompt,
+            filter_to_available_images=True,
+        )
+        print(f"Loaded {len(ds)} direct-answer instruction samples")
         return ds
 
     if dataset == "mix_665k":
@@ -1800,7 +2782,10 @@ def _pretrain_worker(local_rank, world_size, config):
             token_compressor_type=config.get("token_compressor_type", "learned"),
             distributed=True,
             resume_checkpoint=config.get("resume_checkpoint"),
+            pretrain_checkpoint=config.get("pretrain_checkpoint"),
             output_dir=config["output_dir"],
+            pretrain_image_tokens=config.get("pretrain_image_tokens"),
+            dataset=config.get("dataset", "llava_pretrain"),
         )
     finally:
         cleanup_distributed()
@@ -1815,7 +2800,10 @@ def _run_pretrain_distributed(
     token_compressor_type="learned",
     wandb_api_key=None,
     resume_checkpoint=None,
+    pretrain_checkpoint=None,
     run_name=None,
+    pretrain_image_tokens=None,
+    dataset="llava_pretrain",
 ):
     """Shared implementation for Stage 1 distributed pretraining."""
     import sys
@@ -1865,7 +2853,10 @@ def _run_pretrain_distributed(
         "architecture": architecture,
         "token_compressor_type": token_compressor_type,
         "resume_checkpoint": resume_checkpoint,
+        "pretrain_checkpoint": pretrain_checkpoint,
         "output_dir": pretrain_output_dir,
+        "pretrain_image_tokens": pretrain_image_tokens,
+        "dataset": dataset,
     }
 
     mp.spawn(_pretrain_worker, nprocs=num_gpus, args=(num_gpus, config))
@@ -1893,7 +2884,10 @@ def pretrain_distributed(
     token_compressor_type="learned",
     wandb_api_key=None,
     resume_checkpoint=None,
+    pretrain_checkpoint=None,
     run_name=None,
+    pretrain_image_tokens=None,
+    dataset="llava_pretrain",
 ):
     """Run Stage 1 pretraining on 4x A100-80GB using DDP."""
     return _run_pretrain_distributed(
@@ -1905,7 +2899,10 @@ def pretrain_distributed(
         token_compressor_type=token_compressor_type,
         wandb_api_key=wandb_api_key,
         resume_checkpoint=resume_checkpoint,
+        pretrain_checkpoint=pretrain_checkpoint,
         run_name=run_name,
+        pretrain_image_tokens=pretrain_image_tokens,
+        dataset=dataset,
     )
 
 
@@ -1928,7 +2925,10 @@ def pretrain_distributed_h100(
     token_compressor_type="learned",
     wandb_api_key=None,
     resume_checkpoint=None,
+    pretrain_checkpoint=None,
     run_name=None,
+    pretrain_image_tokens=None,
+    dataset="llava_pretrain",
 ):
     """Run Stage 1 pretraining on 4x H100 using DDP."""
     return _run_pretrain_distributed(
@@ -1940,7 +2940,10 @@ def pretrain_distributed_h100(
         token_compressor_type=token_compressor_type,
         wandb_api_key=wandb_api_key,
         resume_checkpoint=resume_checkpoint,
+        pretrain_checkpoint=pretrain_checkpoint,
         run_name=run_name,
+        pretrain_image_tokens=pretrain_image_tokens,
+        dataset=dataset,
     )
 
 
@@ -2090,11 +3093,15 @@ def main(
     use_dummy_data: bool = False,
     wandb_api_key: str = None,
     track_per_layer_grad_norms: bool = True,
-    run_eval_benchmarks: bool = True,
+    run_eval_benchmarks: bool = False,
     pretrain_checkpoint: str = None,
+    finetune_checkpoint: str = None,
     resume_checkpoint: str = None,
     dataset: str = "instruct_150k",
     run_name: str = None,
+    background: bool = False,
+    pretrain_image_tokens: int = None,
+    projector_warmup_steps: int = None,
 ):
     """
     Entry point for Modal training.
@@ -2107,11 +3114,18 @@ def main(
         modal run modal_train.py --stage pretrain --gpu-type h100
         modal run modal_train.py --stage finetune             # Stage 2 (auto-discovers pretrain ckpt)
         modal run modal_train.py --architecture anymal_v2 --token-compressor-type perceiver --stage pretrain
+        modal run modal_train.py --architecture anymal_v3 --stage pretrain --max-steps 20000
         modal run modal_train.py --use-wandb --wandb-api-key YOUR_KEY  # With W&B
         modal run modal_train.py --stage pretrain --resume-checkpoint /checkpoints/pretrain-output/run-0001/checkpoint-250
         modal run modal_train.py --stage finetune --learning-rate 2e-5 --lora-learning-rate 2e-4 --dataset mix_665k
+        modal run --detach modal_train.py --stage finetune --max-steps 3000
     """
     selected_gpu = _resolve_modal_gpu(stage, gpu_type)
+    arch_key = _normalize_architecture_key(architecture)
+    if pretrain_image_tokens is None:
+        pretrain_image_tokens = 128 if arch_key == "anymal_v3" else 256
+    if arch_key == "anymal_v3" and dataset == "instruct_150k":
+        dataset = "v3_grounded"
     token_compressor_type = str(token_compressor_type).strip().lower()
     if token_compressor_type not in {"learned", "perceiver", "perceiver2", "avg"}:
         raise ValueError(
@@ -2129,7 +3143,7 @@ def main(
     print(f"Starting AnyMAL training on Modal...")
     print(f"  Stage: {stage}")
     print(f"  Run name: {run_name}")
-    print(f"  Architecture: {architecture}")
+    print(f"  Architecture: {arch_key}")
     print(f"  Token compressor: {token_compressor_type}")
     print(f"  GPU type: {gpu_type}")
     print(f"  Modal GPU resource: {selected_gpu}")
@@ -2142,14 +3156,21 @@ def main(
     print(f"  Data: {'dummy' if use_dummy_data else 'LLaVA'}")
     print(f"  Dataset: {dataset}")
     print(f"  W&B: {'enabled' if use_wandb else 'disabled'}")
+    print(f"  Background spawn: {background}")
     print(f"  Per-layer grad norms: {track_per_layer_grad_norms}")
     print(f"  Eval benchmarks: {run_eval_benchmarks}")
+    if stage == "pretrain":
+        print(f"  Stage 1 image tokens: {pretrain_image_tokens}")
+    elif projector_warmup_steps is not None:
+        print(f"  Projector warmup steps: {projector_warmup_steps}")
     if learning_rate:
         print(f"  Learning rate: {learning_rate}")
     if lora_learning_rate:
         print(f"  LoRA learning rate: {lora_learning_rate}")
     if pretrain_checkpoint:
         print(f"  Pretrain checkpoint: {pretrain_checkpoint}")
+    if finetune_checkpoint:
+        print(f"  Finetune checkpoint: {finetune_checkpoint}")
     if resume_checkpoint:
         print(f"  Resume from: {resume_checkpoint}")
 
@@ -2160,7 +3181,9 @@ def main(
         pretrain_runner = (
             pretrain_distributed_h100 if gpu_key == "h100" else pretrain_distributed
         )
-        pretrain_runner.remote(
+        _invoke_modal_call(
+            pretrain_runner,
+            background=background,
             max_steps=max_steps,
             learning_rate=lr,
             batch_size=batch_size,
@@ -2169,13 +3192,18 @@ def main(
             token_compressor_type=token_compressor_type,
             wandb_api_key=wandb_api_key,
             resume_checkpoint=resume_checkpoint,
+            pretrain_checkpoint=pretrain_checkpoint,
             run_name=run_name,
+            pretrain_image_tokens=pretrain_image_tokens,
+            dataset=dataset,
         )
     else:
         # Stage 2 uses single-GPU with QLoRA
         trainer_cls = Trainer.with_options(gpu=selected_gpu)
         trainer = trainer_cls()
-        trainer.train.remote(
+        _invoke_modal_call(
+            trainer.train,
+            background=background,
             max_steps=max_steps,
             stage=stage,
             architecture=architecture,
@@ -2189,7 +3217,10 @@ def main(
             track_per_layer_grad_norms=track_per_layer_grad_norms,
             run_eval_benchmarks=run_eval_benchmarks,
             pretrain_checkpoint=pretrain_checkpoint,
+            finetune_checkpoint=finetune_checkpoint,
             resume_checkpoint=resume_checkpoint,
             dataset=dataset,
             run_name=run_name,
+            pretrain_image_tokens=pretrain_image_tokens,
+            projector_warmup_steps=projector_warmup_steps,
         )

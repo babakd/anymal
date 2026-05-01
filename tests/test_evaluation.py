@@ -11,6 +11,7 @@ from PIL import Image
 class TinyTokenizer:
     pad_token_id = 0
     eos_token_id = 2
+    eot_token_id = 3
 
     def __call__(
         self,
@@ -29,8 +30,14 @@ class TinyTokenizer:
     def decode(self, token_ids, skip_special_tokens=True):
         ids = token_ids.tolist() if isinstance(token_ids, torch.Tensor) else list(token_ids)
         if skip_special_tokens:
-            ids = [token_id for token_id in ids if token_id != self.eos_token_id]
+            ids = [
+                token_id for token_id in ids
+                if token_id not in {self.pad_token_id, self.eos_token_id, self.eot_token_id}
+            ]
         return " ".join(f"tok{token_id}" for token_id in ids)
+
+    def get_vocab(self):
+        return {"<|eot_id|>": self.eot_token_id}
 
 
 def _write_coco_caption_fixture(tmp_path):
@@ -146,3 +153,43 @@ def test_captioning_evaluator_reports_generation_health_metrics():
     assert results["num_samples"] == 2
     assert results["avg_generated_tokens"] == 2.0
     assert results["eos_rate"] == 0.5
+
+
+def test_vqa_evaluator_counts_first_stop_token_not_padding():
+    from evaluation.vqa_eval import VQAEvaluator
+
+    class TinyModel:
+        tokenizer = TinyTokenizer()
+
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return self
+
+        def generate(self, images, input_ids, attention_mask, max_new_tokens, do_sample):
+            new_tokens = torch.tensor(
+                [
+                    [50, self.tokenizer.eot_token_id, self.tokenizer.pad_token_id, self.tokenizer.pad_token_id],
+                    [51, 52, 53, 54],
+                ],
+                dtype=torch.long,
+                device=input_ids.device,
+            )
+            return torch.cat([input_ids, new_tokens], dim=1)
+
+    batch = {
+        "image": torch.zeros(2, 3, 4, 4),
+        "input_ids": torch.tensor([[10, 11], [10, 11]], dtype=torch.long),
+        "attention_mask": torch.ones(2, 2, dtype=torch.long),
+        "question_id": [1, 2],
+        "answers": [["tok50"], ["tok51"]],
+        "answer_type": ["other", "other"],
+    }
+
+    evaluator = VQAEvaluator(TinyModel(), device=torch.device("cpu"), max_new_tokens=4)
+    results = evaluator.evaluate([batch])
+
+    assert results["avg_generated_tokens"] == 3.0
+    assert results["eos_rate"] == 0.5
+    assert results["hit_max_new_tokens_rate"] == 0.5
