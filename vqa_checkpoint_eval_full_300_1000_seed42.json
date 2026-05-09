@@ -1,0 +1,25 @@
+{
+  "max_samples": 1000,
+  "seed": 42,
+  "batch_size": 8,
+  "runs": [
+    {
+      "key": "v2_candidate",
+      "label": "v2-direct-object-full-300",
+      "architecture": "v2",
+      "checkpoint": "/checkpoints/finetune-output/v2-stage2-direct-object-full-3000-20260429/checkpoint-300",
+      "metrics": {
+        "accuracy": 7.633333333333331,
+        "num_samples": 1000,
+        "avg_generated_tokens": 32.0,
+        "eos_rate": 0.0,
+        "accuracy_number": 5.787037037037036,
+        "num_samples_number": 144,
+        "accuracy_other": 12.670565302144249,
+        "num_samples_other": 513,
+        "accuracy_yes_no": 0.8746355685131195,
+        "num_samples_yes_no": 343
+      }
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "max_samples": 1000,
+  "seed": 42,
+  "batch_size": 8,
+  "image_dir": "/checkpoints/coco_val2014",
+  "ensure_num_images": 0,
+  "image_sample_seed": 20260429,
+  "prompt_style": "training_chat",
+  "system_prompt": "Answer the image question directly and briefly. End after the answer.",
+  "image_perturbation": "none",
+  "runs": [
+    {
+      "key": "v1_ablation_f",
+      "label": "V1 ablation-F checkpoint 500",
+      "architecture": "v1",
+      "checkpoint": "/checkpoints/finetune-output/ablation-F/checkpoint-500",
+      "metrics": {
+        "accuracy": 21.1,
+        "num_samples": 1000,
+        "avg_generated_tokens": 4.164,
+        "eos_rate": 0.981,
+        "hit_max_new_tokens_rate": 0.019,
+        "accuracy_number": 15.740740740740737,
+        "num_samples_number": 144,
+        "accuracy_other": 17.348927875243657,
+        "num_samples_other": 513,
+        "accuracy_yes_no": 28.960155490767736,
+        "num_samples_yes_no": 343
+      }
+    },
+    {
+      "key": "v2_final",
+      "label": "V2 final balanced-mix checkpoint 3000",
+      "architecture": "v2",
+      "checkpoint": "/checkpoints/finetune-output/v2-stage2-balanced-mix-3000-20260428/checkpoint-3000",
+      "metrics": {
+        "accuracy": 7.8,
+        "num_samples": 1000,
+        "avg_generated_tokens": 1.732,
+        "eos_rate": 1.0,
+        "hit_max_new_tokens_rate": 0.0,
+        "accuracy_number": 5.092592592592592,
+        "num_samples_number": 144,
+        "accuracy_other": 7.017543859649121,
+        "num_samples_other": 513,
+        "accuracy_yes_no": 10.10689990281827,
+        "num_samples_yes_no": 343
+      }
+    }
+  ]
+}

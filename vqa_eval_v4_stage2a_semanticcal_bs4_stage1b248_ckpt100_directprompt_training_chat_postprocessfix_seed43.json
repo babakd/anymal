@@ -1,0 +1,32 @@
+{
+  "max_samples": 1000,
+  "seed": 43,
+  "batch_size": 8,
+  "image_dir": "/checkpoints/coco_val2014",
+  "ensure_num_images": 0,
+  "image_sample_seed": 20260429,
+  "prompt_style": "training_chat",
+  "system_prompt": "Answer the image question directly and briefly. End after the answer.",
+  "image_perturbation": "none",
+  "runs": [
+    {
+      "key": "v4_candidate",
+      "label": "v4-stage2a-semanticcal-bs4-stage1b248-ckpt100-postfix-seed43",
+      "architecture": "v4",
+      "checkpoint": "/checkpoints/finetune-output/v4-stage2a-semanticcal-bs4-lossscale003-lora1e5-from-stage1b248-20260509-codex/checkpoint-100",
+      "metrics": {
+        "accuracy": 51.36666666666664,
+        "num_samples": 1000,
+        "avg_generated_tokens": 6.458,
+        "eos_rate": 1.0,
+        "hit_max_new_tokens_rate": 0.0,
+        "accuracy_number": 35.42976939203355,
+        "num_samples_number": 159,
+        "accuracy_other": 40.36958066808814,
+        "num_samples_other": 469,
+        "accuracy_yes_no": 72.0430107526882,
+        "num_samples_yes_no": 372
+      }
+    }
+  ]
+}

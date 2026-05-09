@@ -1,0 +1,4034 @@
+{
+  "max_samples": 1000,
+  "seed": 42,
+  "batch_size": 8,
+  "image_dir": "/checkpoints/coco_val2014",
+  "ensure_num_images": 0,
+  "image_sample_seed": 20260429,
+  "prompt_style": "training_chat",
+  "system_prompt": "Answer the image question directly and briefly. End after the answer.",
+  "image_perturbation": "none",
+  "runs": [
+    {
+      "key": "v3_candidate",
+      "label": "v3-direct-calibration-loraonly-ckpt100-postfix",
+      "architecture": "v3",
+      "checkpoint": "/checkpoints/finetune-output/v3-direct-calibration-loraonly-300-20260508-codex/checkpoint-100",
+      "metrics": {
+        "accuracy": 9.4,
+        "num_samples": 1000,
+        "avg_generated_tokens": 5.247,
+        "eos_rate": 0.999,
+        "hit_max_new_tokens_rate": 0.001,
+        "accuracy_number": 6.481481481481481,
+        "num_samples_number": 144,
+        "accuracy_other": 9.096816114359973,
+        "num_samples_other": 513,
+        "accuracy_yes_no": 11.078717201166182,
+        "num_samples_yes_no": 343
+      },
+      "prediction_samples": [
+        {
+          "question_id": 133827014,
+          "question": "How many traffic lights are visible?",
+          "raw_answer": "assistant 1",
+          "answer": "assistant 1",
+          "answers": [
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 395324000,
+          "question": "What does the green color of the bike signify?",
+          "raw_answer": "nothing",
+          "answer": "nothing",
+          "answers": [
+            "metal",
+            "unknown",
+            "gang",
+            "metal",
+            "nothing",
+            "sky",
+            "nothing",
+            "grass",
+            "veteran",
+            "cleanliness"
+          ],
+          "answer_type": "other",
+          "question_type": "what does the"
+        },
+        {
+          "question_id": 525058015,
+          "question": "Is the building in the picture made of brick?",
+          "raw_answer": "yes",
+          "answer": "yes",
+          "answers": [
+            "yes",
+            "no",
+            "no",
+            "yes",
+            "no",
+            "yes",
+            "no",
+            "yes",
+            "yes",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 459272005,
+          "question": "Does the girl need a napkin?",
+          "raw_answer": "assistant no",
+          "answer": "assistant no",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "does the"
+        },
+        {
+          "question_id": 481214007,
+          "question": "Is the child wearing a tie?",
+          "raw_answer": "assistantyes",
+          "answer": "assistantyes",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 73000,
+          "question": "What is the license number?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "sv-6260",
+            "sv-6260",
+            "sv-6260",
+            "6260",
+            "sv-6260",
+            "6260",
+            "sv 6260",
+            "sv-6260",
+            "sv-6260",
+            "sv-6260"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the"
+        },
+        {
+          "question_id": 135037000,
+          "question": "What is the small animal called?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "wild boar",
+            "boar",
+            "warthog",
+            "boar",
+            "boar",
+            "wildebeest",
+            "boar",
+            "boar",
+            "warthog",
+            "boar"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the"
+        },
+        {
+          "question_id": 133693006,
+          "question": "What does it says on the tall building?",
+          "raw_answer": "assistant 1",
+          "answer": "assistant 1",
+          "answers": [
+            "nothing",
+            "5 eleven",
+            "5-11",
+            "5 eleven",
+            "5 eleven",
+            "5 eleven",
+            "5 eleven",
+            "5 eleven",
+            "5 eleven",
+            "5 eleven"
+          ],
+          "answer_type": "number",
+          "question_type": "what"
+        },
+        {
+          "question_id": 3217000,
+          "question": "Is there a pathway?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is there a"
+        },
+        {
+          "question_id": 267932002,
+          "question": "What type of bag is shown in this photo?",
+          "raw_answer": "lunch",
+          "answer": "lunch",
+          "answers": [
+            "backpack",
+            "book bag",
+            "backpack",
+            "backpack",
+            "backpack",
+            "book bag",
+            "backpack",
+            "backpack",
+            "backpack",
+            "backpack"
+          ],
+          "answer_type": "other",
+          "question_type": "what type of"
+        },
+        {
+          "question_id": 394246003,
+          "question": "Is the guys jeans ripped?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 5278002,
+          "question": "What kind of vehicle is this?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "train",
+            "train",
+            "train",
+            "train",
+            "train",
+            "train",
+            "train",
+            "train",
+            "train",
+            "train"
+          ],
+          "answer_type": "other",
+          "question_type": "what kind of"
+        },
+        {
+          "question_id": 529344001,
+          "question": "Where are the horses?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "ranch",
+            "coral",
+            "at ranch",
+            "corral",
+            "in corral",
+            "ranch",
+            "ranch",
+            "ranch",
+            "coral",
+            "outside"
+          ],
+          "answer_type": "other",
+          "question_type": "where are the"
+        },
+        {
+          "question_id": 134459000,
+          "question": "How many different color shirts are there?",
+          "raw_answer": "assistant 3",
+          "answer": "assistant 3",
+          "answers": [
+            "6",
+            "6",
+            "3",
+            "7",
+            "5",
+            "9",
+            "5",
+            "6",
+            "5",
+            "3"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 248810000,
+          "question": "Are there any other animals in this picture?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "yes",
+            "no",
+            "no",
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "no",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "are there any"
+        },
+        {
+          "question_id": 134811003,
+          "question": "Where is the food?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "plate",
+            "foreground",
+            "on table",
+            "plate",
+            "on plate",
+            "pizza",
+            "on table",
+            "on plate",
+            "centered in photo",
+            "on plate"
+          ],
+          "answer_type": "other",
+          "question_type": "where is the"
+        },
+        {
+          "question_id": 394458004,
+          "question": "Where is this elephant at?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "field",
+            "outside",
+            "field",
+            "zoo",
+            "jungle",
+            "wild",
+            "field",
+            "wild",
+            "grassy area",
+            "zoo"
+          ],
+          "answer_type": "other",
+          "question_type": "none of the above"
+        },
+        {
+          "question_id": 4840000,
+          "question": "How many buildings are in the distance?",
+          "raw_answer": "assistant 2",
+          "answer": "assistant 2",
+          "answers": [
+            "3",
+            "3",
+            "3",
+            "4",
+            "4",
+            "3",
+            "8",
+            "5",
+            "5",
+            "4"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 528404003,
+          "question": "Is this a real train?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "yes",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this a"
+        },
+        {
+          "question_id": 437205018,
+          "question": "How many bananas is the child holding?",
+          "raw_answer": "assistant 1",
+          "answer": "assistant 1",
+          "answers": [
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 267709002,
+          "question": "How many people are shown?",
+          "raw_answer": "assistant 2",
+          "answer": "assistant 2",
+          "answers": [
+            "2",
+            "2",
+            "3",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2"
+          ],
+          "answer_type": "number",
+          "question_type": "how many people are"
+        },
+        {
+          "question_id": 131969000,
+          "question": "What colors are the hydrant?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "blue and yellow",
+            "yellow/blue",
+            "blue and yellow",
+            "yellow and blue",
+            "yellow",
+            "yellow",
+            "yellow,blue and black",
+            "yellow blue",
+            "yellow blue",
+            "blue and yellow"
+          ],
+          "answer_type": "other",
+          "question_type": "what"
+        },
+        {
+          "question_id": 546976002,
+          "question": "Is this man indoors?",
+          "raw_answer": "assistantyes",
+          "answer": "assistantyes",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this"
+        },
+        {
+          "question_id": 219260003,
+          "question": "How many people are in the photo outside the train?",
+          "raw_answer": "1",
+          "answer": "1",
+          "answers": [
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1"
+          ],
+          "answer_type": "number",
+          "question_type": "how many people are in"
+        },
+        {
+          "question_id": 135561000,
+          "question": "Is there a couch in this photo?",
+          "raw_answer": "assistant no",
+          "answer": "assistant no",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is there a"
+        },
+        {
+          "question_id": 264382005,
+          "question": "What sport is being played?",
+          "raw_answer": "assistant baseball",
+          "answer": "assistant baseball",
+          "answers": [
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball"
+          ],
+          "answer_type": "other",
+          "question_type": "what sport is"
+        },
+        {
+          "question_id": 529636003,
+          "question": "How many clocks are on the tower?",
+          "raw_answer": "assistant 1",
+          "answer": "assistant 1",
+          "answers": [
+            "4",
+            "2",
+            "2",
+            "4",
+            "2",
+            "4",
+            "4",
+            "2",
+            "2",
+            "2"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 524844000,
+          "question": "Is the skating in the night?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 262895014,
+          "question": "Is he happy or sad?",
+          "raw_answer": "assistant sad",
+          "answer": "assistant sad",
+          "answers": [
+            "sad",
+            "sad",
+            "sad",
+            "sad",
+            "happy",
+            "sad",
+            "sad",
+            "sad",
+            "sad",
+            "sad"
+          ],
+          "answer_type": "other",
+          "question_type": "is he"
+        },
+        {
+          "question_id": 525021005,
+          "question": "How many cars are in the picture?",
+          "raw_answer": "assistant 5",
+          "answer": "assistant 5",
+          "answers": [
+            "3",
+            "3",
+            "3",
+            "4",
+            "4",
+            "3",
+            "parked",
+            "3",
+            "3",
+            "4"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 136600002,
+          "question": "How many computing devices are present?",
+          "raw_answer": "assistant 1",
+          "answer": "assistant 1",
+          "answers": [
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 134926002,
+          "question": "Which sport-related object does this pitcher's mound resemble, in color and shape?",
+          "raw_answer": "baseball",
+          "answer": "baseball",
+          "answers": [
+            "bowling ball",
+            "frisbee",
+            "ball",
+            "baseball",
+            "football",
+            "triathlon",
+            "brown circle",
+            "base",
+            "bat",
+            "brown baseball"
+          ],
+          "answer_type": "other",
+          "question_type": "which"
+        },
+        {
+          "question_id": 525988016,
+          "question": "Is the teddy bear smiling?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 510657005,
+          "question": "What is shining from the ceiling?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "lights",
+            "light",
+            "lights",
+            "lights",
+            "light",
+            "lights",
+            "lights",
+            "lights",
+            "lights",
+            "lights"
+          ],
+          "answer_type": "other",
+          "question_type": "what is"
+        },
+        {
+          "question_id": 488942007,
+          "question": "Are the clock hours Arabic numbers or Roman numerals?",
+          "raw_answer": "Roman numerals",
+          "answer": "roman numerals",
+          "answers": [
+            "roman",
+            "roman",
+            "roman numerals",
+            "roman",
+            "roman numerals",
+            "roman",
+            "roman",
+            "roman numerals",
+            "roman numerals",
+            "roman numerals"
+          ],
+          "answer_type": "other",
+          "question_type": "are the"
+        },
+        {
+          "question_id": 263355000,
+          "question": "Are the skiers in a competition?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "yes",
+            "maybe"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "are the"
+        },
+        {
+          "question_id": 1342019,
+          "question": "Who is the author of the book?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "john doe",
+            "unknown",
+            "unknown",
+            "can't tell",
+            "britannica",
+            "dr seuss",
+            "unknown",
+            "pilot",
+            "?",
+            "unknown"
+          ],
+          "answer_type": "other",
+          "question_type": "who is"
+        },
+        {
+          "question_id": 35076000,
+          "question": "Why is her umbrella up?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "raining",
+            "shade",
+            "protection",
+            "shade",
+            "sun",
+            "shade",
+            "block sun",
+            "shade",
+            "sunny",
+            "sun"
+          ],
+          "answer_type": "other",
+          "question_type": "why"
+        },
+        {
+          "question_id": 135029011,
+          "question": "How many blueberries are visible?",
+          "raw_answer": "assistant 0",
+          "answer": "assistant 0",
+          "answers": [
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "o",
+            "no",
+            "0",
+            "0"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 525050001,
+          "question": "What time of day is it?",
+          "raw_answer": "assistant 12:00",
+          "answer": "assistant 1200",
+          "answers": [
+            "noon",
+            "morning",
+            "morning",
+            "noon",
+            "midday",
+            "morning",
+            "12 pm",
+            "afternoon",
+            "noon",
+            "noon"
+          ],
+          "answer_type": "other",
+          "question_type": "what time"
+        },
+        {
+          "question_id": 136033000,
+          "question": "Is this restroom in a private home?",
+          "raw_answer": "no",
+          "answer": "no",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this"
+        },
+        {
+          "question_id": 5529000,
+          "question": "What color is the snowboard?",
+          "raw_answer": "assistant\n\nwhite",
+          "answer": "white",
+          "answers": [
+            "there isn't one",
+            "white",
+            "green",
+            "white",
+            "no snowboard",
+            "those are skis",
+            "white",
+            "black and green",
+            "it is skis",
+            "skis"
+          ],
+          "answer_type": "other",
+          "question_type": "what color is the"
+        },
+        {
+          "question_id": 394773002,
+          "question": "What color is this motorcycle?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "blue, white, black",
+            "blue",
+            "blue",
+            "blue",
+            "blue and black",
+            "blue",
+            "blue",
+            "blue, silver, black",
+            "blue, silver, black and red",
+            "blue"
+          ],
+          "answer_type": "other",
+          "question_type": "what color is"
+        },
+        {
+          "question_id": 267694017,
+          "question": "How many slices are there?",
+          "raw_answer": "assistant 1",
+          "answer": "assistant 1",
+          "answers": [
+            "6",
+            "8",
+            "7",
+            "8",
+            "8",
+            "8",
+            "8",
+            "8",
+            "8",
+            "8"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 761004,
+          "question": "Is anyone wearing a blue shirt?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is"
+        },
+        {
+          "question_id": 530013002,
+          "question": "What game are they playing?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball",
+            "baseball"
+          ],
+          "answer_type": "other",
+          "question_type": "what"
+        },
+        {
+          "question_id": 396200004,
+          "question": "Is the skateboarder coming or going?",
+          "raw_answer": "going",
+          "answer": "going",
+          "answers": [
+            "coming",
+            "coming",
+            "coming",
+            "coming",
+            "coming",
+            "coming",
+            "coming",
+            "coming",
+            "coming",
+            "coming"
+          ],
+          "answer_type": "other",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 5754029,
+          "question": "How many donuts have sprinkles?",
+          "raw_answer": "0",
+          "answer": "0",
+          "answers": [
+            "3",
+            "1",
+            "3",
+            "1",
+            "2",
+            "2",
+            "2",
+            "3",
+            "1",
+            "2"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 44003002,
+          "question": "What number is on the sign?",
+          "raw_answer": "assistant 0",
+          "answer": "assistant 0",
+          "answers": [
+            "300",
+            "300",
+            "300",
+            "300",
+            "300",
+            "300",
+            "300",
+            "300",
+            "300",
+            "300"
+          ],
+          "answer_type": "number",
+          "question_type": "what number is"
+        },
+        {
+          "question_id": 525988018,
+          "question": "How many teddy bears?",
+          "raw_answer": "assistant 2",
+          "answer": "assistant 2",
+          "answers": [
+            "2",
+            "2",
+            "2",
+            "2",
+            "5",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 263612008,
+          "question": "Is the dog asleep on a coach?",
+          "raw_answer": "assistant yes",
+          "answer": "assistant yes",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 3703002,
+          "question": "How many eggs are in the picture?",
+          "raw_answer": "assistant 2",
+          "answer": "assistant 2",
+          "answers": [
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 131516000,
+          "question": "Can all of the body parts of this stuffed animal be seen?",
+          "raw_answer": "yes",
+          "answer": "yes",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "none of the above"
+        },
+        {
+          "question_id": 526222001,
+          "question": "What sport is this?",
+          "raw_answer": "assistant tennis",
+          "answer": "assistant tennis",
+          "answers": [
+            "tennis",
+            "tennis",
+            "tennis",
+            "tennis",
+            "tennis",
+            "tennis",
+            "tennis",
+            "tennis",
+            "tennis",
+            "tennis"
+          ],
+          "answer_type": "other",
+          "question_type": "what sport is"
+        },
+        {
+          "question_id": 3934000,
+          "question": "What is the girl doing?",
+          "raw_answer": "",
+          "answer": "",
+          "answers": [
+            "playing game",
+            "playing wii video game",
+            "playing video game",
+            "playing wii",
+            "playing",
+            "wii",
+            "playing game",
+            "dancing",
+            "playing video game",
+            "playing wii"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the"
+        },
+        {
+          "question_id": 263223006,
+          "question": "Is this person barefoot?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this person"
+        },
+        {
+          "question_id": 525665005,
+          "question": "Is it snowing?",
+          "raw_answer": "assistant no",
+          "answer": "assistant no",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is it"
+        },
+        {
+          "question_id": 397352003,
+          "question": "Is this a professional game?",
+          "raw_answer": "assistant yes",
+          "answer": "assistant yes",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this a"
+        },
+        {
+          "question_id": 133667000,
+          "question": "What is covering the floor?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "rug",
+            "rug",
+            "carpet",
+            "rug",
+            "rug",
+            "rug",
+            "rug",
+            "paper",
+            "carpet",
+            "carpet"
+          ],
+          "answer_type": "other",
+          "question_type": "what is"
+        },
+        {
+          "question_id": 526806001,
+          "question": "What color is the first train car?",
+          "raw_answer": "assistant red",
+          "answer": "assistant red",
+          "answers": [
+            "white",
+            "red",
+            "red",
+            "orange",
+            "silver",
+            "white",
+            "white",
+            "red",
+            "orange & white",
+            "white"
+          ],
+          "answer_type": "other",
+          "question_type": "what color is the"
+        },
+        {
+          "question_id": 524502001,
+          "question": "What color are the rocks near the fire hydrant?",
+          "raw_answer": "assistant\n\nred",
+          "answer": "red",
+          "answers": [
+            "brown",
+            "brown",
+            "brown",
+            "brown",
+            "brown",
+            "no rocks",
+            "tan",
+            "brown",
+            "white",
+            "brown"
+          ],
+          "answer_type": "other",
+          "question_type": "what color are the"
+        },
+        {
+          "question_id": 8888002,
+          "question": "What airline is this?",
+          "raw_answer": "assistant qantas",
+          "answer": "assistant qantas",
+          "answers": [
+            "qantas",
+            "qantas",
+            "tas",
+            "spirit of australia",
+            "tas",
+            "qantas",
+            "tas",
+            "qantas",
+            "spirit of australia",
+            "qantas"
+          ],
+          "answer_type": "other",
+          "question_type": "what"
+        },
+        {
+          "question_id": 589000,
+          "question": "What color shirt is the person wearing?",
+          "raw_answer": "assistant white",
+          "answer": "assistant white",
+          "answers": [
+            "white",
+            "white",
+            "white",
+            "white",
+            "white",
+            "white",
+            "white",
+            "white",
+            "white",
+            "white"
+          ],
+          "answer_type": "other",
+          "question_type": "what color"
+        },
+        {
+          "question_id": 263474000,
+          "question": "What is on top of the toilet seat with lots of colors?",
+          "raw_answer": "quilt",
+          "answer": "quilt",
+          "answers": [
+            "yes",
+            "seat",
+            "cover",
+            "cover",
+            "toilet seat cover",
+            "cover",
+            "quilt",
+            "cover",
+            "lid",
+            "toilet cover"
+          ],
+          "answer_type": "other",
+          "question_type": "what is"
+        },
+        {
+          "question_id": 267343002,
+          "question": "Is it snowing in this picture?",
+          "raw_answer": "assistant no",
+          "answer": "assistant no",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "giraffe",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is it"
+        },
+        {
+          "question_id": 394322003,
+          "question": "Is this a contemporary photo?",
+          "raw_answer": "assistant no",
+          "answer": "assistant no",
+          "answers": [
+            "no",
+            "yes",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this a"
+        },
+        {
+          "question_id": 5754006,
+          "question": "Are there vegetables in this picture?",
+          "raw_answer": "assistant no",
+          "answer": "assistant no",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "none",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "are there"
+        },
+        {
+          "question_id": 5577004,
+          "question": "Is the backpack crochet?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "yes",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "bootsnall travel",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 2164001,
+          "question": "What kind of building is in the background?",
+          "raw_answer": "assistant farmhouse",
+          "answer": "assistant farmhouse",
+          "answers": [
+            "house",
+            "barn",
+            "mountains",
+            "farmhouse",
+            "barn",
+            "barn and house",
+            "shed",
+            "barn",
+            "barn",
+            "house"
+          ],
+          "answer_type": "other",
+          "question_type": "what kind of"
+        },
+        {
+          "question_id": 134649013,
+          "question": "Is the toilet seat up or down?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "up",
+            "up",
+            "up",
+            "up",
+            "up",
+            "up",
+            "up",
+            "up",
+            "up",
+            "up"
+          ],
+          "answer_type": "other",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 263288003,
+          "question": "What does the scissors represent on  top of the merchandise?",
+          "raw_answer": "cutting",
+          "answer": "cutting",
+          "answers": [
+            "cutting",
+            "scissors",
+            "crafts",
+            "cut",
+            "cutting",
+            "nothing",
+            "cutting signs",
+            "tools",
+            "themselves",
+            "cutting"
+          ],
+          "answer_type": "other",
+          "question_type": "what does the"
+        },
+        {
+          "question_id": 132415022,
+          "question": "What is the red liquid on top of the food?",
+          "raw_answer": "assistant sauce",
+          "answer": "assistant sauce",
+          "answers": [
+            "tomato sauce",
+            "tomato sauce",
+            "tomato sauce",
+            "tomato sauce",
+            "grease",
+            "tomato sauce",
+            "sauce",
+            "tomato sauce",
+            "grease",
+            "tomato sauce"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the"
+        },
+        {
+          "question_id": 3817001,
+          "question": "What is the man's profession?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "farmer",
+            "fruit seller",
+            "selling bananas",
+            "vendor",
+            "banana farmer",
+            "farmer",
+            "farmer",
+            "peddler",
+            "farmer",
+            "seller"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the"
+        },
+        {
+          "question_id": 263780003,
+          "question": "How many legs are visible?",
+          "raw_answer": "assistant 2",
+          "answer": "assistant 2",
+          "answers": [
+            "7",
+            "8",
+            "7",
+            "8",
+            "7",
+            "7",
+            "7",
+            "7",
+            "8",
+            "7"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 135076006,
+          "question": "What type of plant is the bird sitting on?",
+          "raw_answer": "blueberry",
+          "answer": "blueberry",
+          "answers": [
+            "blackberry bush",
+            "raspberries",
+            "blackberry",
+            "blackberry bush",
+            "blackberry",
+            "blueberry plant",
+            "blackberry",
+            "tree",
+            "blueberry",
+            "leaf"
+          ],
+          "answer_type": "other",
+          "question_type": "what type of"
+        },
+        {
+          "question_id": 3255002,
+          "question": "What time of day is it?",
+          "raw_answer": "assistant 12:00",
+          "answer": "assistant 1200",
+          "answers": [
+            "morning",
+            "noon",
+            "morning",
+            "late in day",
+            "afternoon",
+            "noon",
+            "daytime",
+            "noon",
+            "morning",
+            "afternoon"
+          ],
+          "answer_type": "other",
+          "question_type": "what time"
+        },
+        {
+          "question_id": 415408000,
+          "question": "What is behind the hydrant?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "van",
+            "van",
+            "van",
+            "van",
+            "van",
+            "van",
+            "van",
+            "van",
+            "van",
+            "van"
+          ],
+          "answer_type": "other",
+          "question_type": "what is"
+        },
+        {
+          "question_id": 529549002,
+          "question": "How many elephants can be seen?",
+          "raw_answer": "assistant 3",
+          "answer": "assistant 3",
+          "answers": [
+            "5",
+            "5",
+            "5",
+            "5",
+            "5",
+            "5",
+            "5",
+            "5",
+            "5",
+            "5"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 266099000,
+          "question": "What kind of clouds are in the sky?",
+          "raw_answer": "assistant none",
+          "answer": "assistant none",
+          "answers": [
+            "gray",
+            "nimbo columbus",
+            "dark",
+            "rainy clouds",
+            "cumulus",
+            "storm",
+            "rain",
+            "rain clouds",
+            "gray",
+            "cumulus nimbus"
+          ],
+          "answer_type": "other",
+          "question_type": "what kind of"
+        },
+        {
+          "question_id": 526414002,
+          "question": "Is this in someone's home?",
+          "raw_answer": "assistant yes",
+          "answer": "assistant yes",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this"
+        },
+        {
+          "question_id": 134935002,
+          "question": "What is on the silver plate?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "cookies",
+            "cookies",
+            "cookies",
+            "cookies",
+            "cookies",
+            "cookies",
+            "plate",
+            "cookies",
+            "cookies",
+            "cookies"
+          ],
+          "answer_type": "other",
+          "question_type": "what is on the"
+        },
+        {
+          "question_id": 134811000,
+          "question": "Is this pizza cooked?",
+          "raw_answer": "assistant yes",
+          "answer": "assistant yes",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this"
+        },
+        {
+          "question_id": 134594004,
+          "question": "How many animals are there?",
+          "raw_answer": "assistant 2",
+          "answer": "assistant 2",
+          "answers": [
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 134738000,
+          "question": "What kind of hair dryer is this?",
+          "raw_answer": "curling",
+          "answer": "curling",
+          "answers": [
+            "vidal sassoon",
+            "vidal sassoon",
+            "vidal sassoon",
+            "vidal sassoon",
+            "vidal sassoon",
+            "vidal sassoon",
+            "vidal sassoon",
+            "vidal sassoon",
+            "vidal sassoon",
+            "vidal sassoon"
+          ],
+          "answer_type": "other",
+          "question_type": "what kind of"
+        },
+        {
+          "question_id": 131276001,
+          "question": "How many women are in the image?",
+          "raw_answer": "1",
+          "answer": "1",
+          "answers": [
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 5486000,
+          "question": "Is this an old-fashioned room?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "no",
+            "no",
+            "no",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this an"
+        },
+        {
+          "question_id": 398525001,
+          "question": "What are the street names?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "adams and idaho",
+            "adams and idaho",
+            "adams & idaho",
+            "adams and idaho",
+            "adams and idaho",
+            "idaho and adams",
+            "adams and idaho",
+            "idaho and adams",
+            "adams and idaho",
+            "adams and idaho"
+          ],
+          "answer_type": "other",
+          "question_type": "what are the"
+        },
+        {
+          "question_id": 134863008,
+          "question": "What color is the stop light?",
+          "raw_answer": "assistant red",
+          "answer": "assistant red",
+          "answers": [
+            "green",
+            "green",
+            "red",
+            "red",
+            "red",
+            "red and green",
+            "green",
+            "red and green",
+            "red",
+            "green"
+          ],
+          "answer_type": "other",
+          "question_type": "what color is the"
+        },
+        {
+          "question_id": 526955001,
+          "question": "What pattern is on the girl's shirt?",
+          "raw_answer": "floral",
+          "answer": "floral",
+          "answers": [
+            "striped",
+            "seahorse",
+            "strips",
+            "stripes",
+            "stripes",
+            "stripes",
+            "stripes",
+            "stripe",
+            "striped",
+            "stripes"
+          ],
+          "answer_type": "other",
+          "question_type": "what"
+        },
+        {
+          "question_id": 132189000,
+          "question": "What number is on the bus?",
+          "raw_answer": "assistant 101",
+          "answer": "assistant 101",
+          "answers": [
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4"
+          ],
+          "answer_type": "number",
+          "question_type": "what number is"
+        },
+        {
+          "question_id": 257657009,
+          "question": "What is on the man's head?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "hair",
+            "hair",
+            "black hair",
+            "hair",
+            "hair",
+            "hair",
+            "hair",
+            "hair",
+            "hair",
+            "hair"
+          ],
+          "answer_type": "other",
+          "question_type": "what is on the"
+        },
+        {
+          "question_id": 372009002,
+          "question": "Where is the teddy bear?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "on pillow",
+            "yes",
+            "pillow",
+            "bed",
+            "bed",
+            "bed",
+            "bed",
+            "on bed",
+            "bed",
+            "on bed"
+          ],
+          "answer_type": "other",
+          "question_type": "where is the"
+        },
+        {
+          "question_id": 393809003,
+          "question": "How many boys are on the field?",
+          "raw_answer": "assistant 2",
+          "answer": "assistant 2",
+          "answers": [
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 328000,
+          "question": "What are the men sitting on?",
+          "raw_answer": "assistant bench",
+          "answer": "assistant bench",
+          "answers": [
+            "bench",
+            "bench",
+            "bench",
+            "bench",
+            "bench",
+            "bench",
+            "park bench",
+            "bench",
+            "bench",
+            "bench"
+          ],
+          "answer_type": "other",
+          "question_type": "what are the"
+        },
+        {
+          "question_id": 529631002,
+          "question": "What device is in their hands?",
+          "raw_answer": "assistant glass",
+          "answer": "assistant glass",
+          "answers": [
+            "smartphones",
+            "phones",
+            "cell phones",
+            "phone",
+            "phones",
+            "phone",
+            "cell phone",
+            "cell phone",
+            "cell phones",
+            "wine glasses"
+          ],
+          "answer_type": "other",
+          "question_type": "what"
+        },
+        {
+          "question_id": 262242000,
+          "question": "What is the women's racket touching?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "floor and ball",
+            "ground and tennis ball",
+            "ground",
+            "ground",
+            "court and ball",
+            "ball",
+            "ball",
+            "ball",
+            "ground/ball",
+            "ball"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the"
+        },
+        {
+          "question_id": 4175000,
+          "question": "Is the woman serving for an odd point or an even point?",
+          "raw_answer": "even",
+          "answer": "even",
+          "answers": [
+            "even",
+            "don't know",
+            "odd",
+            "even",
+            "odd",
+            "odd",
+            "odd",
+            "even",
+            "odd",
+            "odd"
+          ],
+          "answer_type": "other",
+          "question_type": "is the woman"
+        },
+        {
+          "question_id": 525118002,
+          "question": "What color is the fruit on the television?",
+          "raw_answer": "assistant green",
+          "answer": "assistant green",
+          "answers": [
+            "yellow",
+            "green",
+            "greenish yellow",
+            "no tv",
+            "green",
+            "green",
+            "yellow",
+            "none",
+            "yellow",
+            "yellow"
+          ],
+          "answer_type": "other",
+          "question_type": "what color is the"
+        },
+        {
+          "question_id": 1138004,
+          "question": "How many windows do you see?",
+          "raw_answer": "assistant 2",
+          "answer": "assistant 2",
+          "answers": [
+            "6",
+            "3",
+            "3",
+            "3",
+            "6",
+            "6",
+            "3",
+            "3",
+            "3",
+            "6"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 135139003,
+          "question": "How do you know the fruit are not ready to eat?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "its green",
+            "they are green",
+            "they are green still",
+            "green",
+            "green",
+            "color",
+            "not ready",
+            "their green",
+            "green",
+            "they are still green"
+          ],
+          "answer_type": "other",
+          "question_type": "how"
+        },
+        {
+          "question_id": 331856027,
+          "question": "What numbers appear on the first sign on the far left?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "no sign"
+          ],
+          "answer_type": "number",
+          "question_type": "what"
+        },
+        {
+          "question_id": 262800003,
+          "question": "Is this a jet?",
+          "raw_answer": "assistantassistantyes",
+          "answer": "assistantassistantyes",
+          "answers": [
+            "yes",
+            "no",
+            "no",
+            "yes",
+            "yes",
+            "yes",
+            "no",
+            "no",
+            "yes",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this a"
+        },
+        {
+          "question_id": 394206004,
+          "question": "How many tires are on the back of the truck?",
+          "raw_answer": "assistant 2",
+          "answer": "assistant 2",
+          "answers": [
+            "4",
+            "6",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "6"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 262505003,
+          "question": "Is this a busy street?",
+          "raw_answer": "assistantassistantyes",
+          "answer": "assistantassistantyes",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this a"
+        },
+        {
+          "question_id": 401642001,
+          "question": "How  many forks do you see?",
+          "raw_answer": "assistant 0",
+          "answer": "assistant 0",
+          "answers": [
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 526456001,
+          "question": "How many cows are in this picture?",
+          "raw_answer": "assistant 3",
+          "answer": "assistant 3",
+          "answers": [
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "3",
+            "3",
+            "4",
+            "3",
+            "4"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 1655006,
+          "question": "Does the man have long hair?",
+          "raw_answer": "assistant no",
+          "answer": "assistant no",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "does the"
+        },
+        {
+          "question_id": 264619001,
+          "question": "Does the water look still?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "does the"
+        },
+        {
+          "question_id": 526359000,
+          "question": "How many sofas are in the room?",
+          "raw_answer": "assistant 1",
+          "answer": "assistant 1",
+          "answers": [
+            "1",
+            "1",
+            "1",
+            "2",
+            "1",
+            "2",
+            "3",
+            "2",
+            "1",
+            "1"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 265547001,
+          "question": "Is there a volleyball net in the picture?",
+          "raw_answer": "yes",
+          "answer": "yes",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is there a"
+        },
+        {
+          "question_id": 4286001,
+          "question": "Is the person talking to the giraffe?",
+          "raw_answer": "yes",
+          "answer": "yes",
+          "answers": [
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the person"
+        },
+        {
+          "question_id": 134016006,
+          "question": "What type of soup is this?",
+          "raw_answer": "assistant vegetable",
+          "answer": "assistant vegetable",
+          "answers": [
+            "asian",
+            "asian",
+            "bean",
+            "ramen noodle",
+            "lentil",
+            "bean",
+            "noodle",
+            "taco",
+            "salad",
+            "not soup"
+          ],
+          "answer_type": "other",
+          "question_type": "what type of"
+        },
+        {
+          "question_id": 358039007,
+          "question": "Is this dish salty?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this"
+        },
+        {
+          "question_id": 135155000,
+          "question": "What color is the person closest to the foreground wearing?",
+          "raw_answer": "black",
+          "answer": "black",
+          "answers": [
+            "orange",
+            "orange",
+            "orange",
+            "orange",
+            "orange",
+            "winter wear",
+            "orange",
+            "orange and black",
+            "orange & black",
+            "black and orange"
+          ],
+          "answer_type": "other",
+          "question_type": "what color is the"
+        },
+        {
+          "question_id": 371506001,
+          "question": "Is this vegetable relaxing?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "no",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "no",
+            "no",
+            "no",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this"
+        },
+        {
+          "question_id": 524992003,
+          "question": "What color is the bus?",
+          "raw_answer": "assistant yellow",
+          "answer": "assistant yellow",
+          "answers": [
+            "yellow red and blue",
+            "red yellow and blue",
+            "yellow, red, blue",
+            "red, yellow and blue",
+            "yellow, red, blue",
+            "red yellow and blue",
+            "yellow and red",
+            "yellow, red, blue",
+            "yellow and red",
+            "yellow, red, and blue"
+          ],
+          "answer_type": "other",
+          "question_type": "what color is the"
+        },
+        {
+          "question_id": 393583002,
+          "question": "What country is this taken in?",
+          "raw_answer": "assistant saudi arabia",
+          "answer": "assistant saudi arabia",
+          "answers": [
+            "mexico",
+            "pakistan",
+            "dubai",
+            "israel",
+            "iran",
+            "india",
+            "japan",
+            "iran",
+            "iraq",
+            "foreign"
+          ],
+          "answer_type": "other",
+          "question_type": "what"
+        },
+        {
+          "question_id": 398810001,
+          "question": "What is the cat on?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "couch",
+            "couch",
+            "cat tower",
+            "chair",
+            "window sill",
+            "cat bed",
+            "window",
+            "couch",
+            "windowsill",
+            "tower"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the"
+        },
+        {
+          "question_id": 398726006,
+          "question": "Is the horse happy?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "no",
+            "yes",
+            "no",
+            "no",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 175619001,
+          "question": "How many remotes does he have?",
+          "raw_answer": "assistant 1",
+          "answer": "assistant 1",
+          "answers": [
+            "2",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3",
+            "3"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 262531001,
+          "question": "What is the man in the hat doing?",
+          "raw_answer": "skateboarding",
+          "answer": "skateboarding",
+          "answers": [
+            "skateboarding",
+            "skateboarding",
+            "skateboarding",
+            "skateboarding",
+            "skateboarding",
+            "skateboarding",
+            "skateboarding",
+            "skateboarding",
+            "skateboarding",
+            "skateboarding"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the man"
+        },
+        {
+          "question_id": 5644002,
+          "question": "Is it nighttime?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is it"
+        },
+        {
+          "question_id": 528136003,
+          "question": "Is the man riding the bike?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the man"
+        },
+        {
+          "question_id": 398138009,
+          "question": "Is the man wearing a hat?",
+          "raw_answer": "assistant no",
+          "answer": "assistant no",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the man"
+        },
+        {
+          "question_id": 264730003,
+          "question": "What kind of numbers are on the clock?",
+          "raw_answer": "roman",
+          "answer": "roman",
+          "answers": [
+            "roman numerals",
+            "roman",
+            "roman numerals",
+            "roman numerals",
+            "roman numerals",
+            "roman",
+            "roman",
+            "roman numerals",
+            "roman numeral",
+            "roman numerals"
+          ],
+          "answer_type": "other",
+          "question_type": "what kind of"
+        },
+        {
+          "question_id": 4936002,
+          "question": "What vegetable is most prominent in this dish?",
+          "raw_answer": "broccoli",
+          "answer": "broccoli",
+          "answers": [
+            "green beans",
+            "cauliflower",
+            "eggplant",
+            "cauliflower",
+            "green beans",
+            "cauliflower",
+            "celery",
+            "beans",
+            "cauliflower",
+            "cauliflower"
+          ],
+          "answer_type": "other",
+          "question_type": "what"
+        },
+        {
+          "question_id": 525682001,
+          "question": "What animal is on the wall?",
+          "raw_answer": "assistant none",
+          "answer": "assistant none",
+          "answers": [
+            "bird",
+            "ducks",
+            "birds",
+            "birds",
+            "bird",
+            "geese",
+            "geese",
+            "ducks",
+            "ducks",
+            "bird"
+          ],
+          "answer_type": "other",
+          "question_type": "what animal is"
+        },
+        {
+          "question_id": 396496002,
+          "question": "Is it a sunny day?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is it"
+        },
+        {
+          "question_id": 135620000,
+          "question": "What kind of tower is near the ship?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "radio",
+            "none",
+            "city",
+            "hotels",
+            "sailboat",
+            "no tower",
+            "satellite",
+            "skyscraper",
+            "wind surf",
+            "steam"
+          ],
+          "answer_type": "other",
+          "question_type": "what kind of"
+        },
+        {
+          "question_id": 398637010,
+          "question": "Is the woman on the right wearing a shirt?",
+          "raw_answer": "yes",
+          "answer": "yes",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "dress",
+            "no",
+            "no",
+            "yes",
+            "no",
+            "yes",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the woman"
+        },
+        {
+          "question_id": 1171001,
+          "question": "Is it evening?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is it"
+        },
+        {
+          "question_id": 486000,
+          "question": "Are there bicycles?",
+          "raw_answer": "assistant no",
+          "answer": "assistant no",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "are there"
+        },
+        {
+          "question_id": 393928002,
+          "question": "Can you see the grass?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "can you"
+        },
+        {
+          "question_id": 546702007,
+          "question": "Is the cat likely to have been cleaning itself?",
+          "raw_answer": "yes",
+          "answer": "yes",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 415000,
+          "question": "Is the player right handed?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 135972000,
+          "question": "What are the metal objects beside the toilet?",
+          "raw_answer": "assistant 2",
+          "answer": "assistant 2",
+          "answers": [
+            "arm handles",
+            "handlebars",
+            "arm rests",
+            "handicap rails",
+            "handles",
+            "handrails",
+            "handrails",
+            "handles",
+            "handles",
+            "handles"
+          ],
+          "answer_type": "other",
+          "question_type": "what are the"
+        },
+        {
+          "question_id": 526044025,
+          "question": "Is there anything for the cow to eat?",
+          "raw_answer": "no",
+          "answer": "no",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is there"
+        },
+        {
+          "question_id": 267710000,
+          "question": "Is this photo in color?",
+          "raw_answer": "assistant no",
+          "answer": "assistant no",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this"
+        },
+        {
+          "question_id": 546191001,
+          "question": "Is the moon visible in the photo?",
+          "raw_answer": "assistant no",
+          "answer": "assistant no",
+          "answers": [
+            "yes",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 265208002,
+          "question": "How many utensils are there?",
+          "raw_answer": "assistant 3",
+          "answer": "assistant 3",
+          "answers": [
+            "1",
+            "2",
+            "1",
+            "2",
+            "2",
+            "2",
+            "1",
+            "2",
+            "2",
+            "1"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 135139000,
+          "question": "What plant is this?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "sugar cane",
+            "bamboo",
+            "banana",
+            "plantains",
+            "bananas",
+            "banana",
+            "banana",
+            "banana",
+            "fruit and stem",
+            "bananas"
+          ],
+          "answer_type": "other",
+          "question_type": "what"
+        },
+        {
+          "question_id": 525050008,
+          "question": "Are there cars parked?",
+          "raw_answer": "assistant yes",
+          "answer": "assistant yes",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "yes",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "are there"
+        },
+        {
+          "question_id": 136143002,
+          "question": "Is this a good place for disk golf?",
+          "raw_answer": "yes",
+          "answer": "yes",
+          "answers": [
+            "no",
+            "no",
+            "yes",
+            "yes",
+            "no",
+            "no",
+            "no",
+            "no",
+            "yes",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this a"
+        },
+        {
+          "question_id": 395402005,
+          "question": "Why is the dog jumping?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "attention",
+            "he isn't",
+            "for treat",
+            "hungry",
+            "no",
+            "treat",
+            "not",
+            "dog is not jumping",
+            "dog is not jumping",
+            "food"
+          ],
+          "answer_type": "other",
+          "question_type": "why is the"
+        },
+        {
+          "question_id": 131556001,
+          "question": "Is this skier using poles?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this"
+        },
+        {
+          "question_id": 132329001,
+          "question": "How many beverages are in the refrigerator?",
+          "raw_answer": "assistant 1",
+          "answer": "assistant 1",
+          "answers": [
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "3",
+            "4",
+            "4"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 1146005,
+          "question": "What color is the tie?",
+          "raw_answer": "assistant green",
+          "answer": "assistant green",
+          "answers": [
+            "green",
+            "off white",
+            "silver",
+            "gray",
+            "white",
+            "white",
+            "gray",
+            "green",
+            "gray and black",
+            "white"
+          ],
+          "answer_type": "other",
+          "question_type": "what color is the"
+        },
+        {
+          "question_id": 133386010,
+          "question": "What sport is being played?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "skateboarding",
+            "skateboard",
+            "skateboarding",
+            "skateboarding",
+            "skateboarding",
+            "skateboard",
+            "skateboarding",
+            "skateboarding",
+            "skateboarding",
+            "skateboarding"
+          ],
+          "answer_type": "other",
+          "question_type": "what sport is"
+        },
+        {
+          "question_id": 136117005,
+          "question": "What shape is the container that the candy is in?",
+          "raw_answer": "box",
+          "answer": "box",
+          "answers": [
+            "rectangle",
+            "rectangle",
+            "square",
+            "rectangle",
+            "rectangle",
+            "rectangle",
+            "rectangle",
+            "rectangle",
+            "square",
+            "rectangle"
+          ],
+          "answer_type": "other",
+          "question_type": "what"
+        },
+        {
+          "question_id": 263323000,
+          "question": "How many people are in the picture?",
+          "raw_answer": "assistant 2",
+          "answer": "assistant 2",
+          "answers": [
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2"
+          ],
+          "answer_type": "number",
+          "question_type": "how many people are in"
+        },
+        {
+          "question_id": 527783002,
+          "question": "Is there any clouds in the sky?",
+          "raw_answer": "assistant no",
+          "answer": "assistant no",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is there"
+        },
+        {
+          "question_id": 133125003,
+          "question": "Is the window open?",
+          "raw_answer": "assistantno",
+          "answer": "assistantno",
+          "answers": [
+            "no",
+            "no",
+            "yes",
+            "no",
+            "no",
+            "yes",
+            "no",
+            "no",
+            "no",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 397658002,
+          "question": "Who is she talking too?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no way to tell",
+            "human",
+            "someone on phone",
+            "someone on phone",
+            "can't tell",
+            "someone on phone",
+            "her husband",
+            "mom",
+            "sister",
+            "someone"
+          ],
+          "answer_type": "other",
+          "question_type": "who is"
+        },
+        {
+          "question_id": 265550004,
+          "question": "What is the copyright date on the picture?",
+          "raw_answer": "2009",
+          "answer": "2009",
+          "answers": [
+            "2015",
+            "2015",
+            "2015",
+            "2015",
+            "2013",
+            "doesn't say",
+            "2015",
+            "2013",
+            "2015",
+            "2015"
+          ],
+          "answer_type": "number",
+          "question_type": "what is the"
+        },
+        {
+          "question_id": 2521012,
+          "question": "What shape is the sign?",
+          "raw_answer": "assistant\n\nrectangle",
+          "answer": "rectangle",
+          "answers": [
+            "rectangle",
+            "oblong",
+            "rectangular",
+            "arrow",
+            "rectangle",
+            "rectangle",
+            "rectangle",
+            "rectangle",
+            "rectangle",
+            "rectangle"
+          ],
+          "answer_type": "other",
+          "question_type": "what"
+        },
+        {
+          "question_id": 136021003,
+          "question": "How many individual pictures are in the photo?",
+          "raw_answer": "1",
+          "answer": "1",
+          "answers": [
+            "11",
+            "11",
+            "10",
+            "11",
+            "11",
+            "11",
+            "11",
+            "11",
+            "11",
+            "11"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 306415002,
+          "question": "What is the device on the right?",
+          "raw_answer": "assistant wheelchair",
+          "answer": "assistant wheelchair",
+          "answers": [
+            "robot",
+            "robot",
+            "robot",
+            "robot",
+            "mask",
+            "robot",
+            "helmet",
+            "robot",
+            "robot",
+            "robot"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the"
+        },
+        {
+          "question_id": 153717001,
+          "question": "What is the man wearing?",
+          "raw_answer": "assistant shirt",
+          "answer": "assistant shirt",
+          "answers": [
+            "shorts and t shirt",
+            "t shirt and shorts",
+            "shorts and t-shirt",
+            "shorts and t shirt",
+            "shirt and shorts",
+            "clothes",
+            "shorts",
+            "t-shirt, shorts",
+            "shirt",
+            "shirt and shorts"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the man"
+        },
+        {
+          "question_id": 764005,
+          "question": "Are all the players playing the same game?",
+          "raw_answer": "yes",
+          "answer": "yes",
+          "answers": [
+            "no",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "no",
+            "no",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "are"
+        },
+        {
+          "question_id": 528604010,
+          "question": "How many ears are visible?",
+          "raw_answer": "assistant 1",
+          "answer": "assistant 1",
+          "answers": [
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 528951003,
+          "question": "What kind of facility is this?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "parking lot",
+            "train station",
+            "train station",
+            "train station",
+            "train station",
+            "train station",
+            "train station",
+            "train station",
+            "parking lot",
+            "train station"
+          ],
+          "answer_type": "other",
+          "question_type": "what kind of"
+        },
+        {
+          "question_id": 139684003,
+          "question": "What color is the rug on the floor?",
+          "raw_answer": "blue",
+          "answer": "blue",
+          "answers": [
+            "black",
+            "black",
+            "black and white",
+            "black and white",
+            "black and white",
+            "black and white",
+            "black and white",
+            "black and white",
+            "black and white",
+            "black and white"
+          ],
+          "answer_type": "other",
+          "question_type": "what color is the"
+        },
+        {
+          "question_id": 2171004,
+          "question": "Are these people sunbathing?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "are these"
+        },
+        {
+          "question_id": 525988003,
+          "question": "What color is the bear?",
+          "raw_answer": "assistant brown",
+          "answer": "assistant brown",
+          "answers": [
+            "tan",
+            "brown",
+            "brown",
+            "brown",
+            "brown",
+            "brown purple",
+            "brown",
+            "brown",
+            "brown",
+            "brown"
+          ],
+          "answer_type": "other",
+          "question_type": "what color is the"
+        },
+        {
+          "question_id": 398753001,
+          "question": "How are the lines on the infield made?",
+          "raw_answer": "chalk",
+          "answer": "chalk",
+          "answers": [
+            "mowed",
+            "chalk",
+            "mower",
+            "with chalk",
+            "with line-maker machine",
+            "cutting grass",
+            "lawn mower",
+            "grass removal",
+            "chalk",
+            "chalk"
+          ],
+          "answer_type": "other",
+          "question_type": "how"
+        },
+        {
+          "question_id": 526580022,
+          "question": "What are they preparing?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "wii bowling",
+            "game",
+            "game",
+            "to bowl",
+            "video game",
+            "nothing",
+            "video game",
+            "party",
+            "to bowl",
+            "bowling game"
+          ],
+          "answer_type": "other",
+          "question_type": "what are"
+        },
+        {
+          "question_id": 528276002,
+          "question": "Is it cold?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is it"
+        },
+        {
+          "question_id": 267088006,
+          "question": "How many ears are visible?",
+          "raw_answer": "assistant 2",
+          "answer": "assistant 2",
+          "answers": [
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "4",
+            "3",
+            "4",
+            "4"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 396461001,
+          "question": "Is this what they call a galley kitchen?",
+          "raw_answer": "yes",
+          "answer": "yes",
+          "answers": [
+            "no",
+            "no",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this"
+        },
+        {
+          "question_id": 136718001,
+          "question": "Does the woman in this photo have curly hair?",
+          "raw_answer": "no",
+          "answer": "no",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "does the"
+        },
+        {
+          "question_id": 42000,
+          "question": "What color are the gym shoes?",
+          "raw_answer": "assistant red",
+          "answer": "assistant red",
+          "answers": [
+            "white",
+            "white",
+            "white",
+            "white",
+            "white and black",
+            "white",
+            "white",
+            "white",
+            "white",
+            "white"
+          ],
+          "answer_type": "other",
+          "question_type": "what color are the"
+        },
+        {
+          "question_id": 398661001,
+          "question": "How many feet of cabinets?",
+          "raw_answer": "assistant 10",
+          "answer": "assistant 10",
+          "answers": [
+            "10",
+            "5",
+            "5",
+            "4",
+            "3",
+            "4",
+            "5",
+            "11",
+            "4",
+            "many"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 131617000,
+          "question": "What is the girl in front doing?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "brushing her teeth",
+            "brushing teeth",
+            "brushing her teeth",
+            "brushing",
+            "brushing her teeth",
+            "brushing her teeth",
+            "brushing",
+            "brushing teeth",
+            "brushing teeth",
+            "brushing teeth"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the"
+        },
+        {
+          "question_id": 528030000,
+          "question": "Is the man wearing glasses?",
+          "raw_answer": "assistantyes",
+          "answer": "assistantyes",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the man"
+        },
+        {
+          "question_id": 192002,
+          "question": "What is the name of the teams?",
+          "raw_answer": "assistant chicago",
+          "answer": "assistant chicago",
+          "answers": [
+            "cubs and phillies",
+            "cubs",
+            "chicago cubs",
+            "cubs",
+            "cubs",
+            "cubs / red sox",
+            "impossible to tell",
+            "cubs and reds",
+            "cubs reds",
+            "cubs & red sox"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the name"
+        },
+        {
+          "question_id": 134288001,
+          "question": "What color is the second fruit?",
+          "raw_answer": "assistant orange",
+          "answer": "assistant orange",
+          "answers": [
+            "black",
+            "orange",
+            "no second fruit",
+            "orange",
+            "orange",
+            "orange",
+            "orange",
+            "orange",
+            "orange",
+            "orange"
+          ],
+          "answer_type": "other",
+          "question_type": "what color is the"
+        },
+        {
+          "question_id": 527733005,
+          "question": "Are they playing Mario kart?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "no",
+            "yes",
+            "yes",
+            "?",
+            "yes",
+            "yes",
+            "wii",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "are they"
+        },
+        {
+          "question_id": 134075003,
+          "question": "What is the color of the plate?",
+          "raw_answer": "assistant yellow",
+          "answer": "assistant yellow",
+          "answers": [
+            "yellow",
+            "yellow",
+            "yellow",
+            "yellow",
+            "yellow",
+            "yellow",
+            "yellow",
+            "yellow",
+            "yellow",
+            "yellow"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the color of the"
+        },
+        {
+          "question_id": 1342032,
+          "question": "What device is he using?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "hand",
+            "none",
+            "book",
+            "book",
+            "book",
+            "book",
+            "book",
+            "book",
+            "book",
+            "book"
+          ],
+          "answer_type": "other",
+          "question_type": "what"
+        },
+        {
+          "question_id": 136181000,
+          "question": "What room is this?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "bedroom",
+            "bedroom",
+            "hotel room",
+            "bedroom",
+            "bedroom",
+            "bedroom",
+            "bedroom",
+            "hotel room",
+            "bedroom",
+            "bedroom"
+          ],
+          "answer_type": "other",
+          "question_type": "what room is"
+        },
+        {
+          "question_id": 264660001,
+          "question": "What is on display on the computer monitor?",
+          "raw_answer": "deer",
+          "answer": "deer",
+          "answers": [
+            "website",
+            "web page",
+            "website",
+            "website",
+            "window",
+            "website",
+            "website",
+            "chart",
+            "website",
+            "website"
+          ],
+          "answer_type": "other",
+          "question_type": "what is"
+        },
+        {
+          "question_id": 528225025,
+          "question": "How many spots are on the cow?",
+          "raw_answer": "assistant 0",
+          "answer": "assistant 0",
+          "answers": [
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 132317000,
+          "question": "What is sitting on the laptop?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "dragonfly",
+            "dragonfly",
+            "dragonfly",
+            "dragonfly",
+            "butterfly",
+            "dragonfly",
+            "dragonfly",
+            "insect",
+            "dragonfly",
+            "bug"
+          ],
+          "answer_type": "other",
+          "question_type": "what is"
+        },
+        {
+          "question_id": 134689001,
+          "question": "How many animals are running?",
+          "raw_answer": "assistant 1",
+          "answer": "assistant 1",
+          "answers": [
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 267521008,
+          "question": "Is this an Australian plane?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this an"
+        },
+        {
+          "question_id": 235784005,
+          "question": "Is the woman old?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "yes",
+            "no",
+            "no",
+            "no",
+            "yes",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the woman"
+        },
+        {
+          "question_id": 528905001,
+          "question": "Is the man in the photo playing soccer?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "yes",
+            "no",
+            "yes",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the man"
+        },
+        {
+          "question_id": 264032006,
+          "question": "Is the sink being repaired?",
+          "raw_answer": "assistant no",
+          "answer": "assistant no",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 267251002,
+          "question": "Is the woman having fun?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "unknown",
+            "yes",
+            "no",
+            "no",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the woman"
+        },
+        {
+          "question_id": 395714001,
+          "question": "How many bars are on the grill?",
+          "raw_answer": "assistant 4",
+          "answer": "assistant 4",
+          "answers": [
+            "lot",
+            "22",
+            "22",
+            "1",
+            "20",
+            "twenty 2",
+            "23",
+            "25",
+            "22",
+            "20"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 5754005,
+          "question": "What kind of sandwich is on a paper towel?",
+          "raw_answer": "donut",
+          "answer": "donut",
+          "answers": [
+            "donut",
+            "donuts",
+            "none",
+            "chocolate",
+            "donuts",
+            "none",
+            "donut",
+            "donuts",
+            "donut",
+            "donuts"
+          ],
+          "answer_type": "other",
+          "question_type": "what kind of"
+        },
+        {
+          "question_id": 397786004,
+          "question": "Are there any people are present?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "are there any"
+        },
+        {
+          "question_id": 2164002,
+          "question": "What color is the barn?",
+          "raw_answer": "assistant brown",
+          "answer": "assistant brown",
+          "answers": [
+            "green",
+            "blue",
+            "gray",
+            "blue",
+            "blue",
+            "gray",
+            "green",
+            "green",
+            "grayish blue",
+            "blue"
+          ],
+          "answer_type": "other",
+          "question_type": "what color is the"
+        },
+        {
+          "question_id": 187695001,
+          "question": "What is the white stuff on the food?",
+          "raw_answer": "mustard",
+          "answer": "mustard",
+          "answers": [
+            "onions",
+            "onions",
+            "onion",
+            "onions",
+            "onions",
+            "onions",
+            "garlic",
+            "onion",
+            "onion",
+            "onion"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the"
+        },
+        {
+          "question_id": 393569000,
+          "question": "Is the bathroom clean?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 1270000,
+          "question": "Are the spectators bored?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "yes",
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "no",
+            "yes",
+            "some are"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "are the"
+        },
+        {
+          "question_id": 394510016,
+          "question": "Is the young boy holding a luggage handle?",
+          "raw_answer": "no",
+          "answer": "no",
+          "answers": [
+            "no",
+            "no",
+            "yes",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 396568002,
+          "question": "Is this a diesel train?",
+          "raw_answer": "",
+          "answer": "",
+          "answers": [
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this a"
+        },
+        {
+          "question_id": 135023000,
+          "question": "What is running down the sign?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "paint",
+            "paint",
+            "paint",
+            "blood",
+            "blood",
+            "paint",
+            "blood",
+            "paint",
+            "paint",
+            "paint"
+          ],
+          "answer_type": "other",
+          "question_type": "what is"
+        },
+        {
+          "question_id": 525666000,
+          "question": "Is there a ball in the water?",
+          "raw_answer": "assistant",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is there a"
+        }
+      ]
+    }
+  ]
+}

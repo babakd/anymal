@@ -1,14 +1,14 @@
 # CLAUDE.md - AnyMAL Project Context
 
-## Project Status (Last Updated: Apr 2026)
+## Project Status (Last Updated: May 2026)
 
-**Current State**: V2 is now the active training path; V1 is legacy. The V2 architecture is SigLIP2 -> learned token compressor -> MLP bottleneck projector -> LLaMA-3-8B-Instruct. A meaningful V2 learned-compressor Stage 1 + Stage 2 baseline completed on Modal on 2026-04-28 after the preprocessing/eval/optimizer/data fixes below. The older V1 Stage 1 checkpoint (`/checkpoints/pretrain-output/checkpoint-2500`) is intentionally guarded as legacy and must not be auto-loaded into V2.
+**Current State**: V3 is the strongest stable path. V1 is the legacy baseline, V2 is preserved for diagnosis, and V3 is the current incumbent to beat. The best corrected fast-screen result is V3 direct-calibration LoRA-only checkpoint 100: `9.10%` overall on VQAv2 val2014 `1000` samples, seed `42`, `training_chat`, versus V1 ablation-F at `7.57%`. V3 wins overall, number, other, EOS, and max-token behavior, while V1 still has stronger yes/no calibration. The next major workstream should be V4: a new architecture closer to modern VLMs, using the V1/V2/V3 lessons and predeclared architecture/recipe ablations from `V4_ARCHITECTURE_PLAN.md`.
 
 | Component | Status |
 |-----------|--------|
-| Model architecture | V2 active; V1 legacy |
-| Stage 1 pretrain (Modal, 4 GPU DDP) | V2 learned baseline complete: `/checkpoints/pretrain-output/v2-stage1-learned-2500-20260428/checkpoint-2500` |
-| Stage 2 finetune (Modal, 1 GPU QLoRA) | V2 learned baseline complete: `/checkpoints/finetune-output/v2-stage2-balanced-mix-3000-20260428/checkpoint-3000` |
+| Model architecture | V3 incumbent; V4 should be a new architecture label; V2 preserved for diagnosis; V1 legacy baseline |
+| Stage 1 pretrain (Modal, 4 GPU DDP) | V3 uses SigLIP2 384px + 128-token 6-layer Perceiver connector; preserve V2/V3 checkpoint metadata guards |
+| Stage 2 finetune (Modal, 1 GPU QLoRA) | V3 stable recipe: direct-calibration LoRA-only, connector frozen, 100 steps |
 | Inference / prediction viewer | Working (`modal_inference.py` + `prediction_viewer.html`) |
 | W&B integration | Working (both stages) |
 | LLaVA dataset loader | Working (InstructionDataset with real images) |
@@ -20,8 +20,44 @@
 | In-training eval | Working (clipped to 200 batches, both stages) |
 | Pretrain checkpoint auto-discovery | Working (Stage 2 auto-loads Stage 1 projector) |
 | Checkpoint resume | Working (restores optimizer, scheduler, scaler, RNG states) |
-| VQA evaluation | V2 placeholder-aware; still limited by partial val image coverage |
+| VQA evaluation | Corrected `training_chat` fast screen is the current continuity benchmark; report answer types, EOS, and max-token hits |
 | Unit tests | 110 passing, 1 skipped |
+
+### V4 Handoff Notes (May 2026)
+
+Future architecture work should start from `V4_ARCHITECTURE_PLAN.md`. That file
+records the incumbent V3 baseline, the lessons from V1/V2/V3, the proposed V4
+global/local spatial Perceiver direction, recipe ablations, promotion gates, and
+babysitting rules for long Modal runs.
+
+The short version: do not repeat the V2 mistake of adding many visual tokens
+through a weak connector. V4 should keep V3's compact 128-token discipline while
+adding better spatial selection: separate global/local latents, 2D position
+features, optional high-resolution or tiled inputs, and strict caps on the final
+visual-token budget. Start with frozen SigLIP2 and connector-only Stage 1/1B,
+then freeze the connector and run short LoRA-only direct-calibration Stage 2.
+
+The V4 target is V3 checkpoint 100, not merely V1. A candidate must preserve
+generation hygiene (`EOS >= 0.98`, max-token hits `<= 0.02`) and narrow the V1
+yes/no gap without giving up V3's `other` gains. Extend
+`scripts/check_v3_promotion.py` or create a generic VLM promotion guard before
+calling any V4 checkpoint stable.
+
+### V3 Handoff Notes (May 2026)
+
+V3's stable recipe lives in `configs/finetune_v3.yaml`: `anymal_v3`,
+`v3_direct_calibration`, connector frozen, LoRA-only Stage 2, 100 steps,
+checkpoints every 50 steps. The run that produced the stable checkpoint was
+started as a 300-step candidate and deliberately stopped after checkpoint 150:
+validation regressed from `0.6071` at checkpoint 100 to `0.6229`, and held-out
+VQA fell from `9.10` to `8.70`. Treat checkpoint 100 as the stable fast-screen
+win.
+
+V3's key lesson is that recipe and generation discipline matter as much as the
+connector. Short direct-answer supervision worked; generic long instruction data
+mostly changed style. Connector+LoRA Stage 2 hurt generation hygiene. For direct
+calibration, keep the connector frozen unless a specific architecture ablation
+requires otherwise.
 
 ### V2 Handoff Notes (Apr 2026)
 
