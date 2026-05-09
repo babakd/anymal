@@ -1,64 +1,91 @@
 # Contributing to AnyMAL
 
-Thank you for your interest in contributing to AnyMAL! This document provides guidelines for contributing to the project.
+Thanks for taking a look at the project. This repo is a research codebase, so
+small, focused improvements are easiest to review and easiest for future readers
+to trust.
 
 ## Getting Started
 
-1. Fork the repository
-2. Clone your fork: `git clone https://github.com/your-username/anymal.git`
-3. Create a virtual environment: `python -m venv venv && source venv/bin/activate`
-4. Install dependencies: `pip install -r requirements.txt`
-5. Install development dependencies: `pip install pytest black isort`
+1. Fork the repository.
+2. Clone your fork:
+   ```bash
+   git clone https://github.com/your-username/anymal.git
+   cd anymal
+   ```
+3. Create an environment:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   python3 -m pip install --upgrade pip
+   python3 -m pip install -r requirements.txt
+   ```
+4. If you plan to run LLM-backed training or model tests, make sure you have
+   Hugging Face access to `meta-llama/Meta-Llama-3-8B-Instruct`.
 
 ## Development Workflow
 
-### Code Style
+Create a branch for each focused change:
 
-We use the following tools to maintain code quality:
+```bash
+git checkout -b feature/my-change
+```
 
-- **Black** for code formatting
-- **isort** for import sorting
+Before opening a pull request, run the checks that match the scope of your
+change:
 
-Before submitting a PR, run:
 ```bash
 black .
 isort .
+python3 -m pytest tests -q
 ```
 
-### Running Tests
+For a narrower model/training change, these are useful starting points:
 
 ```bash
-pytest tests/test_model.py -v
+python3 -m pytest tests/test_model.py -q
+python3 -m pytest tests/test_training.py -q
+python3 -m pytest tests/test_evaluation.py -q
+python3 -m pytest tests/test_health_monitor.py -q
 ```
 
-### Making Changes
+Some tests import PyTorch and other heavy ML dependencies. If collection fails
+because dependencies are not installed, mention that in the PR.
 
-1. Create a new branch for your feature: `git checkout -b feature/my-feature`
-2. Make your changes
-3. Add tests for new functionality
-4. Ensure all tests pass
-5. Run code formatters
-6. Commit your changes with a clear message
-7. Push to your fork and submit a pull request
+## Documentation Expectations
+
+Please update public docs when changing:
+
+- Setup or dependency requirements
+- Config names, command-line flags, or dataset paths
+- Model architecture behavior or checkpoint compatibility
+- Training/evaluation workflows
+- Modal usage
+
+Keep research notes and result artifacts separate from user-facing setup docs
+when possible. The README should stay oriented around what a new user can run.
 
 ## Pull Request Guidelines
 
-- Keep PRs focused on a single feature or fix
-- Include a clear description of the changes
-- Reference any related issues
-- Update documentation if needed
-- Add tests for new functionality
+- Keep PRs focused on one feature, fix, or experiment cleanup.
+- Include a clear summary of what changed and why.
+- Call out any required data, checkpoint, or secret that is not included in the
+  repo.
+- Add or update tests for behavior changes.
+- Do not commit private tokens, downloaded model weights, large datasets, or
+  generated checkpoint directories.
 
 ## Reporting Issues
 
-When reporting issues, please include:
+When reporting a problem, include:
 
-- A clear description of the problem
-- Steps to reproduce
-- Expected vs actual behavior
-- Your environment (Python version, PyTorch version, GPU, etc.)
-- Relevant error messages or logs
+- The command you ran
+- The config file and architecture variant
+- Python, PyTorch, CUDA, and GPU details
+- Whether the run is local or on Modal
+- The relevant error message or log excerpt
+- Any local dataset/checkpoint paths involved
 
-## Questions?
+## Questions
 
-Feel free to open an issue for any questions about contributing.
+Open an issue with the context you have. Even partial reproduction details are
+helpful.
