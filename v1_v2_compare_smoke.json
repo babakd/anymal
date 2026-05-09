@@ -1,0 +1,28 @@
+{
+  "runs": [
+    {
+      "key": "v1_baseline",
+      "label": "V1 ablation-F mix_665k checkpoint-500",
+      "checkpoint": "/checkpoints/finetune-output/ablation-F/checkpoint-500",
+      "architecture": "v1"
+    },
+    {
+      "key": "v2_candidate",
+      "label": "v2-final-smoke",
+      "checkpoint": "/checkpoints/finetune-output/v2-stage2-balanced-mix-3000-20260428/checkpoint-3000",
+      "architecture": "v2"
+    }
+  ],
+  "num_examples": 1,
+  "max_new_tokens": 32,
+  "system_prompt": "You are a helpful AI assistant that can see and understand images. Provide detailed, accurate, and helpful responses to questions about images.",
+  "results": [
+    {
+      "image": "000000294160.jpg",
+      "question": "What factors may contribute to a zebra's solitary grazing behavior?",
+      "ground_truth": "Zebras are social animals and are often found in groups called harems or dazzles. However, it is not uncommon for a zebra to graze on its own sometimes. In the image, a single zebra is seen grazing in the green grass. Factors that may contribute to this solitary grazing behavior could include temporary separation from the group due to searching for better quality or abundant feed, the zebra falling behind the group while grazing or because it is a stallion searching for females to establish a new harem. Another possibility is that the rest of the group is nearby but not visible in the frame of the image. Solitary grazing may help zebras explore and obtain a variety of foods in their environment without competing with other group members, which could be advantageous for their health and overall well-being.",
+      "v1_baseline": "Several factors may contribute to a zebra's solitary grazing behavior. One reason could be the need to protect its territory and resources from other zebras or predators.",
+      "v2_candidate": "Several factors may contribute to a zebra's solitary grazing behavior. One reason could be that zebras are territorial animals and may prefer to graze alone to maintain"
+    }
+  ]
+}

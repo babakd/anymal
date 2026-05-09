@@ -1,10 +1,10 @@
-# AnyMALv3 Stage 2: Grounded Instruction Tuning Configuration
+# AnyMALv3 Stage 2: Direct Calibration Configuration
 
 defaults:
   - base
 
 stage: 2
-stage_name: "instruction_tuning_v3"
+stage_name: "direct_calibration_v3"
 
 model:
   architecture: "anymal_v3"
@@ -34,7 +34,7 @@ model:
   project_directly_to_llm_dim: true
 
 data:
-  train_data_path: "./data/llava_instruct_150k.json"
+  train_data_path: null
   image_dir: "./data/coco/train2017"
   eval_data_path: null
   filter_to_available_images: true
@@ -49,26 +49,31 @@ data:
     enabled: true
     strategy: "weighted"
     datasets:
-      - name: "vqa_train_direct"
-        weight: 0.30
-        data_path: "./data/vqa_train_direct_answers.json"
+      - name: "vqa_train_yes_no"
+        weight: 0.45
+        data_path: "./data/vqa_train_direct_yes_no.json"
         image_dir: "./data/coco/train2014"
+        system_prompt: "Answer the image question directly and briefly. End after the answer."
+      - name: "vqa_train_number"
+        weight: 0.25
+        data_path: "./data/vqa_train_direct_number.json"
+        image_dir: "./data/coco/train2014"
+        system_prompt: "Answer the image question directly and briefly. End after the answer."
       - name: "coco_object_count_color_direct"
         weight: 0.20
         data_path: "./data/coco_object_count_color_direct.json"
         image_dir: "./data/coco/train2017"
+        system_prompt: "Answer the image question directly and briefly. End after the answer."
+      - name: "vqa_train_other"
+        weight: 0.05
+        data_path: "./data/vqa_train_direct_other.json"
+        image_dir: "./data/coco/train2014"
+        system_prompt: "Answer the image question directly and briefly. End after the answer."
       - name: "short_llava_mix"
-        weight: 0.20
+        weight: 0.05
         data_path: "./data/llava_short_answer_mix.json"
         image_dir: "./data/coco/train2017"
-      - name: "llava_instruct_general"
-        weight: 0.20
-        data_path: "./data/llava_instruct_150k.json"
-        image_dir: "./data/coco/train2017"
-      - name: "caption_long_form"
-        weight: 0.10
-        data_path: "./data/LLaVA-Pretrain/blip_laion_cc_sbu_558k.json"
-        image_dir: "./data/LLaVA-Pretrain/images"
+        system_prompt: "Answer the image question directly and briefly. End after the answer."
 
 training:
   learning_rate: 1.0e-5
@@ -76,9 +81,10 @@ training:
   warmup_steps: 100
   weight_decay: 0.01
   max_grad_norm: 1.0
-  max_steps: 3000
+  max_steps: 100
   num_epochs: null
   train_projector_only: false
+  train_adapter: false
   projector_warmup_steps: 0
   use_amp: true
   amp_dtype: "bfloat16"
@@ -93,10 +99,10 @@ logging:
   logging_steps: 50
   use_wandb: true
   wandb_project: "anymal-finetune-v3"
-  wandb_run_name: "stage2-v3-grounded-instruction"
+  wandb_run_name: "stage2-v3-direct-calibration-lora-only-100"
 
 checkpointing:
-  save_steps: 500
+  save_steps: 50
   save_total_limit: 3
   output_dir: "./outputs/finetune_v3"
 

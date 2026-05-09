@@ -1,0 +1,43 @@
+{
+  "max_samples": 1000,
+  "seed": 42,
+  "batch_size": 8,
+  "runs": [
+    {
+      "key": "v1_ablation_f",
+      "label": "V1 ablation-F checkpoint 500",
+      "architecture": "v1",
+      "checkpoint": "/checkpoints/finetune-output/ablation-F/checkpoint-500",
+      "metrics": {
+        "accuracy": 5.033333333333333,
+        "num_samples": 1000,
+        "avg_generated_tokens": 32.0,
+        "eos_rate": 0.0,
+        "accuracy_number": 2.546296296296296,
+        "num_samples_number": 144,
+        "accuracy_other": 9.096816114359973,
+        "num_samples_other": 513,
+        "accuracy_yes_no": 0.0,
+        "num_samples_yes_no": 343
+      }
+    },
+    {
+      "key": "v2_final",
+      "label": "V2 final balanced-mix checkpoint 3000",
+      "architecture": "v2",
+      "checkpoint": "/checkpoints/finetune-output/v2-stage2-balanced-mix-3000-20260428/checkpoint-3000",
+      "metrics": {
+        "accuracy": 6.700000000000002,
+        "num_samples": 1000,
+        "avg_generated_tokens": 32.0,
+        "eos_rate": 0.0,
+        "accuracy_number": 6.481481481481481,
+        "num_samples_number": 144,
+        "accuracy_other": 4.093567251461988,
+        "num_samples_other": 513,
+        "accuracy_yes_no": 10.689990281827017,
+        "num_samples_yes_no": 343
+      }
+    }
+  ]
+}

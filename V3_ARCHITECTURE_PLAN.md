@@ -180,6 +180,71 @@ Run these only after the V3 default has a clean Stage 1A/1B/2 result:
 Avoid reintroducing 384 tokens as the first ablation. Test it only after 128
 tokens establishes a strong baseline.
 
+## Stable Recipe Snapshot (2026-05-08)
+
+The first stable V3 recipe keeps the architecture fixed and moves the remaining
+quality work into Stage 2 data and adapter policy:
+
+```yaml
+architecture: anymal_v3
+num_image_tokens: 128
+connector_type: perceiver_resampler
+training.train_adapter: false
+model.use_qlora: true
+data.recipe: v3_direct_calibration
+training.max_steps: 100
+```
+
+Why this is the default now:
+
+- The `v3_direct_calibration` LoRA-only branch reached `9.10%` at checkpoint
+  100 on the fixed VQAv2 seed-42 training-chat screen, ahead of V1's `7.57%`
+  baseline and the earlier `9.03%` V3 screen.
+- Freezing the connector generalized better than connector+LoRA. Connector+LoRA
+  had a tempting early number score, but generation hygiene degraded and max-token
+  hits rose.
+- Checkpoint 100 had the best checked validation and held-out VQA result. The
+  continuation to checkpoint 150 regressed on validation (`0.6071 -> 0.6229`)
+  and held-out VQA (`9.10% -> 8.70%`), so the stable recipe stops at 100 steps.
+- V3's main remaining gap is V1-style yes/no calibration, not connector capacity
+  or longer Stage 2 training.
+
+Use `configs/finetune_v3.yaml` locally, or on Modal:
+
+```bash
+modal run --detach modal_train.py \
+  --architecture anymal_v3 \
+  --stage finetune \
+  --dataset v3_direct_calibration \
+  --max-steps 100 \
+  --batch-size 2 \
+  --learning-rate 1e-5 \
+  --freeze-connector \
+  --use-wandb
+```
+
+The `v3_direct_calibration` dataset alias freezes the connector by default on
+Modal and weights short-answer data toward yes/no recovery while retaining
+number/count/object grounding:
+
+```yaml
+vqa_train_yes_no: 0.45
+vqa_train_number: 0.25
+coco_object_count_color_direct: 0.20
+vqa_train_other: 0.05
+short_llava_mix: 0.05
+```
+
+Before promoting a checkpoint, run the saved-artifact guard:
+
+```bash
+python3 scripts/check_v3_promotion.py
+```
+
+The pass condition is still deliberately modest: V3 must beat V1 on the fixed
+held-out VQA slice before qualitative wins count. Claims beyond that require
+more seeds or a larger locked slice.
+
 ## Implementation Notes
 
 V3 can reuse existing components:

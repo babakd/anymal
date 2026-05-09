@@ -1,0 +1,189 @@
+{
+  "runs": [
+    {
+      "key": "v1_baseline",
+      "label": "V1 ablation-F mix_665k checkpoint-500",
+      "checkpoint": "/checkpoints/finetune-output/ablation-F/checkpoint-500",
+      "architecture": "v1"
+    },
+    {
+      "key": "v2_candidate",
+      "label": "direct-object-trainprompt-100",
+      "checkpoint": "/checkpoints/finetune-output/v2-stage2-direct-object-trainprompt-600-20260429/checkpoint-100",
+      "architecture": "v2"
+    }
+  ],
+  "num_examples": 24,
+  "max_new_tokens": 96,
+  "system_prompt": "You are a helpful AI assistant that can see and understand images. Provide detailed, accurate, and helpful responses to questions about images.",
+  "results": [
+    {
+      "image": "000000294160.jpg",
+      "question": "What factors may contribute to a zebra's solitary grazing behavior?",
+      "ground_truth": "Zebras are social animals and are often found in groups called harems or dazzles. However, it is not uncommon for a zebra to graze on its own sometimes. In the image, a single zebra is seen grazing in the green grass. Factors that may contribute to this solitary grazing behavior could include temporary separation from the group due to searching for better quality or abundant feed, the zebra falling behind the group while grazing or because it is a stallion searching for females to establish a new harem. Another possibility is that the rest of the group is nearby but not visible in the frame of the image. Solitary grazing may help zebras explore and obtain a variety of foods in their environment without competing with other group members, which could be advantageous for their health and overall well-being.",
+      "v1_baseline": "Several factors may contribute to a zebra's solitary grazing behavior. One reason could be the need to protect its territory and resources from other zebras or predators. Zebras are territorial animals, and they may need to maintain their individual grazing areas to ensure access to food and water. Additionally, solitary grazing allows zebras to be more vigilant and responsive to potential threats, as they can quickly detect and react to predators or other dangers without being distracted by the presence of other zebras.",
+      "v2_candidate": "Several factors may contribute to a zebra's solitary grazing behavior. One possible reason is that zebras are prey animals, and they need to be vigilant for predators in their natural habitat. Grazing alone allows them to have better visibility and awareness of their surroundings, making it easier to detect potential threats. Additionally, zebras may have a large home range, which can make it challenging for them to find food and water resources in the same area as other zebras. This can lead"
+    },
+    {
+      "image": "000000163283.jpg",
+      "question": "What is the skateboarder doing in the image?",
+      "ground_truth": "The skateboarder is performing a trick on a half-pipe, balancing on the edge of the ramp while possibly grinding on the top of the skate ramp.",
+      "v1_baseline": "The skateboarder is performing a trick on a skateboard ramp, jumping in the air while riding the skateboard.",
+      "v2_candidate": "The skateboarder is performing a trick on a ramp, jumping over a rail, and landing on the ramp."
+    },
+    {
+      "image": "000000206731.jpg",
+      "question": "Why would someone want to purchase one of these teddy bears?",
+      "ground_truth": "Someone would want to purchase one of these teddy bears as a souvenir or memento of their visit to New York. The teddy bears are decorated with elements that represent the city, such as the small crowns on their heads and t-shirts with \"New York\" written on them. Some bears are even styled like the iconic Statue of Liberty. These bears serve as a charming keepsake or a thoughtful gift for friends and family who appreciate memorable items from famous tourist destinations. Additionally, teddy bears have an element of nostalgia and comfort for many people, which adds to their appeal as a desirable souvenir.",
+      "v1_baseline": "Someone might want to purchase one of these teddy bears because they are adorable and colorful, featuring a combination of pink and white fur. The teddy bears are also wearing matching pink bows, which adds to their charm. Additionally, the teddy bears are placed in a store display, which suggests that they are available for purchase. The person might be looking for a unique gift for a loved one, a decorative item for their home, or simply a fun and cuddly companion for",
+      "v2_candidate": "Someone might want to purchase one of these teddy bears because they are cute, cuddly, and feature a New York City theme. The teddy bears are dressed in New York City outfits, which could appeal to fans of the city or those who have a special connection to New York. Additionally, these teddy bears could make for a unique and thoughtful gift for friends or family members who appreciate the city or its iconic landmarks. The teddy bears are also available in different sizes"
+    },
+    {
+      "image": "000000469807.jpg",
+      "question": "What possible reasons might explain the presence of the truck and people in this rural setting?",
+      "ground_truth": "There could be a few reasons for the presence of the dark blue semi-truck cab and people in the grassy field. One possibility is that they are taking a break during a long-haul journey, and the people are enjoying some rest and relaxation by sitting on the bumper and leaning against the truck. Another possibility is that the truck is making a delivery or picking up goods from a nearby location, such as a farm, and the people gathered around have some involvement in the process. Alternatively, the truck may have stopped due to a mechanical issue, and the people are waiting for assistance or assessing the situation. The actual reason would depend on the specific context and activities of the people and the truck in the image.",
+      "v1_baseline": "There could be several reasons for the presence of the truck and people in the rural setting. One possibility is that the truck is engaged in agricultural activities, such as transporting farm equipment, supplies, or harvested crops. The people might be farm workers, farmers, or truck drivers who are involved in these activities. Another possibility is that the truck is part of a construction project, and the people are workers or contractors who are working on a rural infrastructure development project, such as building roads,",
+      "v2_candidate": "There could be several reasons for the presence of the truck and people in the rural setting. One possibility is that the truck is being used for agricultural purposes, such as transporting crops, equipment, or supplies. The people might be farmers, farm workers, or truck drivers who are involved in the agricultural activities in the area. Another possibility is that the truck is being used for construction or maintenance work in the rural area, and the people are workers or contractors who are on site to complete"
+    },
+    {
+      "image": "000000082790.jpg",
+      "question": "What kind of room is depicted in the image?",
+      "ground_truth": "The image shows a home office.",
+      "v1_baseline": "The image depicts a cozy and organized home office or study room.",
+      "v2_candidate": "The image depicts a home office or study room."
+    },
+    {
+      "image": "000000431973.jpg",
+      "question": "What type of food is being purchased in the image?",
+      "ground_truth": "In the image, a person is purchasing bananas.",
+      "v1_baseline": "In the image, a woman is purchasing bananas.",
+      "v2_candidate": "Bananas"
+    },
+    {
+      "image": "000000173221.jpg",
+      "question": "What might the occupants of this room be preparing for?",
+      "ground_truth": "The image shows a room with three beds, each with clothes laid out on them and beds made. The occupants of this room might be preparing for an adventure or a day of activities together. The fact that they have three outfits ready to wear suggests they are likely planning to partake in a specific activity or attend an event that requires them to dress accordingly. The suitcase in the scene might indicate that they are travelers, possibly on vacation or exploring a new place, looking forward to enjoying their day and creating memorable experiences.",
+      "v1_baseline": "The occupants of this room are preparing for a bed change, as there are several bed sheets and towels laid out on the bed. The bed is covered with a white sheet, and there are multiple towels placed on top of the bed, along with a few other items. This suggests that the room's occupants are getting ready to change the bed and make it more comfortable and clean.",
+      "v2_candidate": "The occupants of this room might be preparing for a trip or a vacation, as there are three neatly made beds with luggage placed on them. The presence of the luggage suggests that the occupants are packing or unpacking their belongings, which is a common activity when traveling. The room appears to be a hotel room, which further supports the idea that the occupants are either arriving or departing from a trip."
+    },
+    {
+      "image": "000000319649.jpg",
+      "question": "Analyze the image in a comprehensive and detailed manner.",
+      "ground_truth": "The scene depicts a busy bus terminal filled with several buses and people waiting for their rides. There are five buses of varying sizes in the terminal, with some in the background and others more prominently featured. A truck and a car can also be seen in the busy terminal, indicating the bustling nature of the transportation hub.  There are six people waiting in the area, three of whom are closer to the front, while the other three are located further back in the scene. They are likely passengers preparing to board one of the many buses.  Numerous benches are scattered throughout the scene, both near the buses and in the background, providing seating for the waiting passengers. All in all, the area looks like a bustling city bus stop, with a constant flow of people and vehicles.",
+      "v1_baseline": "The image depicts a busy street scene with a large bus parked on the side of the road. The bus is parked next to a row of parked cars, with some of them closer to the bus and others further away. There are several people walking around the area, some of them near the bus and others further down the street.\n\nIn addition to the bus and cars, there are a few bicycles scattered throughout the scene, with one near the bus and another further down the street.",
+      "v2_candidate": "The image features a bus station with several buses parked in the parking lot. There are at least four buses visible in the scene, with one bus positioned closer to the foreground and the others further back. The buses are parked in a row, with some of them facing the camera.\n\nIn addition to the buses, there are a few people scattered around the parking lot, likely waiting for their buses or attending to their personal affairs. The scene also includes a bench, where one person is"
+    },
+    {
+      "image": "000000145989.jpg",
+      "question": "What color is the train in the image?",
+      "ground_truth": "The train in the image is yellow.",
+      "v1_baseline": "The train in the image is yellow.",
+      "v2_candidate": "The train in the image is orange."
+    },
+    {
+      "image": "000000579447.jpg",
+      "question": "What possible health benefits can the person consuming these vegetables expect?",
+      "ground_truth": "The person consuming this wide variety of vegetables, including different colored carrots, turnips, and broccoli, can expect multiple health benefits. Vegetables, in general, provide essential vitamins, minerals, dietary fiber, and are usually low in calories.   Carrots are rich in vitamin A, potassium, and antioxidants, such as beta-carotene. They can contribute to improved vision, skin health, and overall immune function. Turnips also offer a range of health benefits as they contain numerous nutrients like vitamin C, fiber, and minerals such as calcium and potassium. They can support the immune system, promote digestion, and contribute to bone health. Furthermore, broccoli is an excellent source of vitamins K and C, folic acid, potassium, and fiber. It may help in improving overall immunity, maintaining healthy bones, and reducing inflammation in the body.  By consuming a diverse range of vegetables, one can expect overall health improvements, stronger immune function, better digestion, and a reduced risk of various chronic diseases.",
+      "v1_baseline": "Consuming the assortment of colorful vegetables displayed in the image, such as carrots, beets, and broccoli, can provide numerous health benefits. These vegetables are rich in essential nutrients, vitamins, and minerals that contribute to maintaining overall health and well-being. Some of the key benefits include:\n\n1. Boosting immunity: The vitamins and minerals present in these vegetables, such as vitamin C, vitamin A, and beta-carotene, help to strengthen the immune system and protect against infections",
+      "v2_candidate": "The person consuming these vegetables can expect several health benefits due to their nutritional content. The basket contains a variety of colorful vegetables, including carrots, broccoli, and cauliflower. These vegetables are rich in vitamins, minerals, and antioxidants that contribute to overall health and well-being. For example, carrots are high in vitamin A, which is essential for good vision, immune function, and skin health. Broccoli is a good source of vitamin C, vitamin K, and fiber, which can help"
+    },
+    {
+      "image": "000000488261.jpg",
+      "question": "Explain the visual content of the image in great detail.",
+      "ground_truth": "The image features a woman playing tennis, holding a racket and standing in front of a fence. She is dressed in a green top and appears to be focused on her game. A small crowd of people is present in the scene, likely observing her match. Some of the spectators are grouped together, while others are spread out in the background. There is also a backpack placed near the fence, possibly belonging to one of the players or spectators.",
+      "v1_baseline": "The image captures a woman playing tennis on a court, with a tennis racket in her hand. She is in the middle of a match, and her focus is on the ball as she prepares to hit it. The woman is wearing a white shirt and black shorts, and her tennis racket is held firmly in her hand. \n\nThere are several people watching the match from the sidelines, with some of them standing closer to the court and others further away. The spectators are scattered around the",
+      "v2_candidate": "The image features a woman playing tennis on a court, swinging her racket to hit the ball. She is in the middle of the court, with the ball in the air, and appears to be in the process of returning the ball. \n\nThere are several other people in the background, watching the game and possibly waiting for their turn to play. Some of them are closer to the edge of the court, while others are further back. The scene captures the excitement and energy of a"
+    },
+    {
+      "image": "000000537289.jpg",
+      "question": "Explain the visual content of the image in great detail.",
+      "ground_truth": "The image features a group of people standing around and engaging in various activities. A unique white bike is positioned in the center of the scene, and it appears to be the main focus of attention. Several other bicycles can also be seen scattered throughout the room.  Some people seem to be talking or working on tasks, while others are observing a man fixing a hospital bed positioned on the right side of the scene. Numerous individuals are gathered around the bed, watching the man.  There are also backpacks and chairs in the scene, indicating that the event may be taking place in a more casual setting. A few vehicles, parked outside the building, can be seen through the windows.  The gathering of people and bicycles suggests that this could be a bike show, where bicycle enthusiasts come together to share their passion for bikes, innovative designs, and inventions.",
+      "v1_baseline": "The image depicts a group of people gathered around a bicycle, which is parked on the sidewalk. The bicycle is decorated with colorful stickers and has a unique design. The people are engaged in a lively conversation, with some of them standing closer to the bicycle, while others are further away. \n\nThere are several handbags and backpacks scattered around the scene, with some placed near the bicycle and others further away. A few cups can also be seen in the vicinity, possibly belonging to",
+      "v2_candidate": "The image features a group of people gathered around a bicycle, which is parked on the sidewalk. The bicycle has a bed attached to it, and there are several people standing around it, possibly admiring or discussing the unique setup. \n\nIn addition to the bicycle, there are a few chairs and a dining table nearby, with a person sitting on one of the chairs. The scene appears to be a social gathering or event, with people engaging in conversation and enjoying their time together."
+    },
+    {
+      "image": "000000139012.jpg",
+      "question": "What can you infer about this man's profession or interests?",
+      "ground_truth": "Based on the presence of dozens of different types of clocks in the store, where the man is located, one could infer that this man is likely a clock seller or a clock enthusiast. The shop features a big variety of clocks, showcasing various sizes, designs, and styles, which suggests that the man is knowledgeable and passionate about clocks or runs a business selling them. His professional expertise would likely include helping customers choose the right clock, repairing or maintaining clocks, and ensuring timely and accurate functionality.",
+      "v1_baseline": "Based on the image, it can be inferred that the man is a watch enthusiast or a watch collector. He is standing in front of a large display of clocks and watches, which suggests that he has a strong interest in timepieces. The presence of numerous clocks and watches in the store, as well as the man's attention to them, indicates that he might be a customer or a collector looking for specific models or brands. Additionally, the man's presence in the store implies that",
+      "v2_candidate": "Based on the image, it can be inferred that the man might be a watch collector or enthusiast, as he is surrounded by a large collection of clocks and watches. The presence of numerous clocks and watches in the store suggests that he might be a professional in the field or someone who has a strong interest in timepieces. The man's profession could be related to the sales, maintenance, or restoration of clocks and watches, or he might simply be a collector who appreciates the craftsmanship"
+    },
+    {
+      "image": "000000347055.jpg",
+      "question": "What considerations might the man have for using the desktop computer while exercising?",
+      "ground_truth": "The man may face various considerations while watching a movie on his desktop computer and exercising. First, he needs to ensure that his computer setup, including the monitor, keyboard, and mouse, is positioned in a way that allows him to see the screen clearly and interact with the computer while working out. Additionally, he needs a suitable exercise setup, and possibly an exercise machine or mat, that is in a convenient location that allows him to maintain a clear view of the screen and engage in his physical activities comfortably.  Another consideration he might have is managing his focus and attention between the movie and his exercise routine to ensure effective workouts. He would also need to establish a reasonable volume level for the movie, so he can hear the audio without causing too much disturbance, especially if he is sharing the space with others. Finally, the man must use his exercise and computer equipment responsibly to avoid accidental damages, such as knocking down objects on the desk or breaking any of the equipment.",
+      "v1_baseline": "The man in the image is using a desktop computer while exercising on a stationary bike. He might consider a few factors while using the computer in this manner:\n\n1. Comfort: The man should ensure that he is comfortable and able to maintain a proper posture while exercising and using the computer. This might involve adjusting the position of the computer monitor, keyboard, and mouse to suit his needs.\n\n2. Safety: The man should be aware of his surroundings and ensure that he is not too",
+      "v2_candidate": "The man might consider several factors while using the desktop computer while exercising. First, he should ensure that the computer is placed at a comfortable height and distance to avoid straining his neck or shoulders. Second, he should choose a suitable exercise routine that does not interfere with the computer's functionality or cause any damage to the equipment. For example, he should avoid placing the computer on the floor or in a position where it might be accidentally knocked over during exercise. Third, he should be"
+    },
+    {
+      "image": "000000219880.jpg",
+      "question": "What do these people need to keep in mind when barbecuing outdoors?",
+      "ground_truth": "When barbecuing outdoors, these people need to be mindful of several factors to ensure a successful and enjoyable experience. First, they should maintain food safety and hygiene practices by using clean utensils and surfaces for cooking and handling food. Second, they should be cautious of temperature control and adequate cooking to avoid undercooking or overcooking the hamburgers and hot dogs. Proper cooking times and temperatures help reduce the risk of foodborne illnesses.  Additionally, they should consider guests' dietary needs and preferences, providing alternative options for those with allergies or specific dietary restrictions. They should also monitor the outdoor conditions, such as wind and weather, as these factors can impact the cooking process and comfort of the guests. Lastly, it is essential to ensure that the grill is placed in a safe location, away from flammable materials and at a proper distance from guests, to avoid accidents or injuries. They should also have a fire extinguisher or other fire safety tools on hand in case of emergencies.",
+      "v1_baseline": "When barbecuing outdoors, these people need to keep in mind several factors to ensure a safe and enjoyable experience. Some of these factors include:\n\n1. Proper food handling and storage: They should ensure that raw and cooked foods are stored in separate containers and kept at the correct temperatures to prevent cross-contamination and foodborne illnesses.\n\n2. Hygiene: They should maintain a clean and hygienic environment by washing their hands frequently, using clean utensils and equipment, and covering",
+      "v2_candidate": "When barbecuing outdoors, these people need to keep in mind several factors to ensure a safe and enjoyable experience. First, they should ensure that the barbecue grill is placed on a stable and level surface, away from flammable materials and overhanging branches. Second, they should use appropriate utensils, such as tongs and spatulas, to handle the hot grill and food items. Third, they should maintain a safe distance from the grill while cooking to avoid burns or injuries"
+    },
+    {
+      "image": "000000130440.jpg",
+      "question": "What risk does the skateboarder face while performing the trick?",
+      "ground_truth": "In the image, the young man is performing a skateboarding trick in front of a black car. The risk associated with this situation is the possibility of losing control and accidentally colliding with the car during or after the trick. This could result in damage to the car, injuries to the skateboarder, or even harm to any pedestrians in the vicinity. It is essential for skateboarders to choose their locations wisely, ensuring that they have enough space to safely perform their tricks and maintain control of their skateboards to avoid such risks.",
+      "v1_baseline": "The skateboarder faces the risk of falling off the skateboard while performing the trick, which could result in injuries, especially if they land incorrectly or lose balance. In the image, the skateboarder is jumping in the air, and it is essential to maintain control and balance to avoid accidents. The presence of three people in the scene, including two girls and a boy, adds to the complexity of the situation, as they need to coordinate their movements and timing to successfully execute the trick.",
+      "v2_candidate": "The skateboarder faces the risk of losing control or balance while performing the trick, which could result in a fall or collision with the car or other objects in the scene. In the image, the skateboarder is riding on the sidewalk, and there are cars parked nearby. If the skateboarder fails to execute the trick correctly, they might collide with the car or other objects, causing injury to themselves or damage to the car or other objects. It is essential for skateboarders to practice"
+    },
+    {
+      "image": "000000287854.jpg",
+      "question": "What are the key elements in this picture?",
+      "ground_truth": "The kitchen scene features wooden cabinets and drawers below the counter that give it a warm and classic appeal. There are two stainless steel sinks situated in the middle of the kitchen counter, one next to the other, offering a practical and functional space for washing dishes.  On the counter, a knife set with multiple knives of varying sizes is displayed, providing easy access to essential cutting tools for food preparation. In addition to the knives, various cups and kitchen accessories are scattered throughout the space, giving it a lived-in and homely feeling. A collection of bottles can be found placed together, as well as an assortment of cups, showcasing the variety of dishware and kitchenware available in this cozy kitchen.",
+      "v1_baseline": "The image depicts a kitchen with a wooden countertop, sink, and cabinets. The countertop is made of wood and has a few items placed on it, including a cup and a knife. The sink is positioned in the center of the countertop, and the cabinets are located above and below the sink. \n\nThe kitchen also features a window, which allows natural light to enter the space. There are several bottles placed on the countertop, adding to the overall aesthetic of the",
+      "v2_candidate": "The image features a kitchen with a sink and a wooden cabinet underneath it. The sink is positioned in the center of the kitchen, and the cabinet is located below it. The kitchen also has a dining table, which is placed near the sink. \n\nThere are several bottles and cups placed on the counter, with some of them being closer to the sink and others further away. Additionally, there are two bowls on the counter, one near the sink and the other further away. The"
+    },
+    {
+      "image": "000000527250.jpg",
+      "question": "Are people standing on a boat or just next to each other on land?",
+      "ground_truth": "People are standing on a boat, crowding near the railing and looking at the water and the surrounding city.",
+      "v1_baseline": "People are standing next to each other on land, not on a boat.",
+      "v2_candidate": "People are standing next to each other on land, not on a boat."
+    },
+    {
+      "image": "000000015379.jpg",
+      "question": "What could the parked motorcycle with many rear view mirrors specifically indicate about its rider?",
+      "ground_truth": "The parked motorcycle with a significant number of rear view mirrors attached in the parking lot may indicate that the rider places a high emphasis on safety and visibility while riding. This configuration suggests that the rider wants to have an extensive field of view to observe surrounding traffic and minimize blind spots. Consequently, the rider might be vigilant and cautious on the roads, actively seeking to reduce the risk of accidents by increasing their situational awareness through the vast array of mirrors. It can also be viewed as a unique customization choice, making the motorcycle stand out among other vehicles.",
+      "v1_baseline": "The parked motorcycle with many rear view mirrors could indicate that the rider is a person who values safety and visibility while riding. Having multiple rear view mirrors provides the rider with a wider field of view, allowing them to better detect potential hazards or obstacles behind them. This could suggest that the rider is cautious and responsible, prioritizing safety above other factors. Additionally, the presence of multiple mirrors might also indicate that the rider is a professional or experienced motorcyclist who has a high level of",
+      "v2_candidate": "The parked motorcycle with many rear view mirrors on its back could indicate that its rider is interested in monitoring their surroundings or keeping an eye on other vehicles or people behind them. This could be due to various reasons, such as increased safety concerns, a desire to be aware of potential theft or vandalism, or simply a personal preference for enhanced visibility. The presence of multiple mirrors suggests that the rider might be particularly cautious or vigilant about their surroundings, which could be a reflection of their personality or"
+    },
+    {
+      "image": "000000169633.jpg",
+      "question": "Why could the man be waving while riding his bike?",
+      "ground_truth": "The man might be waving while riding his bike for various reasons. He could be greeting someone he knows or recognizing a fellow cyclist, acknowledging a friendly gesture from a passerby, or simply expressing his happiness and enjoyment during the bike ride. Given the context of the image, which shows a couple of people riding bikes along a country road and a truck in the background, it's likely that the man is engaging in social interaction or maintaining a friendly atmosphere while enjoying the outdoor activity.",
+      "v1_baseline": "The man could be waving while riding his bike because he is participating in a group ride or a cycling event. In the image, there are several other people riding bicycles, which suggests that they might be part of a group or a team. Waving could be a way for the man to acknowledge and greet his fellow riders, show enthusiasm for the event, or simply express joy and excitement while participating in the activity. Additionally, waving can also be a way to communicate with other riders",
+      "v2_candidate": "The man could be waving while riding his bike to greet or wave goodbye to someone, possibly a friend or family member, who is watching him from a distance. It is a friendly gesture to acknowledge the person's presence and show that he is aware of them. This act of waving can also be a way to express happiness or excitement about the ride or the surroundings."
+    },
+    {
+      "image": "000000414260.jpg",
+      "question": "What are the main colors of the train in the image?",
+      "ground_truth": "The main colors of the train in the image are blue, white, and red.",
+      "v1_baseline": "The main colors of the train in the image are red, yellow, and white.",
+      "v2_candidate": "The main colors of the train in the image are blue and white."
+    },
+    {
+      "image": "000000351141.jpg",
+      "question": "What could be a concern for the baseball batter in this situation?",
+      "ground_truth": "In this situation, a concern for the baseball batter might be executing a successful hit and contributing to his team's performance. The image shows the batter taking a swing during his turn at bat, with several people on the field and in the stands watching. While the batter's primary goal is to hit the ball and reach base, he should also consider factors such as the pitcher's throwing technique, the ball's speed and trajectory, and his swing timing. Additionally, under the pressure of spectators watching and with multiple teammates, coaches, and opponents around, performing well in such an intense atmosphere could pose a challenge for the batter.",
+      "v1_baseline": "In the image, the baseball batter is swinging at a pitch, and the umpire is watching closely to determine whether the ball was hit or not. A concern for the batter in this situation could be that the umpire might not call the ball a hit, even if it was hit fairly well. The batter needs to ensure that the ball is hit in a way that the umpire can clearly see it being hit, and the ball travels a significant distance to the fielder.",
+      "v2_candidate": "In the image, the baseball batter is in the middle of swinging at a pitch, and there are several people in the background, including a catcher and an umpire. A concern for the batter in this situation could be the potential for interference from the people in the background. If the catcher or umpire accidentally gets in the way of the batter's swing or if the batter is distracted by their presence, it could affect the batter's performance and potentially lead to a missed hit or"
+    },
+    {
+      "image": "000000459185.jpg",
+      "question": "What do you see happening in this image?",
+      "ground_truth": "The image features a man riding a brown horse and jumping over an obstacle, which appears to be a log in a field. The horse and rider are skillfully navigating the obstacle course as they both focus on successfully completing the jump.  In addition to the main subjects, other people can be observed in the scene. One person is standing further right in the background, while another person is located at the far right of the photo. There is also a person closer to the center of the scene, but slightly to the right.  The scene includes several potted plants placed around the area, adding some greenery to the setting. They can be found in various spots around the field, providing an aesthetically pleasing environment for the horseback riding event.",
+      "v1_baseline": "The image captures a man riding a horse during a horse racing event. The man is wearing a black and white striped shirt and is holding the reins of the horse. The horse is running on a track, with several other horses visible in the background, all racing together.\n\nThere are multiple people watching the event from various positions around the track. Some are standing closer to the action, while others are further away, likely to get a better view of the race. The spectators are spread",
+      "v2_candidate": "The image features a man riding a brown horse over a hurdle in a field. The horse is jumping over the hurdle, showcasing its agility and strength. \n\nThere are several other people in the scene, some of whom are watching the horse and rider as they perform the jump. The spectators are scattered around the field, with some closer to the horse and others further away. The overall atmosphere appears to be one of excitement and admiration for the horse and rider's performance."
+    },
+    {
+      "image": "000000291841.jpg",
+      "question": "What type of vehicle is featured in the image?",
+      "ground_truth": "The image features a city bus, which is a public transit vehicle.",
+      "v1_baseline": "The image features a city bus, which is a large public transportation vehicle designed to carry multiple passengers.",
+      "v2_candidate": "bus"
+    }
+  ]
+}

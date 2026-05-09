@@ -104,8 +104,8 @@ def _load_model(llama_path: str, checkpoint_dir: str, device):
     if os.path.exists(llm_path):
         from peft import PeftModel
         base = model.llm.model
-        if hasattr(base, "base_model"):
-            base = base.base_model
+        if hasattr(base, "peft_config") and hasattr(base, "unload"):
+            base = base.unload()
         model.llm.model = PeftModel.from_pretrained(base, llm_path)
         print(f"  Loaded LoRA from {llm_path}")
 
