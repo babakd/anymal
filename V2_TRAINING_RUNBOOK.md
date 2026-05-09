@@ -1,6 +1,6 @@
 # AnyMAL V2 Stage 1/2 Training Runbook
 
-Last updated: 2026-04-28
+Last updated: 2026-04-30
 
 ## Context
 
@@ -65,6 +65,120 @@ are missing, Stage 1 still intentionally falls back to COCO-backed captions.
 Trainer readiness: full-run Modal timeouts are now raised above canary budgets:
 Stage 1 distributed pretraining has an 8-hour timeout, and Stage 2 single-GPU
 QLoRA has a 24-hour timeout.
+
+Train-loop held-out benchmark eval is now off by default. For full model
+selection, launch explicit external VQA checkpoint reads at the predeclared
+milestones instead of watching validation metrics in the training loop.
+
+## 2026-04-29 Corrected Full Stage 2 Runs
+
+The corrected VQA protocol is now the only checkpoint-selection protocol:
+`prompt_style=training_chat`, first-stop-token trimming, EOS including
+`<|eot_id|>`, and scheduled checkpoint reads only.
+
+The full V2 Stage 2 runs from the 256-query Stage 1 / 384-query Stage 2
+expansion path were stopped after corrected VQA reads showed collapse:
+
+- `v2-stage2-balanced-mix-light-3000-20260429`, checkpoint 300: `0.10%`.
+- `v2-stage2-normalized-light-direct-object-full-3000-20260429`, checkpoint
+  1000: `0.13%`.
+- `v2-stage2-normalized-direct-object-full-3000-20260429`, checkpoint 1000:
+  `0.37%`.
+
+Do not select from those runs, or from the earlier
+`v2-stage2-direct-object-full-3000-20260429` /
+`v2-stage2-direct-natural-full-3000-20260429` runs. The earlier direct-answer
+filter preserved full multi-turn source conversations, and the later corrected
+branches failed the corrected VQA gate.
+
+The active path is the true 384-query Stage 1 checkpoint:
+
+`/checkpoints/pretrain-output/v2-stage1-learned-384q-3000-20260429/checkpoint-3000`
+
+Stage 1 details:
+
+- Modal app: `ap-wvvjKR4Du8Jq3lNTMXZpHQ`
+- W&B: `https://wandb.ai/babakdam/anymal-pretrain/runs/jmu6xbiu`
+- Data: true zip-backed LLaVA-Pretrain images/captions.
+- Usable samples: `555,258`; split `527,496 train / 27,762 val`.
+- Token budget: `384` image tokens in Stage 1, matching Stage 2.
+- Final eval loss: `2.4883`.
+
+Active 384-query Stage 2 runs:
+
+```bash
+modal run --detach modal_train.py \
+  --stage finetune \
+  --architecture anymal_v2 \
+  --token-compressor-type learned \
+  --dataset balanced_mix \
+  --gpu-type h100 \
+  --max-steps 3000 \
+  --batch-size 2 \
+  --learning-rate 5e-6 \
+  --lora-learning-rate 7e-5 \
+  --pretrain-checkpoint /checkpoints/pretrain-output/v2-stage1-learned-384q-3000-20260429/checkpoint-3000 \
+  --use-wandb \
+  --run-name v2-stage2-384q-balanced-mix-light-3000-20260429
+```
+
+```bash
+modal run --detach modal_train.py \
+  --stage finetune \
+  --architecture anymal_v2 \
+  --token-compressor-type learned \
+  --dataset concat_mix_direct_object_light_trainprompt \
+  --gpu-type h100 \
+  --max-steps 3000 \
+  --batch-size 2 \
+  --learning-rate 5e-6 \
+  --lora-learning-rate 7e-5 \
+  --pretrain-checkpoint /checkpoints/pretrain-output/v2-stage1-learned-384q-3000-20260429/checkpoint-3000 \
+  --use-wandb \
+  --run-name v2-stage2-384q-light-direct-object-3000-20260429
+```
+
+The VQAv2-train enhanced branch adds short-answer grounding data from train
+splits only. It uses a deterministic COCO train2014 image subset and a cached
+`vqa_train2014_direct_150000.json` file built from VQAv2 train2014
+questions/annotations. This branch disables in-training held-out VQA eval.
+
+```bash
+modal run --detach modal_train.py \
+  --stage finetune \
+  --architecture anymal_v2 \
+  --token-compressor-type learned \
+  --dataset balanced_mix_vqa_direct_object_trainprompt \
+  --gpu-type h100 \
+  --max-steps 3000 \
+  --batch-size 2 \
+  --learning-rate 5e-6 \
+  --lora-learning-rate 7e-5 \
+  --pretrain-checkpoint /checkpoints/pretrain-output/v2-stage1-learned-384q-3000-20260429/checkpoint-3000 \
+  --use-wandb \
+  --run-name v2-stage2-384q-vqa-direct-object-balanced-noeval-3000-20260429
+```
+
+Independent connector ablation:
+
+```bash
+modal run --detach modal_train.py \
+  --stage pretrain \
+  --architecture anymal_v2 \
+  --token-compressor-type perceiver \
+  --gpu-type h100 \
+  --max-steps 3000 \
+  --batch-size 2 \
+  --learning-rate 2e-4 \
+  --pretrain-image-tokens 384 \
+  --use-wandb \
+  --run-name v2-stage1-perceiver-384q-3000-20260429
+```
+
+Selection protocol: fixed VQAv2 validation slice, `max_eval_samples=1000`,
+`subset_seed=42`, scheduled checkpoints `300`, `1000`, `2000`, `3000`.
+Run these as explicit external checkpoint reads. Canaries are diagnostic only,
+and any inspected failures must not be recycled into same-run model selection.
 
 ## 2026-04-28 Full Learned-Connector Baseline
 

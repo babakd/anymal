@@ -1,0 +1,30 @@
+{
+  "max_samples": 1000,
+  "seed": 42,
+  "batch_size": 8,
+  "image_dir": "/checkpoints/coco_val2014",
+  "ensure_num_images": 0,
+  "image_sample_seed": 20260429,
+  "prompt_style": "training_chat",
+  "runs": [
+    {
+      "key": "v3_candidate",
+      "label": "v3-direct-calibration-loraonly-ckpt100",
+      "architecture": "v3",
+      "checkpoint": "/checkpoints/finetune-output/v3-direct-calibration-loraonly-300-20260508-codex/checkpoint-100",
+      "metrics": {
+        "accuracy": 9.099999999999998,
+        "num_samples": 1000,
+        "avg_generated_tokens": 5.215,
+        "eos_rate": 0.997,
+        "hit_max_new_tokens_rate": 0.003,
+        "accuracy_number": 6.249999999999998,
+        "num_samples_number": 144,
+        "accuracy_other": 8.382066276803119,
+        "num_samples_other": 513,
+        "accuracy_yes_no": 11.370262390670554,
+        "num_samples_yes_no": 343
+      }
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "max_samples": 1000,
+  "seed": 42,
+  "batch_size": 8,
+  "image_dir": "/checkpoints/coco_val2014",
+  "ensure_num_images": 0,
+  "image_sample_seed": 20260429,
+  "prompt_style": "training_chat",
+  "runs": [
+    {
+      "key": "v2_candidate",
+      "label": "v2-normalized-direct-object-ckpt1000",
+      "architecture": "v2",
+      "checkpoint": "/checkpoints/finetune-output/v2-stage2-normalized-direct-object-full-3000-20260429/checkpoint-1000",
+      "metrics": {
+        "accuracy": 0.36666666666666664,
+        "num_samples": 1000,
+        "avg_generated_tokens": 3.708,
+        "eos_rate": 0.973,
+        "hit_max_new_tokens_rate": 0.027,
+        "accuracy_number": 0.4629629629629629,
+        "num_samples_number": 144,
+        "accuracy_other": 0.5198180636777128,
+        "num_samples_other": 513,
+        "accuracy_yes_no": 0.09718172983479105,
+        "num_samples_yes_no": 343
+      }
+    }
+  ]
+}

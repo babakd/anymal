@@ -1,0 +1,30 @@
+{
+  "max_samples": 1000,
+  "seed": 42,
+  "batch_size": 8,
+  "image_dir": "/checkpoints/coco_val2014",
+  "ensure_num_images": 0,
+  "image_sample_seed": 20260429,
+  "prompt_style": "training_chat",
+  "runs": [
+    {
+      "key": "v3_candidate",
+      "label": "v3-grounded-lowLR-from1000-checkpoint-250",
+      "architecture": "v3",
+      "checkpoint": "/checkpoints/finetune-output/v3-stage2-grounded-lowLR-from1000-2000-20260430/checkpoint-250",
+      "metrics": {
+        "accuracy": 8.200000000000001,
+        "num_samples": 1000,
+        "avg_generated_tokens": 8.065,
+        "eos_rate": 0.963,
+        "hit_max_new_tokens_rate": 0.037,
+        "accuracy_number": 2.7777777777777777,
+        "num_samples_number": 144,
+        "accuracy_other": 8.25211176088369,
+        "num_samples_other": 513,
+        "accuracy_yes_no": 10.398445092322643,
+        "num_samples_yes_no": 343
+      }
+    }
+  ]
+}

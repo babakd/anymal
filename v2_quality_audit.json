@@ -1,0 +1,366 @@
+{
+  "checkpoints": {
+    "stage1": {
+      "path": "/checkpoints/pretrain-output/v2-stage1-learned-2500-20260428/checkpoint-2500",
+      "exists": true,
+      "files": {
+        "model_meta.json": true,
+        "projector.pt": true,
+        "token_compressor.pt": true,
+        "trainer_state.pt": true
+      },
+      "metadata": {
+        "architecture": "anymal_v2",
+        "llm_base_weights_saved": false,
+        "llm_checkpoint_saved": false,
+        "max_image_tokens": 256,
+        "min_image_tokens": 256,
+        "token_compressor_type": "learned",
+        "vision_encoder_type": "siglip2"
+      },
+      "projector.pt": {
+        "num_tensors": 8,
+        "shapes": {
+          "net.0.weight": [
+            1152
+          ],
+          "net.0.bias": [
+            1152
+          ],
+          "net.1.weight": [
+            2048,
+            1152
+          ],
+          "net.1.bias": [
+            2048
+          ],
+          "net.4.weight": [
+            2048
+          ],
+          "net.4.bias": [
+            2048
+          ],
+          "net.5.weight": [
+            4096,
+            2048
+          ],
+          "net.5.bias": [
+            4096
+          ]
+        }
+      },
+      "token_compressor.pt": {
+        "num_tensors": 7,
+        "shapes": {
+          "pool_queries": [
+            256,
+            1152
+          ],
+          "pool_norm.weight": [
+            1152
+          ],
+          "pool_norm.bias": [
+            1152
+          ],
+          "pool_attn.in_proj_weight": [
+            3456,
+            1152
+          ],
+          "pool_attn.in_proj_bias": [
+            3456
+          ],
+          "pool_attn.out_proj.weight": [
+            1152,
+            1152
+          ],
+          "pool_attn.out_proj.bias": [
+            1152
+          ]
+        }
+      },
+      "llm": {
+        "exists": false,
+        "adapter_model": false,
+        "adapter_config": false
+      }
+    },
+    "stage2": {
+      "path": "/checkpoints/finetune-output/v2-stage2-balanced-mix-3000-20260428/checkpoint-3000",
+      "exists": true,
+      "files": {
+        "model_meta.json": true,
+        "projector.pt": true,
+        "token_compressor.pt": true,
+        "trainer_state.pt": true
+      },
+      "metadata": {
+        "architecture": "anymal_v2",
+        "llm_base_weights_saved": false,
+        "llm_checkpoint_saved": true,
+        "max_image_tokens": 384,
+        "min_image_tokens": 384,
+        "token_compressor_type": "learned",
+        "vision_encoder_type": "siglip2"
+      },
+      "projector.pt": {
+        "num_tensors": 8,
+        "shapes": {
+          "net.0.weight": [
+            1152
+          ],
+          "net.0.bias": [
+            1152
+          ],
+          "net.1.weight": [
+            2048,
+            1152
+          ],
+          "net.1.bias": [
+            2048
+          ],
+          "net.4.weight": [
+            2048
+          ],
+          "net.4.bias": [
+            2048
+          ],
+          "net.5.weight": [
+            4096,
+            2048
+          ],
+          "net.5.bias": [
+            4096
+          ]
+        }
+      },
+      "token_compressor.pt": {
+        "num_tensors": 7,
+        "shapes": {
+          "pool_queries": [
+            384,
+            1152
+          ],
+          "pool_norm.weight": [
+            1152
+          ],
+          "pool_norm.bias": [
+            1152
+          ],
+          "pool_attn.in_proj_weight": [
+            3456,
+            1152
+          ],
+          "pool_attn.in_proj_bias": [
+            3456
+          ],
+          "pool_attn.out_proj.weight": [
+            1152,
+            1152
+          ],
+          "pool_attn.out_proj.bias": [
+            1152
+          ]
+        }
+      },
+      "llm": {
+        "exists": true,
+        "adapter_model": true,
+        "adapter_config": true,
+        "adapter_config_json": {
+          "alora_invocation_tokens": null,
+          "alpha_pattern": {},
+          "arrow_config": null,
+          "auto_mapping": null,
+          "base_model_name_or_path": "/checkpoints/llama3-8b-instruct",
+          "bias": "none",
+          "corda_config": null,
+          "ensure_weight_tying": false,
+          "eva_config": null,
+          "exclude_modules": null,
+          "fan_in_fan_out": false,
+          "inference_mode": true,
+          "init_lora_weights": true,
+          "layer_replication": null,
+          "layers_pattern": null,
+          "layers_to_transform": null,
+          "loftq_config": {},
+          "lora_alpha": 16,
+          "lora_bias": false,
+          "lora_dropout": 0.05,
+          "lora_ga_config": null,
+          "megatron_config": null,
+          "megatron_core": "megatron.core",
+          "modules_to_save": null,
+          "peft_type": "LORA",
+          "peft_version": "0.19.1",
+          "qalora_group_size": 16,
+          "r": 64,
+          "rank_pattern": {},
+          "revision": null,
+          "target_modules": [
+            "down_proj",
+            "q_proj",
+            "k_proj",
+            "gate_proj",
+            "o_proj",
+            "up_proj",
+            "v_proj"
+          ],
+          "target_parameters": null,
+          "task_type": "CAUSAL_LM",
+          "trainable_token_indices": null,
+          "use_bdlora": null,
+          "use_dora": false,
+          "use_qalora": false,
+          "use_rslora": false
+        }
+      }
+    }
+  },
+  "stage1_data": {
+    "pretrain_json_exists": true,
+    "manifest_exists": true,
+    "images_zip_exists": true,
+    "manifest": {
+      "image_zip_path": "/checkpoints/llava_pretrain/images.zip",
+      "num_images": 558128,
+      "storage": "zip"
+    },
+    "zip_member_count": 558788,
+    "zip_image_member_count": 558128,
+    "zip_first_members": [
+      "00001/",
+      "00001/000015879.jpg",
+      "00001/000011413.jpg",
+      "00001/000014395.jpg",
+      "00001/000017249.jpg"
+    ],
+    "annotation_count": 558128,
+    "first_annotations": [
+      {
+        "id": "004539375",
+        "image": "00453/004539375.jpg",
+        "conversations": [
+          {
+            "from": "human",
+            "value": "Render a clear and concise summary of the photo.\n<image>"
+          },
+          {
+            "from": "gpt",
+            "value": "select luxury furniture 3 - inch gel memory foam mattress topper"
+          }
+        ]
+      },
+      {
+        "id": "002239345",
+        "image": "00223/002239345.jpg",
+        "conversations": [
+          {
+            "from": "human",
+            "value": "Write a terse but informative summary of the picture.\n<image>"
+          },
+          {
+            "from": "gpt",
+            "value": "a grey watch with an army style strap"
+          }
+        ]
+      },
+      {
+        "id": "005947502",
+        "image": "00594/005947502.jpg",
+        "conversations": [
+          {
+            "from": "human",
+            "value": "<image>\nWhat is this?"
+          },
+          {
+            "from": "gpt",
+            "value": "a dragon kite flying in the blue sky stock images"
+          }
+        ]
+      },
+      {
+        "id": "005116462",
+        "image": "00511/005116462.jpg",
+        "conversations": [
+          {
+            "from": "human",
+            "value": "<image>\nRender a clear and concise summary of the photo."
+          },
+          {
+            "from": "gpt",
+            "value": "$ 10 - cute cheap printed mini dress - khaki multicolor striped floral print peasant short sleeve tunic"
+          }
+        ]
+      },
+      {
+        "id": "002017886",
+        "image": "00201/002017886.jpg",
+        "conversations": [
+          {
+            "from": "human",
+            "value": "What is in the photo?\n<image>"
+          },
+          {
+            "from": "gpt",
+            "value": "augmented reality using aruco markers in opencv"
+          }
+        ]
+      }
+    ]
+  },
+  "stage2_data": {
+    "cached_coco_images": 81479,
+    "source_counts": {
+      "instruct_150k_raw": 157712,
+      "instruct_150k_with_cached_images": 157712,
+      "mix_665k_raw": 665298,
+      "mix_665k_with_cached_coco_images": 338470,
+      "balanced_mix_epoch_length": 676940
+    },
+    "instruct_150k": {
+      "name": "instruct_150k",
+      "samples": 157712,
+      "avg_answer_words": 78.91790732474384,
+      "p50_answer_words": 91,
+      "p90_answer_words": 140,
+      "short_answer_count_le_3_words": 3,
+      "short_answer_rate": 1.9022014811808865e-05,
+      "chatty_phrase_count": 22689,
+      "chatty_phrase_rate": 0.14386349802171047,
+      "task_counts": {
+        "caption_or_description": 46836,
+        "spatial": 4892,
+        "color": 5594,
+        "short_object": 9114,
+        "count": 11179,
+        "other": 58162,
+        "reasoning": 21935
+      },
+      "empty_question": 0,
+      "empty_answer": 0
+    },
+    "mix_665k_filtered": {
+      "name": "mix_665k_filtered",
+      "samples": 338470,
+      "avg_answer_words": 37.84512955357934,
+      "p50_answer_words": 4,
+      "p90_answer_words": 120,
+      "short_answer_count_le_3_words": 142589,
+      "short_answer_rate": 0.4212751499394333,
+      "chatty_phrase_count": 22723,
+      "chatty_phrase_rate": 0.06713445800218631,
+      "task_counts": {
+        "caption_or_description": 65434,
+        "spatial": 21927,
+        "color": 14659,
+        "short_object": 32569,
+        "count": 21596,
+        "other": 150208,
+        "reasoning": 32077
+      },
+      "empty_question": 0,
+      "empty_answer": 2
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "max_samples": 1000,
+  "seed": 42,
+  "batch_size": 8,
+  "image_dir": "/checkpoints/coco_val2014",
+  "ensure_num_images": 0,
+  "image_sample_seed": 20260429,
+  "prompt_style": "training_chat",
+  "runs": [
+    {
+      "key": "v3_candidate",
+      "label": "v3_ynnum_connector_lora_ckpt50",
+      "architecture": "v3",
+      "checkpoint": "/checkpoints/finetune-output/v3-recipe-ynnum-connector-lora-600-20260504/checkpoint-50",
+      "metrics": {
+        "accuracy": 8.9,
+        "num_samples": 1000,
+        "avg_generated_tokens": 10.646,
+        "eos_rate": 0.788,
+        "hit_max_new_tokens_rate": 0.212,
+        "accuracy_number": 5.5555555555555545,
+        "num_samples_number": 144,
+        "accuracy_other": 8.382066276803119,
+        "num_samples_other": 513,
+        "accuracy_yes_no": 11.078717201166182,
+        "num_samples_yes_no": 343
+      }
+    }
+  ]
+}

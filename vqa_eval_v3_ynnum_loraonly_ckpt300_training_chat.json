@@ -1,0 +1,30 @@
+{
+  "max_samples": 1000,
+  "seed": 42,
+  "batch_size": 8,
+  "image_dir": "/checkpoints/coco_val2014",
+  "ensure_num_images": 0,
+  "image_sample_seed": 20260429,
+  "prompt_style": "training_chat",
+  "runs": [
+    {
+      "key": "v3_candidate",
+      "label": "v3-ynnum-loraonly-ckpt300",
+      "architecture": "v3",
+      "checkpoint": "/checkpoints/finetune-output/v3-recipe-ynnum-loraonly-600-20260504/checkpoint-300",
+      "metrics": {
+        "accuracy": 9.033333333333333,
+        "num_samples": 1000,
+        "avg_generated_tokens": 9.362,
+        "eos_rate": 0.836,
+        "hit_max_new_tokens_rate": 0.164,
+        "accuracy_number": 5.324074074074073,
+        "num_samples_number": 144,
+        "accuracy_other": 8.836907082521117,
+        "num_samples_other": 513,
+        "accuracy_yes_no": 10.884353741496598,
+        "num_samples_yes_no": 343
+      }
+    }
+  ]
+}

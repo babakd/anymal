@@ -1,11 +1,8 @@
-"""
-Side-by-side inference for V2 checkpoints.
+"""Compare a legacy V1 checkpoint with a V2 checkpoint under one prompt path.
 
-Compares the final Stage 1 and Stage 2 V2 learned-compressor checkpoints on the
-same deterministic LLaVA validation examples.
-
-Usage:
-    modal run v2_compare_inference.py --num-examples 8
+This is the user-facing sanity check for repair candidates: V2 should not just
+look better than an earlier V2 run, it should beat the best available V1
+baseline on the same deterministic examples and chat-formatted prompt.
 """
 
 import json
@@ -15,7 +12,7 @@ from pathlib import Path
 import modal
 
 
-app = modal.App("anymal-v2-compare")
+app = modal.App("anymal-v1-v2-compare")
 volume = modal.Volume.from_name("anymal-checkpoints", create_if_missing=True)
 PROJECT_DIR = Path(__file__).parent
 
@@ -41,25 +38,6 @@ image = (
     .add_local_dir(PROJECT_DIR, remote_path="/root/anymal", copy=False)
 )
 
-
-DEFAULT_RUNS = [
-    {
-        "key": "stage1_final",
-        "label": "V2 Stage 1 true LLaVA-Pretrain 2500",
-        "checkpoint": "/checkpoints/pretrain-output/v2-stage1-learned-2500-20260428/checkpoint-2500",
-        "stage": 1,
-        "num_image_tokens": 256,
-        "use_qlora": False,
-    },
-    {
-        "key": "stage2_final",
-        "label": "V2 Stage 2 balanced-mix 3000",
-        "checkpoint": "/checkpoints/finetune-output/v2-stage2-balanced-mix-3000-20260428/checkpoint-3000",
-        "stage": 2,
-        "num_image_tokens": 384,
-        "use_qlora": True,
-    },
-]
 
 TRAINING_SYSTEM_PROMPT = (
     "You are a helpful AI assistant that can see and understand images. "
@@ -117,83 +95,13 @@ def _load_val_examples(tokenizer, num_examples: int):
     return examples
 
 
-def _move_v2_modules_to_device(model, device):
-    model.image_encoder.to(device)
-    model.token_compressor.to(device)
-    model.projector.to(device)
-    return model
-
-
-def _validate_run_metadata(run):
-    import sys
-
-    sys.path.insert(0, "/root/anymal")
-    from model_metadata import validate_checkpoint_metadata_values
-
-    validate_checkpoint_metadata_values(
-        run["checkpoint"],
-        expected_architecture="anymal_v2",
-        expected_values={
-            "vision_encoder_type": "siglip2",
-            "token_compressor_type": "learned",
-            "max_image_tokens": run["num_image_tokens"],
-            "min_image_tokens": run["num_image_tokens"],
-        },
-    )
-
-
-def _load_v2_model(run, llama_path: str, device):
-    import sys
-    import torch
-
-    sys.path.insert(0, "/root/anymal")
-    from models.anymal_v2 import AnyMALv2
-    from peft import PeftModel
-
-    print(f"Loading {run['label']} from {run['checkpoint']}")
-    _validate_run_metadata(run)
-    model = AnyMALv2(
-        llm_model_name=llama_path,
-        vision_encoder_type="siglip2",
-        vision_model_name="google/siglip2-so400m-patch14-384",
-        token_compressor_type="learned",
-        bottleneck_dim=2048,
-        max_image_tokens=run["num_image_tokens"],
-        min_image_tokens=run["num_image_tokens"],
-        use_qlora=run["use_qlora"],
-        use_lora=False,
-        lora_r=64,
-        lora_alpha=16,
-        gradient_checkpointing=False,
-        use_flash_attention=False,
-        llm_device_map="auto",
-        llm_torch_dtype=torch.bfloat16,
-    )
-
-    projector_path = os.path.join(run["checkpoint"], "projector.pt")
-    compressor_path = os.path.join(run["checkpoint"], "token_compressor.pt")
-    model.projector.load_state_dict(torch.load(projector_path, map_location="cpu"))
-    model.token_compressor.load_state_dict(torch.load(compressor_path, map_location="cpu"))
-
-    llm_path = os.path.join(run["checkpoint"], "llm")
-    if os.path.exists(llm_path):
-        base_model = model.llm.model
-        if hasattr(base_model, "peft_config") and hasattr(base_model, "unload"):
-            base_model = base_model.unload()
-        model.llm.model = PeftModel.from_pretrained(base_model, llm_path)
-
-    model.eval()
-    _move_v2_modules_to_device(model, device)
-    return model
-
-
 def _build_prompt_input_ids(
     tokenizer,
     placeholder_id: int,
     num_image_tokens: int,
     question: str,
     system_prompt: str,
-    max_length: int = 2304,
+    max_length: int,
 ):
     import torch
 
@@ -238,45 +146,136 @@ def _build_prompt_input_ids(
             attention_mask[last:],
         ]
     )
-
     if input_ids.shape[0] > max_length:
         input_ids = input_ids[:max_length]
         attention_mask = attention_mask[:max_length]
-
-    placeholder_count = int((input_ids == placeholder_id).sum().item())
-    if placeholder_count != num_image_tokens:
-        raise RuntimeError(
-            f"Prompt has {placeholder_count} image placeholders; expected {num_image_tokens}"
-        )
     return input_ids.unsqueeze(0), attention_mask.unsqueeze(0)
 
 
-def _generate(model, example, image_dir: str, device, max_new_tokens: int, system_prompt: str):
+def _load_v1_model(checkpoint: str, llama_path: str, device):
+    import sys
+    import torch
+
+    sys.path.insert(0, "/root/anymal")
+    from model_metadata import validate_checkpoint_metadata_values
+    from models.anymal import AnyMAL
+    from peft import PeftModel
+
+    validate_checkpoint_metadata_values(checkpoint, expected_architecture="anymal_v1")
+    model = AnyMAL(
+        llm_model_name=llama_path,
+        use_qlora=True,
+        lora_r=64,
+        lora_alpha=16,
+        gradient_checkpointing=False,
+        use_flash_attention=False,
+    )
+    projector_path = os.path.join(checkpoint, "projector.pt")
+    model.projector.load_state_dict(torch.load(projector_path, map_location="cpu"))
+    llm_path = os.path.join(checkpoint, "llm")
+    if os.path.isdir(llm_path):
+        base_model = model.llm.model
+        if hasattr(base_model, "peft_config") and hasattr(base_model, "unload"):
+            base_model = base_model.unload()
+        model.llm.model = PeftModel.from_pretrained(base_model, llm_path)
+    model.eval()
+    model.to(device)
+    return model
+
+
+def _load_v2_model(checkpoint: str, llama_path: str, device):
+    import sys
+    import torch
+
+    sys.path.insert(0, "/root/anymal")
+    from model_metadata import validate_checkpoint_metadata_values
+    from models.anymal_v2 import AnyMALv2
+    from peft import PeftModel
+
+    validate_checkpoint_metadata_values(
+        checkpoint,
+        expected_architecture="anymal_v2",
+        expected_values={
+            "vision_encoder_type": "siglip2",
+            "token_compressor_type": "learned",
+            "max_image_tokens": 384,
+            "min_image_tokens": 384,
+        },
+    )
+    model = AnyMALv2(
+        llm_model_name=llama_path,
+        vision_encoder_type="siglip2",
+        vision_model_name="google/siglip2-so400m-patch14-384",
+        token_compressor_type="learned",
+        bottleneck_dim=2048,
+        max_image_tokens=384,
+        min_image_tokens=384,
+        use_qlora=True,
+        use_lora=False,
+        lora_r=64,
+        lora_alpha=16,
+        gradient_checkpointing=False,
+        use_flash_attention=False,
+        llm_device_map="auto",
+        llm_torch_dtype=torch.bfloat16,
+    )
+    model.projector.load_state_dict(
+        torch.load(os.path.join(checkpoint, "projector.pt"), map_location="cpu")
+    )
+    model.token_compressor.load_state_dict(
+        torch.load(os.path.join(checkpoint, "token_compressor.pt"), map_location="cpu")
+    )
+    llm_path = os.path.join(checkpoint, "llm")
+    if os.path.isdir(llm_path):
+        base_model = model.llm.model
+        if hasattr(base_model, "peft_config") and hasattr(base_model, "unload"):
+            base_model = base_model.unload()
+        model.llm.model = PeftModel.from_pretrained(base_model, llm_path)
+    model.eval()
+    model.image_encoder.to(device)
+    model.token_compressor.to(device)
+    model.projector.to(device)
+    return model
+
+
+def _generate(
+    model,
+    architecture: str,
+    example,
+    image_dir: str,
+    device,
+    max_new_tokens: int,
+    system_prompt: str,
+):
     import sys
     import torch
     from PIL import Image
 
     sys.path.insert(0, "/root/anymal")
-    from data.data_utils import get_vision_transform
+    from data.data_utils import get_image_transform, get_vision_transform
 
-    transform = get_vision_transform(
-        vision_encoder_type="siglip2",
-        vision_model_name="google/siglip2-so400m-patch14-384",
-        image_size=384,
-        is_train=False,
-        use_augmentation=False,
-    )
+    if architecture == "v2":
+        transform = get_vision_transform(
+            vision_encoder_type="siglip2",
+            vision_model_name="google/siglip2-so400m-patch14-384",
+            image_size=384,
+            is_train=False,
+            use_augmentation=False,
+        )
+        max_length = 2304
+    else:
+        transform = get_image_transform(image_size=224, is_train=False, use_augmentation=False)
+        max_length = 1024
 
     pil = Image.open(os.path.join(image_dir, example["image"])).convert("RGB")
     image_tensor = transform(pil).unsqueeze(0).to(device)
-
-    tokenizer = model.tokenizer
     input_ids, attention_mask = _build_prompt_input_ids(
-        tokenizer=tokenizer,
+        tokenizer=model.tokenizer,
         placeholder_id=model.image_placeholder_token_id,
         num_image_tokens=model.num_image_tokens,
         question=example["question"],
         system_prompt=system_prompt,
+        max_length=max_length,
     )
     input_ids = input_ids.to(device)
     attention_mask = attention_mask.to(device)
@@ -289,9 +288,8 @@ def _generate(model, example, image_dir: str, device, max_new_tokens: int, syste
             max_new_tokens=max_new_tokens,
             do_sample=False,
         )
-
     new_tokens = generated[0, input_ids.shape[1] :]
-    return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+    return model.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 
 @app.function(
@@ -301,11 +299,13 @@ def _generate(model, example, image_dir: str, device, max_new_tokens: int, syste
     timeout=7200,
     secrets=[modal.Secret.from_name("huggingface")],
 )
-def compare_v2(
-    num_examples: int = 8,
+def compare_v1_v2(
+    v1_checkpoint: str,
+    v2_checkpoint: str,
+    v2_label: str,
+    num_examples: int = 24,
     max_new_tokens: int = 96,
     system_prompt: str = TRAINING_SYSTEM_PROMPT,
-    runs=None,
 ):
     import gc
     import sys
@@ -313,7 +313,6 @@ def compare_v2(
     from transformers import AutoTokenizer
 
     sys.path.insert(0, "/root/anymal")
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     llama_path = "/checkpoints/llama3-8b-instruct"
     image_dir = "/checkpoints/coco_images"
@@ -321,18 +320,35 @@ def compare_v2(
     tokenizer = AutoTokenizer.from_pretrained(llama_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
-    print(f"Selecting {num_examples} deterministic validation examples")
     examples = _load_val_examples(tokenizer, num_examples)
     results = [dict(example) for example in examples]
 
-    runs = runs or DEFAULT_RUNS
+    runs = [
+        {
+            "key": "v1_baseline",
+            "label": "V1 ablation-F mix_665k checkpoint-500",
+            "checkpoint": v1_checkpoint,
+            "architecture": "v1",
+        },
+        {
+            "key": "v2_candidate",
+            "label": v2_label,
+            "checkpoint": v2_checkpoint,
+            "architecture": "v2",
+        },
+    ]
+
     for run in runs:
-        model = _load_v2_model(run, llama_path=llama_path, device=device)
+        print(f"Loading {run['label']} from {run['checkpoint']}")
+        if run["architecture"] == "v1":
+            model = _load_v1_model(run["checkpoint"], llama_path, device)
+        else:
+            model = _load_v2_model(run["checkpoint"], llama_path, device)
         for i, example in enumerate(examples):
             try:
                 response = _generate(
                     model,
+                    run["architecture"],
                     example,
                     image_dir,
                     device,
@@ -356,27 +372,15 @@ def compare_v2(
     }
 
 
-def _print_side_by_sides(result):
-    labels = {run["key"]: run["label"] for run in result["runs"]}
-    for i, row in enumerate(result["results"], start=1):
-        print("\n" + "=" * 100)
-        print(f"Example {i}: {row['image']}")
-        print(f"Q: {row['question']}")
-        print(f"GT: {row['ground_truth'][:500]}")
-        for key in labels:
-            print(f"\n[{labels[key]}]")
-            print(row.get(key, ""))
-
-
 @app.local_entrypoint()
 def main(
-    num_examples: int = 8,
+    v1_checkpoint: str = "/checkpoints/finetune-output/ablation-F/checkpoint-500",
+    v2_checkpoint: str = "/checkpoints/finetune-output/v2-stage2-balanced-mix-3000-20260428/checkpoint-3000",
+    v2_label: str = "V2 candidate",
+    num_examples: int = 24,
     max_new_tokens: int = 96,
     prompt_mode: str = "training",
-    stage2_checkpoint: str = DEFAULT_RUNS[1]["checkpoint"],
-    stage2_label: str = DEFAULT_RUNS[1]["label"],
-    stage2_key: str = DEFAULT_RUNS[1]["key"],
-    output: str = "v2_compare_predictions.json",
+    output: str = "v1_v2_compare_predictions.json",
 ):
     if prompt_mode == "training":
         system_prompt = TRAINING_SYSTEM_PROMPT
@@ -385,23 +389,14 @@ def main(
     else:
         system_prompt = prompt_mode
 
-    runs = [
-        DEFAULT_RUNS[0],
-        {
-            **DEFAULT_RUNS[1],
-            "key": stage2_key,
-            "label": stage2_label,
-            "checkpoint": stage2_checkpoint,
-        },
-    ]
-
-    result = compare_v2.remote(
+    result = compare_v1_v2.remote(
+        v1_checkpoint=v1_checkpoint,
+        v2_checkpoint=v2_checkpoint,
+        v2_label=v2_label,
         num_examples=num_examples,
         max_new_tokens=max_new_tokens,
         system_prompt=system_prompt,
-        runs=runs,
     )
     with open(output, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
     print(f"Saved {output}")
-    _print_side_by_sides(result)

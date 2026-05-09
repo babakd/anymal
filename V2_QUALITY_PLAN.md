@@ -1,6 +1,6 @@
 # AnyMAL V2 Quality Plan
 
-Last updated: 2026-04-27
+Last updated: 2026-04-30
 
 ## Purpose
 
@@ -16,9 +16,36 @@ The goal is to move measured quality, not just training loss. Future agents shou
 - V2 uses SigLIP2 preprocessing at 384px and strict placeholder/token matching.
 - Stage 1 currently trains `token_compressor + projector`, with vision and LLM frozen.
 - Stage 2 trains `token_compressor + projector + LoRA`.
-- Stage 1 uses 256 image tokens; Stage 2 uses 384 image tokens.
-- VQA eval is V2-placeholder-aware but still limited by partial val-image coverage.
+- The active 2026-04-29 branch uses 384 image tokens in both Stage 1 and Stage 2.
+  Older 256-query Stage 1 / 384-query Stage 2 expansion runs are diagnostic only
+  and must not be used for model selection.
+- VQA eval is V2-placeholder-aware, uses deterministic held-out subsets, reports
+  answer-type breakdowns, and fails loudly when valid coverage is too low.
 - Existing V1 Stage 2 experiments showed dataset choice mattered far more than LR sweeps, and SFT tended to increase verbosity and confident hallucination.
+- The corrected 2026-04-29 held-out VQA protocol uses the Stage 2 training chat
+  prompt, trims generations at the first stop token, and stops on `<|eot_id|>`.
+  Under this protocol, V1 ablation-F is the current baseline at `7.57%` overall
+  on the 1000-sample seed-42 slice.
+- The earlier VQA scoreboard with V1 at `5.03%` and original V2 at `6.70%` is
+  superseded. It used a legacy prompt and counted padded generation tokens.
+- The corrected full branches from the 256-query Stage 1 / 384-query Stage 2
+  expansion collapsed on scheduled reads and were stopped:
+  `v2-stage2-balanced-mix-light-3000-20260429` checkpoint 300 scored `0.10%`,
+  `v2-stage2-normalized-light-direct-object-full-3000-20260429` checkpoint 1000
+  scored `0.13%`, and
+  `v2-stage2-normalized-direct-object-full-3000-20260429` checkpoint 1000 scored
+  `0.37%`.
+- A true 384-query Stage 1 pretrain completed on real LLaVA-Pretrain images:
+  `/checkpoints/pretrain-output/v2-stage1-learned-384q-3000-20260429/checkpoint-3000`.
+  Three full Stage 2 runs from this checkpoint are active:
+  `v2-stage2-384q-balanced-mix-light-3000-20260429`,
+  `v2-stage2-384q-light-direct-object-3000-20260429`, and
+  `v2-stage2-384q-vqa-direct-object-balanced-noeval-3000-20260429`.
+- The VQA-enhanced Stage 2 branch adds VQAv2 train2014 direct-answer
+  supervision from a deterministic COCO train2014 image subset. It does not add
+  held-out VQAv2 val2014 examples to training.
+- A full 384-query Perceiver Stage 1 connector ablation is active:
+  `v2-stage1-perceiver-384q-3000-20260429`.
 
 ## Implementation Status
 
@@ -56,6 +83,31 @@ Known caveat:
 ## Priority 0: Make Evaluation Trustworthy
 
 Do this before judging architecture changes.
+
+### Anti-Overfit Rules
+
+- Predeclare checkpoint evaluation points before looking at generations.
+- Use the fixed held-out VQA slice (`max_eval_samples=1000`, `subset_seed=42`,
+  `min_eval_samples=500`) as the first scoreboard for Stage 2 candidates.
+- Keep known failure examples as canaries only. They can diagnose whether a
+  capability exists, but they must not select the final checkpoint.
+- Report answer-type breakdowns so a gain on `yes/no` or `number` does not hide
+  a regression on open-answer `other` questions.
+- Do not add new eval examples from inspected failures to the selection set for
+  the same run. Put them in a future canary/probe suite and evaluate a later run.
+- Treat train loss as a health signal, not a capability signal.
+- Use a separate deterministic confirmatory VQA image cache after checkpoint
+  shortlisting; do not expand or reshuffle the primary scoreboard during a run.
+- Do not select from the old direct-object or direct-natural runs. They are
+  systems diagnostics only because they were launched before the normalized
+  direct-answer data fix.
+- Do not select from the stopped 256/384-expanded Stage 1 branches above. Their
+  corrected VQA scores are below V1 by a wide margin.
+- For the 384-query Stage 1 branches, evaluate only checkpoints `300`, `1000`,
+  `2000`, and `3000` before shortlisting.
+- Keep train-loop VQA benchmarking disabled for future full training runs.
+  Held-out VQA reads should be launched as explicit external jobs at the
+  predeclared checkpoint milestones.
 
 ### Tasks
 
