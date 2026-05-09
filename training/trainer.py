@@ -39,6 +39,7 @@ Memory Optimization Strategies:
 import os
 import time
 import random
+from numbers import Number
 import numpy as np
 import torch
 import torch.nn as nn
@@ -46,7 +47,7 @@ from torch.utils.data import DataLoader
 from torch.amp import autocast
 from torch.cuda.amp import GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, Tuple
 from dataclasses import dataclass, field
 from tqdm import tqdm
 import json
@@ -204,6 +205,7 @@ class Trainer:
         self.global_step = 0
         self.epoch = 0
         self.best_eval_loss = float("inf")
+        self._reset_accumulation_metrics()
 
         # Set up logging
         self.logger = None
@@ -433,6 +435,7 @@ class Trainer:
 
         self.optimizer.zero_grad()
         micro_steps = 0
+        self._reset_accumulation_metrics()
 
         # When resuming mid-epoch, skip batches that were already processed
         skip_batches = 0
@@ -454,6 +457,7 @@ class Trainer:
 
             loss = self._train_step(batch)
             micro_steps += 1
+            self._record_accumulation_metrics(loss)
 
             # Accumulate gradients over valid micro-batches
             if micro_steps % self.config.gradient_accumulation_steps == 0:
@@ -484,12 +488,13 @@ class Trainer:
 
                 self.optimizer.zero_grad()
                 self.global_step += 1
+                step_loss, accumulated_metrics = self._consume_accumulation_metrics(loss)
 
                 # Feed health monitor
                 if self.health_monitor is not None:
                     gn_val = grad_norm.item() if grad_norm is not None and hasattr(grad_norm, 'item') else (float(grad_norm) if grad_norm is not None else 0.0)
                     gn_before = grad_norm_before_clip if grad_norm_before_clip is not None else None
-                    self.health_monitor.on_step(self.global_step, loss, gn_val, gn_before)
+                    self.health_monitor.on_step(self.global_step, step_loss, gn_val, gn_before)
 
                 # Feed throughput tracker
                 if self.throughput_tracker is not None:
@@ -500,10 +505,8 @@ class Trainer:
 
                 # Logging
                 if self.global_step % self.config.logging_steps == 0:
-                    metrics = {"train/loss": loss}
-                    last_batch_metrics = getattr(self, "_last_batch_metrics", None)
-                    if last_batch_metrics:
-                        metrics.update(last_batch_metrics)
+                    metrics = {"train/loss": step_loss}
+                    metrics.update(accumulated_metrics)
                     if grad_norm is not None:
                         gn = grad_norm.item() if hasattr(grad_norm, 'item') else float(grad_norm)
                         metrics["train/grad_norm"] = gn
@@ -563,8 +566,38 @@ class Trainer:
         # If the epoch ends mid-accumulation, drop leftover gradients to avoid carrying them across epochs.
         if micro_steps % self.config.gradient_accumulation_steps != 0:
             self.optimizer.zero_grad()
+            self._reset_accumulation_metrics()
 
         return epoch_loss / max(num_steps, 1)
+
+    def _reset_accumulation_metrics(self) -> None:
+        self._accum_loss_sum = 0.0
+        self._accum_loss_count = 0
+        self._accum_metric_sums = {}
+        self._accum_metric_counts = {}
+
+    def _record_accumulation_metrics(self, loss: float) -> None:
+        self._accum_loss_sum += float(loss)
+        self._accum_loss_count += 1
+
+        last_batch_metrics = getattr(self, "_last_batch_metrics", None)
+        if not last_batch_metrics:
+            return
+        for key, value in last_batch_metrics.items():
+            if isinstance(value, Number):
+                self._accum_metric_sums[key] = self._accum_metric_sums.get(key, 0.0) + float(value)
+                self._accum_metric_counts[key] = self._accum_metric_counts.get(key, 0) + 1
+
+    def _consume_accumulation_metrics(self, fallback_loss: float) -> Tuple[float, Dict[str, float]]:
+        count = max(self._accum_loss_count, 1)
+        step_loss = self._accum_loss_sum / count if self._accum_loss_count else float(fallback_loss)
+        metrics = {
+            key: total / max(self._accum_metric_counts.get(key, 1), 1)
+            for key, total in self._accum_metric_sums.items()
+        }
+        metrics["train/accumulation_micro_batches"] = float(self._accum_loss_count)
+        self._reset_accumulation_metrics()
+        return step_loss, metrics
 
     def _train_step(self, batch: Dict[str, torch.Tensor]) -> float:
         """

@@ -1,0 +1,91 @@
+# AnyMALv4 Stage 1B: Grounding Alignment Configuration
+
+defaults:
+  - base
+
+stage: 1
+stage_name: "grounding_alignment_v4"
+
+model:
+  architecture: "anymal_v4"
+  llm_model_name: "./checkpoints/llama3-8b-instruct"
+  use_qlora: false
+  use_flash_attention: true
+  gradient_checkpointing: true
+
+  vision_encoder_type: "siglip2"
+  vision_model_name: "google/siglip2-so400m-patch14-384"
+  connector_type: "spatial_perceiver_resampler"
+  num_global_image_tokens: 64
+  num_local_image_tokens: 64
+  num_image_tokens: 128
+  connector_layers: 3
+  connector_heads: 8
+  connector_ff_mult: 2
+  connector_hidden_dim: 1024
+  connector_output_scale: 1.0
+  connector_output_gate_init: 0.01
+  use_2d_position_features: true
+  project_directly_to_llm_dim: false
+
+data:
+  train_data_path: "./data/vqa_train_direct_answers.json"
+  image_dir: "./data/coco/train2014"
+  eval_data_path: null
+  filter_to_available_images: true
+  image_size: 384
+  max_length: 512
+  image_token_policy: "fixed"
+  per_device_batch_size: 16
+  gradient_accumulation_steps: 4
+  dataloader_num_workers: 8
+  pin_memory: true
+  mixture:
+    enabled: true
+    strategy: "weighted"
+    datasets:
+      - name: "vqa_train_direct"
+        weight: 0.50
+        data_path: "./data/vqa_train_direct_answers.json"
+        image_dir: "./data/coco/train2014"
+      - name: "coco_object_count_color_direct"
+        weight: 0.30
+        data_path: "./data/coco_object_count_color_direct.json"
+        image_dir: "./data/coco/train2017"
+      - name: "short_llava_mix"
+        weight: 0.20
+        data_path: "./data/llava_short_answer_mix.json"
+        image_dir: "./data/coco/train2017"
+
+training:
+  learning_rate: 1.0e-4
+  lr_scheduler_type: "cosine"
+  warmup_steps: 500
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  max_steps: 10000
+  num_epochs: null
+  train_projector_only: true
+  use_amp: true
+  amp_dtype: "bfloat16"
+  seed: 42
+
+checkpoint:
+  pretrain_checkpoint: "./outputs/pretrain_v4_alignment/checkpoint-20000"
+  load_projector: true
+  load_lora: false
+
+logging:
+  logging_steps: 50
+  use_wandb: true
+  wandb_project: "anymal-pretrain-v4"
+  wandb_run_name: "stage1b-v4-spatial-bottleneck1024-grounding-alignment"
+
+checkpointing:
+  save_steps: 1000
+  save_total_limit: 5
+  output_dir: "./outputs/pretrain_v4_grounding"
+
+evaluation:
+  eval_steps: null
+  eval_strategy: "no"

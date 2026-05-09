@@ -243,6 +243,10 @@ class LaionDataset(Dataset):
             return f"{self.caption_prompt} {caption}", len(self.caption_prompt) + 1
         return caption, 0
 
+    def _caption_supervised_range(self, full_text: str, response_start_idx: int) -> List[Tuple[int, int]]:
+        """Return the real caption character span, excluding tokenizer special tokens."""
+        return [(int(response_start_idx), len(full_text))]
+
     def _extract_caption(self, item: Dict[str, Any]) -> str:
         """Extract caption text from common caption/pretrain JSON records."""
         caption = item.get("caption", item.get("text", ""))
@@ -545,7 +549,7 @@ class LaionDataset(Dataset):
         # Encode text
         encoding = self.text_processor.encode_for_training(
             full_text,
-            response_start_idx=response_start_idx,
+            response_start_idx=self._caption_supervised_range(full_text, response_start_idx),
         )
         encoding = self._prepend_image_placeholders(encoding)
 
@@ -787,7 +791,7 @@ class LaionStreamingDataset(IterableDataset):
             response_start_idx = 0
         encoding = self.text_processor.encode_for_training(
             full_text,
-            response_start_idx=response_start_idx,
+            response_start_idx=self._caption_supervised_range(full_text, response_start_idx),
         )
         encoding = self._prepend_image_placeholders(encoding)
 

@@ -287,7 +287,7 @@ class AnyMALv3(AnyMALv2):
         )
         projector_path = os.path.join(save_path, "projector.pt")
         if os.path.exists(projector_path):
-            model.projector.load_state_dict(torch.load(projector_path))
+            model.projector.load_state_dict(torch.load(projector_path, map_location="cpu"))
         else:
             raise FileNotFoundError(f"Missing V3 connector weights: {projector_path}")
 

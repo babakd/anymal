@@ -61,13 +61,13 @@ def load_config(config_path: str) -> dict:
 
     # Handle defaults/inheritance (simplified version of OmegaConf's defaults)
     if "defaults" in config:
+        merged = {}
         for default in config["defaults"]:
             base_path = config_dir / f"{default}.yaml"
             if base_path.exists():
-                with open(base_path, "r") as f:
-                    base_config = yaml.safe_load(f)
-                config = deep_merge(base_config, config)
+                merged = deep_merge(merged, load_config(str(base_path)))
         del config["defaults"]
+        config = deep_merge(merged, config)
 
     return config
 
@@ -97,9 +97,39 @@ def parse_args():
     parser.add_argument("--gradient_accumulation_steps", type=int, default=None)
 
     # Training overrides
+    parser.add_argument("--pretrain_checkpoint", type=str, default=None)
     parser.add_argument("--max_steps", type=int, default=None)
     parser.add_argument("--learning_rate", type=float, default=None)
     parser.add_argument("--warmup_steps", type=int, default=None)
+    parser.add_argument(
+        "--loss_scale",
+        type=float,
+        default=None,
+        help="Multiply Stage 1 backward loss while logging the unscaled loss.",
+    )
+    parser.add_argument(
+        "--loss_normalization",
+        type=str,
+        default=None,
+        choices=["mean", "supervised_token_target"],
+        help=(
+            "Stage 1 objective normalization. 'mean' keeps the HF token-mean loss; "
+            "'supervised_token_target' scales that mean by supervised_tokens/target "
+            "for the backward objective while logging raw loss separately."
+        ),
+    )
+    parser.add_argument(
+        "--loss_normalization_target_tokens",
+        type=float,
+        default=None,
+        help="Target supervised-token count for --loss_normalization supervised_token_target.",
+    )
+    parser.add_argument(
+        "--connector_warmup_steps",
+        type=int,
+        default=None,
+        help="Stage 1 optimizer steps that update only connector output projection/gate grads.",
+    )
     parser.add_argument("--output_dir", type=str, default=None)
 
     # Logging
@@ -137,6 +167,8 @@ def main():
         config["model"]["max_image_tokens"] = args.num_image_tokens
     if args.train_data_path:
         config["data"]["train_data_path"] = args.train_data_path
+    if args.pretrain_checkpoint:
+        config.setdefault("checkpoint", {})["pretrain_checkpoint"] = args.pretrain_checkpoint
     if args.per_device_batch_size:
         config["data"]["per_device_batch_size"] = args.per_device_batch_size
     if args.gradient_accumulation_steps:
@@ -147,6 +179,14 @@ def main():
         config["training"]["learning_rate"] = args.learning_rate
     if args.warmup_steps:
         config["training"]["warmup_steps"] = args.warmup_steps
+    if args.loss_scale is not None:
+        config["training"]["loss_scale"] = args.loss_scale
+    if args.loss_normalization is not None:
+        config["training"]["loss_normalization"] = args.loss_normalization
+    if args.loss_normalization_target_tokens is not None:
+        config["training"]["loss_normalization_target_tokens"] = args.loss_normalization_target_tokens
+    if args.connector_warmup_steps is not None:
+        config["training"]["connector_warmup_steps"] = args.connector_warmup_steps
     if args.output_dir:
         config["checkpointing"]["output_dir"] = args.output_dir
     if args.use_wandb:
@@ -191,6 +231,72 @@ def main():
     architecture = normalize_architecture_name(config["model"].get("architecture", "anymal_v1"))
     print_rank_0(f"Model architecture: {architecture}")
 
+    pretrain_checkpoint = config.get("checkpoint", {}).get("pretrain_checkpoint")
+    if pretrain_checkpoint and config.get("checkpoint", {}).get("load_projector", True):
+        from model_metadata import validate_checkpoint_metadata_values
+
+        expected_values = {}
+        if architecture == "anymal_v2":
+            expected_values = {
+                "vision_encoder_type": getattr(model, "vision_encoder_type", None),
+                "token_compressor_type": getattr(model, "token_compressor_type", None),
+                "max_image_tokens": getattr(model, "max_image_tokens", None),
+                "min_image_tokens": getattr(model, "min_image_tokens", None),
+            }
+        elif architecture in {"anymal_v3", "anymal_v4"}:
+            expected_values = {
+                "vision_encoder_type": getattr(model, "vision_encoder_type", None),
+                "connector_type": getattr(model, "connector_type", None),
+                "num_image_tokens": getattr(model, "num_image_tokens", None),
+                    "connector_layers": getattr(model, "connector_layers", None),
+                    "connector_heads": getattr(model, "connector_heads", None),
+                    "connector_ff_mult": getattr(model, "connector_ff_mult", None),
+                    "connector_hidden_dim": getattr(model, "connector_hidden_dim", None),
+                    "connector_output_scale": getattr(model, "connector_output_scale", None),
+                    "connector_output_gate_init": getattr(model, "connector_output_gate_init", None),
+                }
+            if architecture == "anymal_v4":
+                expected_values.update(
+                    {
+                        "num_global_image_tokens": getattr(model, "num_global_image_tokens", None),
+                        "num_local_image_tokens": getattr(model, "num_local_image_tokens", None),
+                        "use_2d_position_features": getattr(model, "use_2d_position_features", None),
+                    }
+                )
+                if getattr(model, "connector_type", None) == "deepstack_spatial_perceiver_resampler":
+                    expected_values.update(
+                        {
+                            "deepstack_num_feature_levels": getattr(
+                                model,
+                                "deepstack_num_feature_levels",
+                                None,
+                            ),
+                            "deepstack_hidden_state_indices": list(
+                                getattr(model, "deepstack_hidden_state_indices", [])
+                            ),
+                            "vision_feature_layers": list(
+                                getattr(model, "deepstack_hidden_state_indices", [])
+                            ),
+                        }
+                    )
+        validate_checkpoint_metadata_values(
+            checkpoint_dir=pretrain_checkpoint,
+            expected_architecture=architecture,
+            expected_values=expected_values,
+        )
+        projector_path = Path(pretrain_checkpoint) / "projector.pt"
+        if not projector_path.exists():
+            raise FileNotFoundError(f"Missing projector weights: {projector_path}")
+        print_rank_0(f"Loading Stage 1 adapter from {projector_path}")
+        model.projector.load_state_dict(torch.load(projector_path, map_location="cpu"))
+
+        compressor_path = Path(pretrain_checkpoint) / "token_compressor.pt"
+        if hasattr(model, "token_compressor") and compressor_path.exists():
+            print_rank_0(f"Loading token compressor from {compressor_path}")
+            model.token_compressor.load_state_dict(
+                torch.load(compressor_path, map_location="cpu")
+            )
+
     # Initialize dataset
     print_rank_0("\nLoading dataset...")
     streaming = config["data"].get("streaming", False)
@@ -198,7 +304,7 @@ def main():
         "image_size": config["data"].get("image_size", 224),
         "max_length": config["data"].get("max_length", 256),
         "caption_prompt": config["data"].get("caption_prompt", "A photo of"),
-        "vision_encoder_type": "siglip2" if architecture in {"anymal_v2", "anymal_v3"} else "clip",
+        "vision_encoder_type": "siglip2" if architecture in {"anymal_v2", "anymal_v3", "anymal_v4"} else "clip",
         "vision_model_name": config["model"].get("vision_model_name"),
     }
     if not streaming:
@@ -210,7 +316,7 @@ def main():
                 "deduplicate_captions": config["data"].get("deduplicate_captions", False),
             }
         )
-    if architecture in {"anymal_v2", "anymal_v3"}:
+    if architecture in {"anymal_v2", "anymal_v3", "anymal_v4"}:
         dataset_kwargs["insert_image_placeholders"] = True
         dataset_kwargs["num_image_tokens"] = config["model"].get(
             "max_image_tokens",
@@ -261,6 +367,27 @@ def main():
         warmup_steps=config["training"]["warmup_steps"],
         weight_decay=config["training"].get("weight_decay", 0.01),
         lr_scheduler_type=config["training"].get("lr_scheduler_type", "cosine"),
+        loss_scale=config["training"].get("loss_scale", 1.0),
+        loss_normalization=config["training"].get("loss_normalization", "mean"),
+        loss_normalization_target_tokens=config["training"].get(
+            "loss_normalization_target_tokens",
+            8.0,
+        ),
+        loss_normalization_min_multiplier=config["training"].get(
+            "loss_normalization_min_multiplier",
+            0.05,
+        ),
+        loss_normalization_max_multiplier=config["training"].get(
+            "loss_normalization_max_multiplier",
+            4.0,
+        ),
+        connector_warmup_steps=config["training"].get("connector_warmup_steps", 0),
+        connector_warmup_trainable_prefixes=tuple(
+            config["training"].get(
+                "connector_warmup_trainable_prefixes",
+                ("projector.output_proj", "projector.output_gate_logit"),
+            )
+        ),
 
         # Mixed precision
         use_amp=config["training"].get("use_amp", True),

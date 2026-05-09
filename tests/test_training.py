@@ -738,6 +738,90 @@ class TestCheckpointMetadataCompatibility:
         )
         assert meta["num_image_tokens"] == 128
 
+    def test_v4_metadata_value_mismatch_fails(self, tmp_path):
+        from model_metadata import (
+            validate_checkpoint_metadata_values,
+            write_model_metadata,
+        )
+
+        write_model_metadata(
+            str(tmp_path),
+            architecture="anymal_v4",
+            extra={
+                "connector_type": "spatial_perceiver_resampler",
+                "num_image_tokens": 128,
+                "num_global_image_tokens": 64,
+                "num_local_image_tokens": 64,
+            },
+        )
+
+        with pytest.raises(RuntimeError, match="num_local_image_tokens"):
+            validate_checkpoint_metadata_values(
+                checkpoint_dir=str(tmp_path),
+                expected_architecture="anymal_v4",
+                expected_values={
+                    "connector_type": "spatial_perceiver_resampler",
+                    "num_image_tokens": 128,
+                    "num_global_image_tokens": 64,
+                    "num_local_image_tokens": 32,
+                },
+            )
+
+        meta = validate_checkpoint_metadata_values(
+            checkpoint_dir=str(tmp_path),
+            expected_architecture="anymal_v4",
+            expected_values={
+                "connector_type": "spatial_perceiver_resampler",
+                "num_image_tokens": 128,
+                "num_global_image_tokens": 64,
+                "num_local_image_tokens": 64,
+            },
+        )
+        assert meta["connector_type"] == "spatial_perceiver_resampler"
+
+    def test_v4_deepstack_metadata_value_mismatch_fails(self, tmp_path):
+        from model_metadata import (
+            validate_checkpoint_metadata_values,
+            write_model_metadata,
+        )
+
+        write_model_metadata(
+            str(tmp_path),
+            architecture="anymal_v4",
+            extra={
+                "connector_type": "deepstack_spatial_perceiver_resampler",
+                "num_image_tokens": 128,
+                "num_global_image_tokens": 64,
+                "num_local_image_tokens": 64,
+                "deepstack_num_feature_levels": 3,
+                "deepstack_hidden_state_indices": [-3, -2, -1],
+                "vision_feature_layers": [-3, -2, -1],
+            },
+        )
+
+        with pytest.raises(RuntimeError, match="deepstack_hidden_state_indices"):
+            validate_checkpoint_metadata_values(
+                checkpoint_dir=str(tmp_path),
+                expected_architecture="anymal_v4",
+                expected_values={
+                    "connector_type": "deepstack_spatial_perceiver_resampler",
+                    "deepstack_num_feature_levels": 3,
+                    "deepstack_hidden_state_indices": [-4, -2, -1],
+                },
+            )
+
+        meta = validate_checkpoint_metadata_values(
+            checkpoint_dir=str(tmp_path),
+            expected_architecture="anymal_v4",
+            expected_values={
+                "connector_type": "deepstack_spatial_perceiver_resampler",
+                "deepstack_num_feature_levels": 3,
+                "deepstack_hidden_state_indices": [-3, -2, -1],
+                "vision_feature_layers": [-3, -2, -1],
+            },
+        )
+        assert meta["deepstack_num_feature_levels"] == 3
+
     def test_v2_metadata_value_mismatch_fails(self, tmp_path):
         from model_metadata import (
             validate_checkpoint_metadata_values,

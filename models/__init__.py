@@ -11,10 +11,13 @@ This module provides the core model architecture:
 from .anymal import AnyMAL
 from .anymal_v2 import AnyMALv2
 from .anymal_v3 import AnyMALv3
+from .anymal_v4 import AnyMALv4
 from .factory import create_model, create_model_from_config
 from .encoders import ImageEncoder
 from .projectors import (
     PerceiverResampler,
+    SpatialPerceiverResampler,
+    DeepStackSpatialPerceiverResampler,
     LinearProjector,
     MLPBottleneckProjector,
     TokenCompressor,
@@ -25,10 +28,13 @@ __all__ = [
     "AnyMAL",
     "AnyMALv2",
     "AnyMALv3",
+    "AnyMALv4",
     "create_model",
     "create_model_from_config",
     "ImageEncoder",
     "PerceiverResampler",
+    "SpatialPerceiverResampler",
+    "DeepStackSpatialPerceiverResampler",
     "LinearProjector",
     "MLPBottleneckProjector",
     "TokenCompressor",

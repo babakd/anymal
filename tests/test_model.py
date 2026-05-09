@@ -126,6 +126,93 @@ class TestPerceiverResampler:
             f"Expected >1M params, got {num_params}"
 
 
+class TestSpatialPerceiverResampler:
+    """Tests for the v4 spatial global/local connector."""
+
+    def test_output_shape_and_token_split(self):
+        from models.projectors.spatial_perceiver_resampler import SpatialPerceiverResampler
+
+        resampler = SpatialPerceiverResampler(
+            input_dim=32,
+            output_dim=64,
+            num_global_latents=3,
+            num_local_latents=5,
+            num_layers=2,
+            num_heads=4,
+            ff_mult=2,
+        )
+        output = resampler(torch.randn(2, 17, 32))
+
+        assert output.shape == (2, 8, 64)
+        assert resampler.num_latents == 8
+
+    def test_supports_no_local_or_no_global_branch(self):
+        from models.projectors.spatial_perceiver_resampler import SpatialPerceiverResampler
+
+        global_only = SpatialPerceiverResampler(
+            input_dim=16,
+            output_dim=32,
+            num_global_latents=4,
+            num_local_latents=0,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+        )
+        local_only = SpatialPerceiverResampler(
+            input_dim=16,
+            output_dim=32,
+            num_global_latents=0,
+            num_local_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+        )
+        x = torch.randn(1, 16, 16)
+
+        assert global_only(x).shape == (1, 4, 32)
+        assert local_only(x).shape == (1, 4, 32)
+
+    def test_deepstack_output_shape(self):
+        from models.projectors.deepstack_spatial_perceiver_resampler import (
+            DeepStackSpatialPerceiverResampler,
+        )
+
+        resampler = DeepStackSpatialPerceiverResampler(
+            input_dim=16,
+            output_dim=32,
+            connector_dim=24,
+            num_global_latents=2,
+            num_local_latents=3,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+            num_feature_levels=3,
+        )
+        features = tuple(torch.randn(2, 16, 16) for _ in range(3))
+
+        assert resampler(features).shape == (2, 5, 32)
+
+    def test_deepstack_rejects_wrong_level_count(self):
+        from models.projectors.deepstack_spatial_perceiver_resampler import (
+            DeepStackSpatialPerceiverResampler,
+        )
+
+        resampler = DeepStackSpatialPerceiverResampler(
+            input_dim=16,
+            output_dim=32,
+            connector_dim=24,
+            num_global_latents=2,
+            num_local_latents=2,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+            num_feature_levels=3,
+        )
+
+        with pytest.raises(ValueError, match="feature levels"):
+            resampler((torch.randn(1, 16, 16), torch.randn(1, 16, 16)))
+
+
 class TestLinearProjector:
     """Tests for Linear Projector baseline."""
 
@@ -684,17 +771,25 @@ class TestModelFactory:
                 self.kind = "v3"
                 self.kwargs = kwargs
 
+        class DummyV4:
+            def __init__(self, **kwargs):
+                self.kind = "v4"
+                self.kwargs = kwargs
+
         monkeypatch.setattr(factory, "AnyMAL", DummyV1)
         monkeypatch.setattr(factory, "AnyMALv2", DummyV2)
         monkeypatch.setattr(factory, "AnyMALv3", DummyV3)
+        monkeypatch.setattr(factory, "AnyMALv4", DummyV4)
 
         model_v1 = factory.create_model("anymal_v1", llm_model_name="a")
         model_v2 = factory.create_model("anymal_v2", llm_model_name="b")
         model_v3 = factory.create_model("anymal_v3", llm_model_name="c")
+        model_v4 = factory.create_model("anymal_v4", llm_model_name="d")
 
         assert model_v1.kind == "v1"
         assert model_v2.kind == "v2"
         assert model_v3.kind == "v3"
+        assert model_v4.kind == "v4"
 
     def test_factory_from_config_uses_model_architecture(self, monkeypatch):
         """Config-driven factory should route by config['model']['architecture']."""
@@ -719,6 +814,19 @@ class TestModelFactory:
 
         monkeypatch.setattr(factory, "AnyMALv3", DummyV3)
         config = {"model": {"architecture": "anymal_v3", "llm_model_name": "foo"}}
+        model = factory.create_model_from_config(config)
+        assert model.kwargs["llm_model_name"] == "foo"
+
+    def test_factory_from_config_routes_v4(self, monkeypatch):
+        """Config-driven factory should route anymal_v4."""
+        from models import factory
+
+        class DummyV4:
+            def __init__(self, llm_model_name=None, **kwargs):
+                self.kwargs = {"llm_model_name": llm_model_name, **kwargs}
+
+        monkeypatch.setattr(factory, "AnyMALv4", DummyV4)
+        config = {"model": {"architecture": "anymal_v4", "llm_model_name": "foo"}}
         model = factory.create_model_from_config(config)
         assert model.kwargs["llm_model_name"] == "foo"
 
