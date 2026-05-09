@@ -1,0 +1,413 @@
+{
+  "max_samples": 20,
+  "seed": 42,
+  "batch_size": 8,
+  "image_dir": "/checkpoints/coco_val2014",
+  "ensure_num_images": 0,
+  "image_sample_seed": 20260429,
+  "prompt_style": "training_chat",
+  "image_perturbation": "none",
+  "runs": [
+    {
+      "key": "v4_candidate",
+      "label": "v4-stage1a300-base-sample",
+      "architecture": "v4",
+      "checkpoint": "/checkpoints/pretrain-output/v4-stage1a-groundingfirst-tokennorm8-aggmetrics-lossscale01-gate00001-lr1e5-extended1000c-save100-20260508-codex/checkpoint-300",
+      "metrics": {
+        "accuracy": 0.0,
+        "num_samples": 20,
+        "avg_generated_tokens": 5.65,
+        "eos_rate": 1.0,
+        "hit_max_new_tokens_rate": 0.0,
+        "accuracy_number": 0.0,
+        "num_samples_number": 5,
+        "accuracy_other": 0.0,
+        "num_samples_other": 8,
+        "accuracy_yes_no": 0.0,
+        "num_samples_yes_no": 7
+      },
+      "prediction_samples": [
+        {
+          "question_id": 133827014,
+          "question": "How many traffic lights are visible?",
+          "answer": "assistant",
+          "answers": [
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0",
+            "1",
+            "0",
+            "0",
+            "0"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 395324000,
+          "question": "What does the green color of the bike signify?",
+          "answer": "green color of bike likely represents environment or ecofriendliness",
+          "answers": [
+            "metal",
+            "unknown",
+            "gang",
+            "metal",
+            "nothing",
+            "sky",
+            "nothing",
+            "grass",
+            "veteran",
+            "cleanliness"
+          ],
+          "answer_type": "other",
+          "question_type": "what does the"
+        },
+        {
+          "question_id": 525058015,
+          "question": "Is the building in the picture made of brick?",
+          "answer": "i can see that building in picture is made of brick",
+          "answers": [
+            "yes",
+            "no",
+            "no",
+            "yes",
+            "no",
+            "yes",
+            "no",
+            "yes",
+            "yes",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 459272005,
+          "question": "Does the girl need a napkin?",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "does the"
+        },
+        {
+          "question_id": 481214007,
+          "question": "Is the child wearing a tie?",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 73000,
+          "question": "What is the license number?",
+          "answer": "assistant",
+          "answers": [
+            "sv-6260",
+            "sv-6260",
+            "sv-6260",
+            "6260",
+            "sv-6260",
+            "6260",
+            "sv 6260",
+            "sv-6260",
+            "sv-6260",
+            "sv-6260"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the"
+        },
+        {
+          "question_id": 135037000,
+          "question": "What is the small animal called?",
+          "answer": "assistant",
+          "answers": [
+            "wild boar",
+            "boar",
+            "warthog",
+            "boar",
+            "boar",
+            "wildebeest",
+            "boar",
+            "boar",
+            "warthog",
+            "boar"
+          ],
+          "answer_type": "other",
+          "question_type": "what is the"
+        },
+        {
+          "question_id": 133693006,
+          "question": "What does it says on the tall building?",
+          "answer": "assistant",
+          "answers": [
+            "nothing",
+            "5 eleven",
+            "5-11",
+            "5 eleven",
+            "5 eleven",
+            "5 eleven",
+            "5 eleven",
+            "5 eleven",
+            "5 eleven",
+            "5 eleven"
+          ],
+          "answer_type": "number",
+          "question_type": "what"
+        },
+        {
+          "question_id": 3217000,
+          "question": "Is there a pathway?",
+          "answer": "assistant",
+          "answers": [
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is there a"
+        },
+        {
+          "question_id": 267932002,
+          "question": "What type of bag is shown in this photo?",
+          "answer": "i can see backpack in this photo",
+          "answers": [
+            "backpack",
+            "book bag",
+            "backpack",
+            "backpack",
+            "backpack",
+            "book bag",
+            "backpack",
+            "backpack",
+            "backpack",
+            "backpack"
+          ],
+          "answer_type": "other",
+          "question_type": "what type of"
+        },
+        {
+          "question_id": 394246003,
+          "question": "Is the guys jeans ripped?",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is the"
+        },
+        {
+          "question_id": 5278002,
+          "question": "What kind of vehicle is this?",
+          "answer": "assistant",
+          "answers": [
+            "train",
+            "train",
+            "train",
+            "train",
+            "train",
+            "train",
+            "train",
+            "train",
+            "train",
+            "train"
+          ],
+          "answer_type": "other",
+          "question_type": "what kind of"
+        },
+        {
+          "question_id": 529344001,
+          "question": "Where are the horses?",
+          "answer": "assistant",
+          "answers": [
+            "ranch",
+            "coral",
+            "at ranch",
+            "corral",
+            "in corral",
+            "ranch",
+            "ranch",
+            "ranch",
+            "coral",
+            "outside"
+          ],
+          "answer_type": "other",
+          "question_type": "where are the"
+        },
+        {
+          "question_id": 134459000,
+          "question": "How many different color shirts are there?",
+          "answer": "assistant",
+          "answers": [
+            "6",
+            "6",
+            "3",
+            "7",
+            "5",
+            "9",
+            "5",
+            "6",
+            "5",
+            "3"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 248810000,
+          "question": "Are there any other animals in this picture?",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "yes",
+            "no",
+            "no",
+            "yes",
+            "yes",
+            "no",
+            "yes",
+            "no",
+            "yes"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "are there any"
+        },
+        {
+          "question_id": 134811003,
+          "question": "Where is the food?",
+          "answer": "assistant",
+          "answers": [
+            "plate",
+            "foreground",
+            "on table",
+            "plate",
+            "on plate",
+            "pizza",
+            "on table",
+            "on plate",
+            "centered in photo",
+            "on plate"
+          ],
+          "answer_type": "other",
+          "question_type": "where is the"
+        },
+        {
+          "question_id": 394458004,
+          "question": "Where is this elephant at?",
+          "answer": "assistant",
+          "answers": [
+            "field",
+            "outside",
+            "field",
+            "zoo",
+            "jungle",
+            "wild",
+            "field",
+            "wild",
+            "grassy area",
+            "zoo"
+          ],
+          "answer_type": "other",
+          "question_type": "none of the above"
+        },
+        {
+          "question_id": 4840000,
+          "question": "How many buildings are in the distance?",
+          "answer": "i can see at least 5 buildings in distance",
+          "answers": [
+            "3",
+            "3",
+            "3",
+            "4",
+            "4",
+            "3",
+            "8",
+            "5",
+            "5",
+            "4"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        },
+        {
+          "question_id": 528404003,
+          "question": "Is this a real train?",
+          "answer": "assistant",
+          "answers": [
+            "no",
+            "no",
+            "no",
+            "yes",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no"
+          ],
+          "answer_type": "yes/no",
+          "question_type": "is this a"
+        },
+        {
+          "question_id": 437205018,
+          "question": "How many bananas is the child holding?",
+          "answer": "i can see that child is holding 3 bananas",
+          "answers": [
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1"
+          ],
+          "answer_type": "number",
+          "question_type": "how many"
+        }
+      ]
+    }
+  ]
+}

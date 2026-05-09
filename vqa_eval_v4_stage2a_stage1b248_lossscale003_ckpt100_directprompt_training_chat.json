@@ -1,0 +1,32 @@
+{
+  "max_samples": 1000,
+  "seed": 42,
+  "batch_size": 8,
+  "image_dir": "/checkpoints/coco_val2014",
+  "ensure_num_images": 0,
+  "image_sample_seed": 20260429,
+  "prompt_style": "training_chat",
+  "system_prompt": "Answer the image question directly and briefly. End after the answer.",
+  "image_perturbation": "none",
+  "runs": [
+    {
+      "key": "v4_candidate",
+      "label": "v4-stage2a-stage1b248-lossscale003-ckpt100-directprompt",
+      "architecture": "v4",
+      "checkpoint": "/checkpoints/finetune-output/v4-stage2a-directcal-lossscale003-lora1e5-from-stage1b248-20260508-codex/checkpoint-100",
+      "metrics": {
+        "accuracy": 7.599999999999999,
+        "num_samples": 1000,
+        "avg_generated_tokens": 6.446,
+        "eos_rate": 1.0,
+        "hit_max_new_tokens_rate": 0.0,
+        "accuracy_number": 4.861111111111111,
+        "num_samples_number": 144,
+        "accuracy_other": 7.082521117608837,
+        "num_samples_other": 513,
+        "accuracy_yes_no": 9.52380952380952,
+        "num_samples_yes_no": 343
+      }
+    }
+  ]
+}

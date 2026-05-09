@@ -1,0 +1,28 @@
+{
+  "max_samples": 1000,
+  "seed": 42,
+  "batch_size": 8,
+  "image_dir": "/checkpoints/coco_val2014",
+  "ensure_num_images": 0,
+  "image_sample_seed": 20260429,
+  "runs": [
+    {
+      "key": "v2_candidate",
+      "label": "v2-direct-natural-full-300",
+      "architecture": "v2",
+      "checkpoint": "/checkpoints/finetune-output/v2-stage2-direct-natural-full-3000-20260429/checkpoint-300",
+      "metrics": {
+        "accuracy": 5.866666666666666,
+        "num_samples": 1000,
+        "avg_generated_tokens": 32.0,
+        "eos_rate": 0.0,
+        "accuracy_number": 0.9259259259259258,
+        "num_samples_number": 144,
+        "accuracy_other": 10.981156595191683,
+        "num_samples_other": 513,
+        "accuracy_yes_no": 0.2915451895043732,
+        "num_samples_yes_no": 343
+      }
+    }
+  ]
+}
