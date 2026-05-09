@@ -1,214 +1,273 @@
-# AnyMAL: Multimodal LLM Replication
+# AnyMAL: Image Multimodal LLM Experiments
 
-An educational implementation of the AnyMAL paper (arXiv:2309.16058), focusing on the **image** modality using LLaMA-3-8B and CLIP.
+An educational, research-oriented implementation inspired by the AnyMAL paper
+([arXiv:2309.16058](https://arxiv.org/abs/2309.16058)).
 
-Note: The paper covers *any-modality* inputs (image/video/audio/IMU). This repo currently implements the image path end-to-end; other modalities are out of scope here.
+The paper covers any-modality inputs such as image, video, audio, and IMU. This
+repository currently focuses on the image path: turning vision encoder features
+into image tokens that a Llama 3 language model can consume.
 
-## Overview
+## Current Status
 
-This project replicates the AnyMAL architecture with a focus on understanding how to convert visual inputs into tokens that a language model can understand.
+This is an experimental codebase, not a polished model release. It is useful for
+learning, reproducing pieces of the AnyMAL-style training pipeline, and running
+architecture ablations. Public pretrained checkpoints are not included.
 
-**Key Components:**
-- **Vision Encoder**: CLIP ViT-L/14 (frozen)
-- **Projector**: Perceiver Resampler with cross-attention
-- **LLM**: LLaMA-3-8B-Instruct with QLoRA
+Implemented model variants:
+
+| Variant | Vision encoder | Connector | Notes |
+| --- | --- | --- | --- |
+| `anymal_v1` | CLIP ViT-L/14 at 224 px | Perceiver resampler | Original baseline path |
+| `anymal_v2` | SigLIP2 at 384 px | MLP bottleneck plus token compressor | Adds stricter image-token handling |
+| `anymal_v3` | SigLIP2 at 384 px | Perceiver-style connector | Used for grounding/calibration experiments |
+| `anymal_v4` | SigLIP2 at 384 px | Spatial global/local Perceiver | Current main experimental path |
+
+The active research configs are mostly around `anymal_v4`. The older v1 configs
+remain useful as a simpler starting point.
 
 ## Architecture
 
-```
-Image (224×224) → CLIP ViT → [257, 1024] → Perceiver Resampler → [64, 4096] → LLaMA-3 → Text
+At a high level:
+
+```text
+image -> frozen vision encoder -> trainable connector -> image placeholder tokens -> Llama 3 -> text
 ```
 
-The key insight is that we only need to train the projection layer to bridge the modality gap. Both the vision encoder and LLM can remain frozen.
+The default v4 path uses:
+
+- LLM: `Meta-Llama-3-8B-Instruct`
+- Vision encoder: `google/siglip2-so400m-patch14-384`
+- Connector: spatial Perceiver resampler with global and local image tokens
+- Training: Stage 1 connector alignment, then Stage 2 LoRA/QLoRA instruction or
+  calibration fine-tuning
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/babakd/anymal.git
 cd anymal
 
-# Create virtual environment
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install flash-attention (optional but recommended)
-pip install flash-attn --no-build-isolation
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
 ```
 
-## Quick Start
-
-### 1. Download Checkpoints
+Optional CUDA performance package:
 
 ```bash
-# Download CLIP (automatically cached)
-python scripts/download_checkpoints.py --clip
-
-# Download LLaMA (requires Meta approval via HuggingFace)
-# First: Accept license at https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct
-# Then: huggingface-cli login
-python scripts/download_checkpoints.py --llama
+python3 -m pip install flash-attn --no-build-isolation
 ```
 
-### 2. Download Data
+For Modal-based remote training, also install Modal locally:
 
 ```bash
-# Create a small sample dataset for testing
-python scripts/download_data.py --sample
-
-# For real training, download LAION and LLaVA-Instruct
-python scripts/download_data.py --laion --samples 1000000
-python scripts/download_data.py --llava
-python scripts/download_data.py --coco
+python3 -m pip install modal
+modal setup
 ```
 
-### 3. Training
+## Model Access
 
-**Stage 1: Alignment Pretraining**
+The Llama weights require a Hugging Face account with access to
+`meta-llama/Meta-Llama-3-8B-Instruct`.
+
 ```bash
-# Train the Perceiver Resampler on image-caption pairs
+huggingface-cli login
+python3 scripts/download_checkpoints.py --llama
+```
+
+The v1 CLIP path can pre-cache CLIP weights:
+
+```bash
+python3 scripts/download_checkpoints.py --clip
+```
+
+SigLIP2 weights used by v2-v4 are downloaded by Transformers/Hugging Face when
+the model initializes.
+
+## Data
+
+Small local smoke data:
+
+```bash
+python3 scripts/create_dummy_data.py
+```
+
+Public data helpers:
+
+```bash
+python3 scripts/download_data.py --llava
+python3 scripts/download_data.py --coco
+python3 scripts/download_data.py --laion --samples 1000000
+```
+
+Notes:
+
+- `--llava` downloads LLaVA-Instruct-150K annotations. You still need the
+  referenced COCO images.
+- `--laion` stores LAION metadata and captions; image download is a separate
+  step.
+- Some v3/v4 calibration configs expect locally prepared VQA/COCO-derived JSON
+  files. Those generated experiment artifacts are not bundled as a public
+  dataset release.
+
+## Local Training
+
+### v1 Baseline
+
+Stage 1 alignment:
+
+```bash
 torchrun --nproc_per_node=8 scripts/train_pretrain.py \
-    --config configs/pretrain_image.yaml
+  --config configs/pretrain_image.yaml
 ```
 
-**Stage 2: Instruction Fine-tuning**
+Stage 2 instruction fine-tuning:
+
 ```bash
-# Fine-tune with LoRA on instruction data
 torchrun --nproc_per_node=8 scripts/train_finetune.py \
-    --config configs/finetune.yaml \
-    --pretrain_checkpoint ./outputs/pretrain/checkpoint-100000
+  --config configs/finetune.yaml \
+  --pretrain_checkpoint ./outputs/pretrain/checkpoint-100000
 ```
+
+Single-process debug runs are possible after creating dummy data, but they still
+initialize the language and vision models:
+
+```bash
+python3 scripts/train_pretrain.py \
+  --config configs/pretrain_image.yaml \
+  --train_data_path ./data/laion_subset \
+  --debug \
+  --no_flash_attention
+
+python3 scripts/train_finetune.py \
+  --config configs/finetune.yaml \
+  --train_data_path ./data/llava_instruct_sample.json \
+  --image_dir ./data/dummy_images \
+  --debug
+```
+
+### v4 Experimental Path
+
+Stage 1 caption alignment:
+
+```bash
+torchrun --nproc_per_node=8 scripts/train_pretrain.py \
+  --config configs/pretrain_v4_alignment.yaml
+```
+
+Optional Stage 1B grounding alignment:
+
+```bash
+torchrun --nproc_per_node=8 scripts/train_pretrain.py \
+  --config configs/pretrain_v4_grounding.yaml
+```
+
+Stage 2 semantic calibration:
+
+```bash
+torchrun --nproc_per_node=8 scripts/train_finetune.py \
+  --config configs/finetune_v4_semantic_calibration.yaml
+```
+
+Check the config files before launching a long run. They encode dataset paths,
+batch sizes, token counts, connector shapes, and checkpoint locations.
+
+## Modal Training
+
+`modal_train.py` contains the maintained remote-training entrypoint. After Modal
+setup and a Hugging Face secret:
+
+```bash
+modal secret create huggingface HF_TOKEN=hf_xxx
+```
+
+Example commands:
+
+```bash
+modal run modal_train.py --use-dummy-data --max-steps 50
+modal run modal_train.py \
+  --stage pretrain \
+  --architecture anymal_v4 \
+  --gpu-type h100 \
+  --max-steps 20000
+modal run modal_train.py \
+  --stage finetune \
+  --architecture anymal_v4 \
+  --dataset v4_semantic_calibration \
+  --max-steps 100
+modal run --detach modal_train.py \
+  --stage finetune \
+  --architecture anymal_v4 \
+  --dataset v4_semantic_calibration \
+  --max-steps 3000
+```
+
+For a fuller walkthrough, see [MODAL_SETUP.md](MODAL_SETUP.md).
+
+## Evaluation
+
+The repo includes VQA and captioning evaluation utilities. The Modal VQA
+checkpoint evaluator is the most used path for comparing checkpoints:
+
+```bash
+modal run vqa_checkpoint_eval.py \
+  --candidate-checkpoint /checkpoints/finetune-output/run-0001/checkpoint-100 \
+  --candidate-architecture v4 \
+  --max-samples 1000 \
+  --output vqa_checkpoint_eval.json
+```
+
+There are also local analysis helpers under `scripts/` for inspecting prediction
+JSON files and promotion criteria.
 
 ## Project Structure
 
+```text
+configs/       Training configs for v1-v4 experiments
+data/          Dataset loaders and collators
+evaluation/    Captioning and VQA evaluation code
+models/        AnyMAL model variants, encoders, connectors, Llama wrapper
+notebooks/     Educational architecture notebook
+scripts/       Local training, data download, and analysis entrypoints
+tests/         Unit tests for model, training, evaluation, and monitoring code
+training/      Trainers, distributed helpers, health/throughput monitoring
 ```
-anymal/
-├── configs/                    # Training configurations
-│   ├── base.yaml              # Base settings
-│   ├── pretrain_image.yaml    # Stage 1 config
-│   └── finetune.yaml          # Stage 2 config
-├── data/                       # Data loading
-│   ├── laion_dataset.py       # LAION for pretraining
-│   ├── instruction_dataset.py # LLaVA for fine-tuning
-│   └── data_utils.py          # Utilities
-├── models/                     # Model components
-│   ├── anymal.py              # Main model
-│   ├── encoders/              # Vision encoders
-│   ├── projectors/            # Modality projectors
-│   └── llm/                   # LLM wrappers
-├── training/                   # Training loops
-│   ├── pretrain.py            # Stage 1 trainer
-│   ├── finetune.py            # Stage 2 trainer
-│   └── distributed.py         # Multi-GPU utilities
-├── evaluation/                 # Benchmarks
-├── scripts/                    # Entry points
-└── notebooks/                  # Educational notebooks
-```
-
-## Training Details
-
-### Stage 1: Alignment Pretraining
-
-- **Goal**: Teach projector to convert CLIP features to LLM-compatible tokens
-- **Data**: LAION image-caption pairs (~10-200M)
-- **Trainable**: Only Perceiver Resampler
-- **Hyperparameters**:
-  - Batch size: 2048 (64 per GPU × 8 GPUs × 4 accumulation)
-  - Learning rate: 2e-4
-  - Steps: 100K
-  - Time: ~1.5-2 days on 8× A100
-
-### Stage 2: Instruction Fine-tuning
-
-- **Goal**: Learn to follow multimodal instructions
-- **Data**: LLaVA-Instruct-150K
-- **Trainable**: Projector + LoRA adapters
-- **Hyperparameters**:
-  - Batch size: 256
-  - Learning rate: 1e-5
-  - Steps: 3K
-  - LoRA rank: 64
-  - Time: ~2-3 hours on 8× A100
-
-## Educational Resources
-
-Check out the Jupyter notebook in `notebooks/` for a deep dive into the architecture:
-
-- **01_understanding_architecture.ipynb**: Full architecture walkthrough
-
-## Key Concepts
-
-### Why Freeze the Encoders?
-
-- CLIP has learned excellent visual representations from 400M image-text pairs
-- LLaMA has strong language understanding from 15T tokens
-- We just need to learn the "translation" between them
-
-### Why Perceiver Resampler?
-
-- Compresses 257 tokens to 64 tokens (4× reduction)
-- Cross-attention learns task-relevant compression
-- Fixed output size regardless of input resolution
-
-### Why QLoRA?
-
-- 8B model needs ~32GB in fp32, ~16GB in fp16
-- 4-bit quantization reduces to ~4GB
-- LoRA adds only ~0.1% trainable parameters
-- Enables training on consumer GPUs
-
-## Model Specifications
-
-| Component | Specification |
-|-----------|--------------|
-| LLM | LLaMA-3-8B-Instruct |
-| Hidden size | 4,096 |
-| Vision encoder | CLIP ViT-L/14 |
-| Vision dim | 1,024 |
-| Image tokens | 64 |
-| Projector layers | 6 |
-| LoRA rank | 64 |
 
 ## Requirements
 
-- Python 3.10+
-- PyTorch 2.0+
-- 8× A100 80GB (recommended) or 1× A100 (reduced batch size)
-- ~500GB disk for data and checkpoints
+- Python 3.10 or newer recommended
+- PyTorch 2.0 or newer
+- CUDA GPU for practical training
+- Hugging Face access to Llama 3 for LLM-backed runs
+- Large disk budget for COCO/LLaVA/LAION-style data and checkpoints
+
+The default research configs target A100/H100-class GPUs. Smaller GPUs require
+reducing batch size, sequence length, image tokens, or using Modal.
+
+## Development
+
+```bash
+python3 -m pytest tests -q
+black .
+isort .
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution workflow details.
 
 ## References
 
-- [AnyMAL Paper](https://arxiv.org/abs/2309.16058)
-- [Flamingo Paper](https://arxiv.org/abs/2204.14198) (Perceiver Resampler)
-- [LLaVA](https://github.com/haotian-liu/LLaVA) (Reference implementation)
-- [QLoRA Paper](https://arxiv.org/abs/2305.14314)
+- [AnyMAL paper](https://arxiv.org/abs/2309.16058)
+- [Flamingo paper](https://arxiv.org/abs/2204.14198), for the Perceiver
+  resampler idea
+- [LLaVA](https://github.com/haotian-liu/LLaVA)
+- [QLoRA paper](https://arxiv.org/abs/2305.14314)
 
 ## License
 
-The code in this repository is licensed under the Apache License 2.0 - see [LICENSE](LICENSE) for details.
+The code in this repository is licensed under the Apache License 2.0. See
+[LICENSE](LICENSE).
 
-**Important:** This project depends on components with their own licenses. Users must comply with all applicable licenses, particularly:
-
-- **Meta Llama 3**: Using the LLM weights requires acceptance of the [Llama 3 Community License Agreement](https://llama.meta.com/llama3/license/), which has restrictions on commercial use and other terms not covered by Apache 2.0.
-
-### Third-Party Licenses & Attributions
-
-This project uses the following resources:
-
-- **LLaMA-3**: [Meta Llama 3 Community License](https://llama.meta.com/llama3/license/)
-- **CLIP**: MIT License - OpenAI
-- **LAION**: CC-BY-4.0
-- **LLaVA-Instruct**: Apache 2.0
-
-#### COCO Dataset Attribution
-
-This project uses images from the [COCO (Common Objects in Context)](https://cocodataset.org/) dataset.
-
-> COCO is a large-scale object detection, segmentation, and captioning dataset.
-> - Created by Microsoft COCO team
-> - Lin, T.Y., et al. (2014). Microsoft COCO: Common Objects in Context. In: Fleet, D., Pajdla, T., Schiele, B., Tuytelaars, T. (eds) ECCV 2014. [arXiv:1405.0312](https://arxiv.org/abs/1405.0312)
-
-The COCO dataset is licensed under [Creative Commons Attribution 4.0 License (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/).
+Users are responsible for complying with third-party model and dataset licenses,
+including the Meta Llama 3 license, CLIP/OpenCLIP terms, SigLIP2/Hugging Face
+model terms, LAION dataset terms, LLaVA dataset terms, and COCO dataset terms.

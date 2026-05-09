@@ -7,7 +7,7 @@ This script generates synthetic test data without requiring any real datasets:
 2. LLaVA-style instruction data for Stage 2 (fine-tuning)
 
 Usage:
-    python scripts/create_dummy_data.py
+    python3 scripts/create_dummy_data.py
 
 Output structure:
     data/
@@ -260,8 +260,8 @@ def main():
     print(f"  Stage 2 (Images): {dummy_images_dir}")
     print()
     print("To test training:")
-    print("  Stage 1: python scripts/train_pretrain.py --config configs/pretrain_image.yaml --debug")
-    print("  Stage 2: python scripts/train_finetune.py --config configs/finetune.yaml --debug")
+    print("  Stage 1: python3 scripts/train_pretrain.py --config configs/pretrain_image.yaml --debug")
+    print("  Stage 2: python3 scripts/train_finetune.py --config configs/finetune.yaml --debug")
 
 
 if __name__ == "__main__":
