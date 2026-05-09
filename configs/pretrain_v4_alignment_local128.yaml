@@ -1,0 +1,20 @@
+# AnyMALv4 Stage 1A A2b: Expanded Local 192-token Caption Alignment
+
+defaults:
+  - pretrain_v4_alignment
+
+stage_name: "caption_alignment_v4_local128"
+
+model:
+  num_global_image_tokens: 64
+  num_local_image_tokens: 128
+  num_image_tokens: 192
+
+data:
+  max_length: 576
+
+logging:
+  wandb_run_name: "stage1a-v4-spatial-local128-caption-alignment"
+
+checkpointing:
+  output_dir: "./outputs/pretrain_v4_alignment_local128"

@@ -1,0 +1,15 @@
+# AnyMALv4 Stage 1A A4: No-2D-Position Caption Alignment
+
+defaults:
+  - pretrain_v4_alignment
+
+stage_name: "caption_alignment_v4_no2dpos"
+
+model:
+  use_2d_position_features: false
+
+logging:
+  wandb_run_name: "stage1a-v4-spatial-no2dpos-caption-alignment"
+
+checkpointing:
+  output_dir: "./outputs/pretrain_v4_alignment_no2dpos"

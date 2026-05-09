@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, Tuple
 
 MODEL_META_FILENAME = "model_meta.json"
 DEFAULT_LEGACY_ARCHITECTURE = "anymal_v1"
-VALID_ARCHITECTURES = {"anymal_v1", "anymal_v2", "anymal_v3"}
+VALID_ARCHITECTURES = {"anymal_v1", "anymal_v2", "anymal_v3", "anymal_v4"}
 
 
 def normalize_architecture_name(name: Optional[str]) -> str:
@@ -29,6 +29,9 @@ def normalize_architecture_name(name: Optional[str]) -> str:
         "v3": "anymal_v3",
         "anymal_v3": "anymal_v3",
         "anymalv3": "anymal_v3",
+        "v4": "anymal_v4",
+        "anymal_v4": "anymal_v4",
+        "anymalv4": "anymal_v4",
     }
     normalized = aliases.get(normalized, normalized)
     if normalized not in VALID_ARCHITECTURES:

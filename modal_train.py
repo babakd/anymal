@@ -75,6 +75,18 @@ GPU_MODAL_RESOURCES = {
 STAGE1_PRETRAIN_TIMEOUT_SECONDS = 24 * 60 * 60
 STAGE2_TRAINER_TIMEOUT_SECONDS = 24 * 60 * 60
 
+# V4 direct-to-LLM 4096-wide connector clipped persistently in Stage 1A. The
+# active default is a bottlenecked spatial connector; explicit CLI flags can
+# still reproduce the historical direct connector ablation.
+V4_DEFAULT_CONNECTOR_LAYERS = 3
+V4_DEFAULT_CONNECTOR_HEADS = 8
+V4_DEFAULT_CONNECTOR_FF_MULT = 2
+V4_DEFAULT_CONNECTOR_HIDDEN_DIM = 1024
+V4_DEFAULT_CONNECTOR_OUTPUT_SCALE = 1.0
+V4_DEFAULT_CONNECTOR_OUTPUT_GATE_INIT = 0.0001
+V4_DEFAULT_CONNECTOR_TYPE = "spatial_perceiver_resampler"
+V4_LEGACY_DIRECT_CONNECTOR_HIDDEN_DIM = 4096
+
 
 def _normalize_gpu_type(gpu_type: str) -> str:
     """Normalize user-facing GPU type flag to known keys."""
@@ -91,6 +103,65 @@ def _normalize_architecture_key(architecture: str) -> str:
     from model_metadata import normalize_architecture_name
 
     return normalize_architecture_name(architecture)
+
+
+def _resolve_v4_token_split(
+    total_tokens=None,
+    global_tokens=None,
+    local_tokens=None,
+):
+    """Resolve V4 global/local visual-token split for Modal ablations."""
+    if total_tokens is None and global_tokens is None and local_tokens is None:
+        return 64, 64, 128
+    if global_tokens is not None:
+        global_tokens = int(global_tokens)
+    if local_tokens is not None:
+        local_tokens = int(local_tokens)
+    if total_tokens is not None:
+        total_tokens = int(total_tokens)
+
+    if global_tokens is None and local_tokens is None:
+        if total_tokens <= 0:
+            raise ValueError(f"V4 total image tokens must be > 0, got {total_tokens}")
+        if total_tokens % 2 != 0:
+            raise ValueError(
+                "V4 even split requires --pretrain-image-tokens to be even when "
+                "global/local counts are not provided."
+            )
+        global_tokens = total_tokens // 2
+        local_tokens = total_tokens // 2
+    elif global_tokens is None:
+        global_tokens = total_tokens - local_tokens
+    elif local_tokens is None:
+        local_tokens = total_tokens - global_tokens
+    elif total_tokens is None:
+        total_tokens = global_tokens + local_tokens
+
+    if global_tokens < 0 or local_tokens < 0:
+        raise ValueError(
+            "V4 global/local image tokens must be >= 0, got "
+            f"global={global_tokens}, local={local_tokens}."
+        )
+    if global_tokens + local_tokens <= 0:
+        raise ValueError("V4 requires at least one image token.")
+    if total_tokens != global_tokens + local_tokens:
+        raise ValueError(
+            "V4 token split mismatch: "
+            f"total={total_tokens}, global={global_tokens}, local={local_tokens}."
+        )
+    return global_tokens, local_tokens, total_tokens
+
+
+def _parse_v4_hidden_state_indices(value):
+    """Parse Modal-friendly comma-separated V4 hidden-state indices."""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [int(v) for v in value]
+    text = str(value).strip()
+    if not text:
+        return None
+    return [int(part.strip()) for part in text.split(",") if part.strip()]
 
 
 def _resolve_modal_gpu(stage: str, gpu_type: str) -> str:
@@ -258,6 +329,18 @@ def _checkpoint_matches_run_config(
     checkpoint_dir: str,
     expected_architecture: str,
     token_compressor_type: str = None,
+    v4_connector_type: str = None,
+    v4_global_image_tokens: int = None,
+    v4_local_image_tokens: int = None,
+    v4_connector_layers: int = None,
+    v4_connector_heads: int = None,
+    v4_connector_ff_mult: int = None,
+    v4_connector_hidden_dim: int = None,
+    v4_connector_output_scale: float = None,
+    v4_connector_output_gate_init: float = None,
+    v4_use_2d_position_features: bool = None,
+    v4_deepstack_num_feature_levels: int = None,
+    v4_deepstack_hidden_state_indices: str = None,
 ) -> bool:
     """Return whether a checkpoint is compatible with the requested run config."""
     from model_metadata import read_model_metadata, validate_checkpoint_architecture
@@ -270,19 +353,89 @@ def _checkpoint_matches_run_config(
     except RuntimeError:
         return False
 
-    if expected_architecture != "anymal_v2" or not token_compressor_type:
-        return True
-
     meta = read_model_metadata(checkpoint_dir) or {}
-    checkpoint_compressor = meta.get("token_compressor_type")
-    if checkpoint_compressor and checkpoint_compressor != token_compressor_type:
-        print(
-            f"Skipping checkpoint {checkpoint_dir}: token_compressor_type="
-            f"{checkpoint_compressor!r}, requested={token_compressor_type!r}"
-        )
-        return False
+    if expected_architecture == "anymal_v2" and token_compressor_type:
+        checkpoint_compressor = meta.get("token_compressor_type")
+        if checkpoint_compressor and checkpoint_compressor != token_compressor_type:
+            print(
+                f"Skipping checkpoint {checkpoint_dir}: token_compressor_type="
+                f"{checkpoint_compressor!r}, requested={token_compressor_type!r}"
+            )
+            return False
+
+    if expected_architecture == "anymal_v4":
+        parsed_layers = _parse_v4_hidden_state_indices(v4_deepstack_hidden_state_indices)
+        expected_values = {
+            "connector_type": v4_connector_type,
+            "num_global_image_tokens": v4_global_image_tokens,
+            "num_local_image_tokens": v4_local_image_tokens,
+            "connector_layers": v4_connector_layers,
+            "connector_heads": v4_connector_heads,
+            "connector_ff_mult": v4_connector_ff_mult,
+            "connector_hidden_dim": v4_connector_hidden_dim,
+            "connector_output_scale": v4_connector_output_scale,
+            "connector_output_gate_init": v4_connector_output_gate_init,
+            "use_2d_position_features": v4_use_2d_position_features,
+            "deepstack_num_feature_levels": v4_deepstack_num_feature_levels,
+            "deepstack_hidden_state_indices": parsed_layers,
+            "vision_feature_layers": parsed_layers,
+        }
+        for key, expected in expected_values.items():
+            if expected is None:
+                continue
+            checkpoint_value = meta.get(key)
+            if checkpoint_value != expected:
+                print(
+                    f"Skipping checkpoint {checkpoint_dir}: {key}="
+                    f"{checkpoint_value!r}, requested={expected!r}"
+                )
+                return False
 
     return True
+
+
+def _auto_discover_pretrain_checkpoint(
+    arch_key: str,
+    token_compressor_type: str = None,
+    v4_connector_type: str = None,
+    v4_global_image_tokens: int = None,
+    v4_local_image_tokens: int = None,
+    v4_connector_layers: int = None,
+    v4_connector_heads: int = None,
+    v4_connector_ff_mult: int = None,
+    v4_connector_hidden_dim: int = None,
+    v4_connector_output_scale: float = None,
+    v4_connector_output_gate_init: float = None,
+    v4_use_2d_position_features: bool = None,
+    v4_deepstack_num_feature_levels: int = None,
+    v4_deepstack_hidden_state_indices: str = None,
+):
+    pretrain_dir = "/checkpoints/pretrain-output"
+    compatible_candidates = []
+    for mtime, step, path in _collect_checkpoint_candidates(pretrain_dir):
+        if _checkpoint_matches_run_config(
+            checkpoint_dir=path,
+            expected_architecture=arch_key,
+            token_compressor_type=token_compressor_type,
+            v4_connector_type=v4_connector_type,
+            v4_global_image_tokens=v4_global_image_tokens,
+            v4_local_image_tokens=v4_local_image_tokens,
+            v4_connector_layers=v4_connector_layers,
+            v4_connector_heads=v4_connector_heads,
+            v4_connector_ff_mult=v4_connector_ff_mult,
+            v4_connector_hidden_dim=v4_connector_hidden_dim,
+            v4_connector_output_scale=v4_connector_output_scale,
+            v4_connector_output_gate_init=v4_connector_output_gate_init,
+            v4_use_2d_position_features=v4_use_2d_position_features,
+            v4_deepstack_num_feature_levels=v4_deepstack_num_feature_levels,
+            v4_deepstack_hidden_state_indices=v4_deepstack_hidden_state_indices,
+        ):
+            compatible_candidates.append((mtime, step, path))
+    if not compatible_candidates:
+        return None
+    compatible_candidates.sort(key=lambda x: (x[0], x[1]))
+    _mtime, _step, checkpoint = compatible_candidates[-1]
+    return checkpoint
 
 
 @app.cls(
@@ -640,6 +793,25 @@ class Trainer:
         run_name: str = None,
         pretrain_image_tokens: int = None,
         projector_warmup_steps: int = None,
+        freeze_connector: bool = False,
+        finetune_loss_scale: float = 1.0,
+        connector_warmup_steps: int = 0,
+        pretrain_loss_scale: float = 1.0,
+        pretrain_loss_normalization: str = "mean",
+        pretrain_loss_normalization_target_tokens: float = 8.0,
+        pretrain_gradient_accumulation_steps: int = 8,
+        v4_global_image_tokens: int = None,
+        v4_local_image_tokens: int = None,
+        v4_connector_layers: int = None,
+        v4_connector_heads: int = None,
+        v4_connector_ff_mult: int = None,
+        v4_connector_hidden_dim: int = None,
+        v4_connector_output_scale: float = None,
+        v4_connector_output_gate_init: float = None,
+        v4_use_2d_position_features: bool = True,
+        v4_connector_type: str = None,
+        v4_deepstack_num_feature_levels: int = None,
+        v4_deepstack_hidden_state_indices: str = None,
     ):
         """
         Run AnyMAL training on Modal.
@@ -659,6 +831,7 @@ class Trainer:
             resume_checkpoint: Path to checkpoint to resume training from
             dataset: Dataset to use for finetune ("instruct_150k" or "mix_665k")
             projector_warmup_steps: Zero connector gradients for this many Stage 2 steps
+            freeze_connector: Freeze the multimodal connector during Stage 2 and train LoRA only
         """
         import sys
         sys.path.insert(0, "/root/anymal")
@@ -677,10 +850,30 @@ class Trainer:
         from training.distributed import print_rank_0
 
         arch_key = _normalize_architecture_key(architecture)
-        if arch_key == "anymal_v3" and dataset == "instruct_150k":
+        if arch_key in {"anymal_v3", "anymal_v4"} and dataset == "instruct_150k":
             dataset = "v3_grounded"
-        if pretrain_image_tokens is None:
-            pretrain_image_tokens = 128 if arch_key == "anymal_v3" else 256
+        if arch_key in {"anymal_v3", "anymal_v4"} and dataset in {
+            "v3_direct_calibration",
+            "v3_yesno_calibrated",
+            "v4_direct_calibration",
+            "v4_semantic_calibration",
+        }:
+            freeze_connector = True
+        if pretrain_image_tokens is None and (stage == "pretrain" or arch_key != "anymal_v4"):
+            pretrain_image_tokens = 128 if arch_key in {"anymal_v3", "anymal_v4"} else 256
+        v4_global_tokens = None
+        v4_local_tokens = None
+        if arch_key == "anymal_v4" and (
+            stage == "pretrain"
+            or pretrain_image_tokens is not None
+            or v4_global_image_tokens is not None
+            or v4_local_image_tokens is not None
+        ):
+            v4_global_tokens, v4_local_tokens, pretrain_image_tokens = _resolve_v4_token_split(
+                total_tokens=pretrain_image_tokens,
+                global_tokens=v4_global_image_tokens,
+                local_tokens=v4_local_image_tokens,
+            )
 
         print_rank_0("=" * 60)
         print_rank_0(f"AnyMAL Training on Modal")
@@ -711,13 +904,28 @@ class Trainer:
                 dataset=dataset,
                 run_name=run_name,
                 projector_warmup_steps=projector_warmup_steps,
+                train_adapter=not freeze_connector,
+                finetune_loss_scale=finetune_loss_scale,
+                pretrain_image_tokens=pretrain_image_tokens,
+                v4_global_image_tokens=v4_global_tokens,
+                v4_local_image_tokens=v4_local_tokens,
+                v4_connector_layers=v4_connector_layers,
+                v4_connector_heads=v4_connector_heads,
+                v4_connector_ff_mult=v4_connector_ff_mult,
+                v4_connector_hidden_dim=v4_connector_hidden_dim,
+                v4_connector_output_scale=v4_connector_output_scale,
+                v4_connector_output_gate_init=v4_connector_output_gate_init,
+                v4_use_2d_position_features=v4_use_2d_position_features,
+                v4_connector_type=v4_connector_type,
+                v4_deepstack_num_feature_levels=v4_deepstack_num_feature_levels,
+                v4_deepstack_hidden_state_indices=v4_deepstack_hidden_state_indices,
             )
         else:
             lr = learning_rate or 2e-4
             effective_pretrain_image_tokens = (
                 pretrain_image_tokens
                 if pretrain_image_tokens is not None
-                else (128 if arch_key == "anymal_v3" else 256)
+                else (128 if arch_key in {"anymal_v3", "anymal_v4"} else 256)
             )
             pretrain_output_dir = _resolve_run_output_dir(
                 base_dir="/checkpoints/pretrain-output",
@@ -739,6 +947,23 @@ class Trainer:
                 output_dir=pretrain_output_dir,
                 pretrain_image_tokens=effective_pretrain_image_tokens,
                 dataset=dataset,
+                connector_warmup_steps=connector_warmup_steps,
+                pretrain_loss_scale=pretrain_loss_scale,
+                pretrain_loss_normalization=pretrain_loss_normalization,
+                pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
+                pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
+                v4_global_image_tokens=v4_global_tokens,
+                v4_local_image_tokens=v4_local_tokens,
+                v4_connector_layers=v4_connector_layers,
+                v4_connector_heads=v4_connector_heads,
+                v4_connector_ff_mult=v4_connector_ff_mult,
+                v4_connector_hidden_dim=v4_connector_hidden_dim,
+                v4_connector_output_scale=v4_connector_output_scale,
+                v4_connector_output_gate_init=v4_connector_output_gate_init,
+                v4_use_2d_position_features=v4_use_2d_position_features,
+                v4_connector_type=v4_connector_type,
+                v4_deepstack_num_feature_levels=v4_deepstack_num_feature_levels,
+                v4_deepstack_hidden_state_indices=v4_deepstack_hidden_state_indices,
             )
 
         # Save outputs to volume
@@ -888,7 +1113,7 @@ def _load_full_finetune_checkpoint(model, checkpoint_path: str):
             "max_image_tokens": getattr(model, "max_image_tokens", None),
             "min_image_tokens": getattr(model, "min_image_tokens", None),
         }
-    elif expected_arch == "anymal_v3":
+    elif expected_arch in {"anymal_v3", "anymal_v4"}:
         expected_values = {
             "vision_encoder_type": getattr(model, "vision_encoder_type", None),
             "connector_type": getattr(model, "connector_type", None),
@@ -897,6 +1122,30 @@ def _load_full_finetune_checkpoint(model, checkpoint_path: str):
             "connector_heads": getattr(model, "connector_heads", None),
             "connector_ff_mult": getattr(model, "connector_ff_mult", None),
         }
+        if expected_arch == "anymal_v4":
+            expected_values.update(
+                {
+                    "num_global_image_tokens": getattr(model, "num_global_image_tokens", None),
+                    "num_local_image_tokens": getattr(model, "num_local_image_tokens", None),
+                    "use_2d_position_features": getattr(model, "use_2d_position_features", None),
+                }
+            )
+            if getattr(model, "connector_type", None) == "deepstack_spatial_perceiver_resampler":
+                expected_values.update(
+                    {
+                        "deepstack_num_feature_levels": getattr(
+                            model,
+                            "deepstack_num_feature_levels",
+                            None,
+                        ),
+                        "deepstack_hidden_state_indices": list(
+                            getattr(model, "deepstack_hidden_state_indices", [])
+                        ),
+                        "vision_feature_layers": list(
+                            getattr(model, "deepstack_hidden_state_indices", [])
+                        ),
+                    }
+                )
     validate_checkpoint_metadata_values(
         checkpoint_dir=checkpoint_path,
         expected_architecture=expected_arch,
@@ -931,7 +1180,18 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                   track_per_layer_grad_norms=True, run_eval_benchmarks=False,
                   pretrain_checkpoint=None, finetune_checkpoint=None, resume_checkpoint=None,
                   lora_learning_rate=None, dataset="instruct_150k",
-                  run_name=None, projector_warmup_steps=None):
+                  run_name=None, projector_warmup_steps=None, train_adapter=True,
+                  finetune_loss_scale=1.0,
+                  pretrain_image_tokens=None,
+                  v4_global_image_tokens=None, v4_local_image_tokens=None,
+                  v4_connector_layers=None, v4_connector_heads=None,
+                  v4_connector_ff_mult=None, v4_connector_hidden_dim=None,
+                  v4_connector_output_scale=None,
+                  v4_connector_output_gate_init=None,
+                  v4_use_2d_position_features=True,
+                  v4_connector_type=None,
+                  v4_deepstack_num_feature_levels=None,
+                  v4_deepstack_hidden_state_indices=None):
     """Run Stage 2 fine-tuning with real COCO images."""
     import torch
     from models import create_model_from_config
@@ -947,10 +1207,72 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
     # Initialize model
     print("Initializing model...")
     arch_key = _normalize_architecture_key(architecture)
+    if finetune_checkpoint:
+        pretrain_checkpoint = None
+        print("Skipping Stage 1 checkpoint load because full Stage 2 checkpoint is loaded.")
+    elif pretrain_checkpoint is None:
+        pretrain_checkpoint = _auto_discover_pretrain_checkpoint(
+            arch_key=arch_key,
+            token_compressor_type=token_compressor_type,
+            v4_global_image_tokens=v4_global_image_tokens,
+            v4_local_image_tokens=v4_local_image_tokens,
+            v4_connector_layers=v4_connector_layers,
+            v4_connector_heads=v4_connector_heads,
+            v4_connector_ff_mult=v4_connector_ff_mult,
+            v4_connector_hidden_dim=v4_connector_hidden_dim,
+            v4_connector_output_scale=v4_connector_output_scale,
+            v4_connector_output_gate_init=v4_connector_output_gate_init,
+            v4_connector_type=v4_connector_type,
+            v4_use_2d_position_features=(
+                bool(v4_use_2d_position_features)
+                if v4_use_2d_position_features is not None
+                else None
+            ),
+            v4_deepstack_num_feature_levels=v4_deepstack_num_feature_levels,
+            v4_deepstack_hidden_state_indices=v4_deepstack_hidden_state_indices,
+        )
+        if pretrain_checkpoint:
+            print(f"Auto-discovered pretrain checkpoint: {pretrain_checkpoint}")
+    if arch_key == "anymal_v4" and pretrain_checkpoint:
+        from model_metadata import read_model_metadata
+
+        meta = read_model_metadata(pretrain_checkpoint) or {}
+        if v4_global_image_tokens is None:
+            v4_global_image_tokens = meta.get("num_global_image_tokens")
+        if v4_local_image_tokens is None:
+            v4_local_image_tokens = meta.get("num_local_image_tokens")
+        if pretrain_image_tokens is None:
+            pretrain_image_tokens = meta.get("num_image_tokens")
+        if v4_connector_layers is None:
+            v4_connector_layers = meta.get("connector_layers")
+        if v4_connector_heads is None:
+            v4_connector_heads = meta.get("connector_heads")
+        if v4_connector_ff_mult is None:
+            v4_connector_ff_mult = meta.get("connector_ff_mult")
+        if v4_connector_hidden_dim is None:
+            v4_connector_hidden_dim = meta.get("connector_hidden_dim")
+            if v4_connector_hidden_dim is None and meta.get("project_directly_to_llm_dim", True):
+                v4_connector_hidden_dim = V4_LEGACY_DIRECT_CONNECTOR_HIDDEN_DIM
+        if v4_connector_output_scale is None:
+            v4_connector_output_scale = meta.get("connector_output_scale")
+        if v4_connector_output_gate_init is None:
+            v4_connector_output_gate_init = meta.get("connector_output_gate_init")
+        if v4_connector_type is None:
+            v4_connector_type = meta.get("connector_type")
+        if v4_deepstack_num_feature_levels is None:
+            v4_deepstack_num_feature_levels = meta.get("deepstack_num_feature_levels")
+        if v4_deepstack_hidden_state_indices is None:
+            v4_deepstack_hidden_state_indices = (
+                meta.get("deepstack_hidden_state_indices")
+                or meta.get("vision_feature_layers")
+            )
+        if "use_2d_position_features" in meta:
+            v4_use_2d_position_features = bool(meta["use_2d_position_features"])
     model_cfg = {
         "model": {
             "architecture": arch_key,
             "llm_model_name": llama_path,
+            "cache_dir": "/checkpoints/hf_cache",
             "use_qlora": True,
             "lora_r": 64,
             "lora_alpha": 16,
@@ -995,7 +1317,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         dataset_vision_type = "siglip2"
         dataset_vision_model = "google/siglip2-so400m-patch14-384"
         dataset_max_length = 2304
-    else:
+    elif arch_key == "anymal_v3":
         model_cfg["model"].update(
             {
                 "vision_encoder_type": "siglip2",
@@ -1016,6 +1338,66 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         dataset_vision_type = "siglip2"
         dataset_vision_model = "google/siglip2-so400m-patch14-384"
         dataset_max_length = 1536
+    else:
+        v4_global_tokens, v4_local_tokens, v4_total_tokens = _resolve_v4_token_split(
+            total_tokens=pretrain_image_tokens,
+            global_tokens=v4_global_image_tokens,
+            local_tokens=v4_local_image_tokens,
+        )
+        resolved_v4_connector_type = v4_connector_type or V4_DEFAULT_CONNECTOR_TYPE
+        resolved_deepstack_layers = _parse_v4_hidden_state_indices(
+            v4_deepstack_hidden_state_indices
+        )
+        resolved_deepstack_levels = (
+            int(v4_deepstack_num_feature_levels)
+            if v4_deepstack_num_feature_levels is not None
+            else (len(resolved_deepstack_layers) if resolved_deepstack_layers else None)
+        )
+        model_cfg["model"].update(
+            {
+                "vision_encoder_type": "siglip2",
+                "vision_model_name": "google/siglip2-so400m-patch14-384",
+                "connector_type": resolved_v4_connector_type,
+                "num_global_image_tokens": v4_global_tokens,
+                "num_local_image_tokens": v4_local_tokens,
+                "num_image_tokens": v4_total_tokens,
+                "connector_layers": int(v4_connector_layers or V4_DEFAULT_CONNECTOR_LAYERS),
+                "connector_heads": int(v4_connector_heads or V4_DEFAULT_CONNECTOR_HEADS),
+                "connector_ff_mult": int(v4_connector_ff_mult or V4_DEFAULT_CONNECTOR_FF_MULT),
+                "connector_hidden_dim": (
+                    int(v4_connector_hidden_dim)
+                    if v4_connector_hidden_dim is not None
+                    else V4_DEFAULT_CONNECTOR_HIDDEN_DIM
+                ),
+                "connector_output_scale": (
+                    float(v4_connector_output_scale)
+                    if v4_connector_output_scale is not None
+                    else V4_DEFAULT_CONNECTOR_OUTPUT_SCALE
+                ),
+                "connector_output_gate_init": (
+                    float(v4_connector_output_gate_init)
+                    if v4_connector_output_gate_init is not None
+                    else None
+                ),
+                "use_2d_position_features": bool(v4_use_2d_position_features),
+                "project_directly_to_llm_dim": False,
+            }
+        )
+        if resolved_v4_connector_type == "deepstack_spatial_perceiver_resampler":
+            model_cfg["model"].update(
+                {
+                    "deepstack_num_feature_levels": resolved_deepstack_levels or 3,
+                    "deepstack_hidden_state_indices": resolved_deepstack_layers,
+                }
+            )
+        dataset_num_image_tokens = v4_total_tokens
+        dataset_policy = "fixed"
+        dataset_min_tokens = v4_total_tokens
+        dataset_max_tokens = v4_total_tokens
+        dataset_image_size = 384
+        dataset_vision_type = "siglip2"
+        dataset_vision_model = "google/siglip2-so400m-patch14-384"
+        dataset_max_length = v4_total_tokens + 1408
 
     model = create_model_from_config(model_cfg)
     if finetune_checkpoint:
@@ -1089,28 +1471,6 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
     )
     print(f"Finetune checkpoints will be written to: {finetune_output_dir}")
 
-    # Auto-discover pretrain checkpoint if not explicitly provided
-    if finetune_checkpoint:
-        pretrain_checkpoint = None
-        print("Skipping Stage 1 checkpoint load because full Stage 2 checkpoint is loaded.")
-    elif pretrain_checkpoint is None:
-        pretrain_dir = "/checkpoints/pretrain-output"
-        candidates = _collect_checkpoint_candidates(pretrain_dir)
-        compatible_candidates = []
-        for mtime, step, path in candidates:
-            if _checkpoint_matches_run_config(
-                checkpoint_dir=path,
-                expected_architecture=arch_key,
-                token_compressor_type=token_compressor_type,
-            ):
-                compatible_candidates.append((mtime, step, path))
-        candidates = compatible_candidates
-        if candidates:
-            # Choose most recently modified checkpoint, break ties by step.
-            candidates.sort(key=lambda x: (x[0], x[1]))
-            _mtime, _step, pretrain_checkpoint = candidates[-1]
-            print(f"Auto-discovered pretrain checkpoint: {pretrain_checkpoint}")
-
     if pretrain_checkpoint:
         print(f"Will load Stage 1 projector from: {pretrain_checkpoint}")
     elif finetune_checkpoint:
@@ -1121,7 +1481,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
 
     # Create trainer config
     eval_steps = max(50, max_steps // 10)  # ~10 eval points during training
-    default_projector_warmup_steps = 0 if arch_key in {"anymal_v2", "anymal_v3"} else 200
+    default_projector_warmup_steps = 0 if arch_key in {"anymal_v2", "anymal_v3", "anymal_v4"} else 200
     if projector_warmup_steps is None:
         projector_warmup_steps = default_projector_warmup_steps
 
@@ -1149,6 +1509,8 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         finetune_checkpoint=finetune_checkpoint,
         resume_from_checkpoint=resume_checkpoint,
         projector_warmup_steps=projector_warmup_steps,
+        train_adapter=bool(train_adapter),
+        loss_scale=float(finetune_loss_scale or 1.0),
     )
 
     # Train
@@ -1216,8 +1578,27 @@ def run_pretrain(
     resume_checkpoint=None,
     pretrain_checkpoint=None,
     output_dir="/checkpoints/pretrain-output",
+    run_name=None,
     pretrain_image_tokens=None,
     dataset="llava_pretrain",
+    connector_warmup_steps=0,
+    pretrain_loss_scale=1.0,
+    pretrain_loss_normalization="mean",
+    pretrain_loss_normalization_target_tokens=8.0,
+    pretrain_gradient_accumulation_steps=8,
+    pretrain_save_steps=None,
+    v4_global_image_tokens=None,
+    v4_local_image_tokens=None,
+    v4_connector_layers=None,
+    v4_connector_heads=None,
+    v4_connector_ff_mult=None,
+    v4_connector_hidden_dim=None,
+    v4_connector_output_scale=None,
+    v4_connector_output_gate_init=None,
+    v4_use_2d_position_features=True,
+    v4_connector_type=None,
+    v4_deepstack_num_feature_levels=None,
+    v4_deepstack_hidden_state_indices=None,
 ):
     """Run Stage 1 pretraining with real COCO images."""
     import torch
@@ -1242,10 +1623,46 @@ def run_pretrain(
     # For DDP, disable device_map so each process places model on its own GPU
     device_map = None if distributed else "auto"
     arch_key = _normalize_architecture_key(architecture)
+    if arch_key == "anymal_v4" and (pretrain_checkpoint or resume_checkpoint):
+        from model_metadata import read_model_metadata
+
+        meta = read_model_metadata(pretrain_checkpoint or resume_checkpoint) or {}
+        if v4_global_image_tokens is None:
+            v4_global_image_tokens = meta.get("num_global_image_tokens")
+        if v4_local_image_tokens is None:
+            v4_local_image_tokens = meta.get("num_local_image_tokens")
+        if pretrain_image_tokens is None:
+            pretrain_image_tokens = meta.get("num_image_tokens")
+        if v4_connector_layers is None:
+            v4_connector_layers = meta.get("connector_layers")
+        if v4_connector_heads is None:
+            v4_connector_heads = meta.get("connector_heads")
+        if v4_connector_ff_mult is None:
+            v4_connector_ff_mult = meta.get("connector_ff_mult")
+        if v4_connector_hidden_dim is None:
+            v4_connector_hidden_dim = meta.get("connector_hidden_dim")
+            if v4_connector_hidden_dim is None and meta.get("project_directly_to_llm_dim", True):
+                v4_connector_hidden_dim = V4_LEGACY_DIRECT_CONNECTOR_HIDDEN_DIM
+        if v4_connector_output_scale is None:
+            v4_connector_output_scale = meta.get("connector_output_scale")
+        if v4_connector_output_gate_init is None:
+            v4_connector_output_gate_init = meta.get("connector_output_gate_init")
+        if v4_connector_type is None:
+            v4_connector_type = meta.get("connector_type")
+        if v4_deepstack_num_feature_levels is None:
+            v4_deepstack_num_feature_levels = meta.get("deepstack_num_feature_levels")
+        if v4_deepstack_hidden_state_indices is None:
+            v4_deepstack_hidden_state_indices = (
+                meta.get("deepstack_hidden_state_indices")
+                or meta.get("vision_feature_layers")
+            )
+        if "use_2d_position_features" in meta:
+            v4_use_2d_position_features = bool(meta["use_2d_position_features"])
     model_cfg = {
         "model": {
             "architecture": arch_key,
             "llm_model_name": llama_path,
+            "cache_dir": "/checkpoints/hf_cache",
             "use_qlora": False,  # No LoRA for Stage 1
             "use_lora": False,
             "gradient_checkpointing": True,
@@ -1286,7 +1703,7 @@ def run_pretrain(
         pretrain_image_size = 384
         pretrain_vision_type = "siglip2"
         pretrain_vision_model = "google/siglip2-so400m-patch14-384"
-    else:
+    elif arch_key == "anymal_v3":
         pretrain_num_image_tokens = int(pretrain_image_tokens or 128)
         if pretrain_num_image_tokens <= 0:
             raise ValueError(f"pretrain_image_tokens must be > 0, got {pretrain_image_tokens}")
@@ -1307,6 +1724,67 @@ def run_pretrain(
         pretrain_image_size = 384
         pretrain_vision_type = "siglip2"
         pretrain_vision_model = "google/siglip2-so400m-patch14-384"
+    else:
+        v4_global_tokens, v4_local_tokens, pretrain_num_image_tokens = _resolve_v4_token_split(
+            total_tokens=pretrain_image_tokens,
+            global_tokens=v4_global_image_tokens,
+            local_tokens=v4_local_image_tokens,
+        )
+        resolved_v4_connector_type = v4_connector_type or V4_DEFAULT_CONNECTOR_TYPE
+        resolved_deepstack_layers = _parse_v4_hidden_state_indices(
+            v4_deepstack_hidden_state_indices
+        )
+        resolved_deepstack_levels = (
+            int(v4_deepstack_num_feature_levels)
+            if v4_deepstack_num_feature_levels is not None
+            else (len(resolved_deepstack_layers) if resolved_deepstack_layers else None)
+        )
+        model_cfg["model"].update(
+            {
+                "vision_encoder_type": "siglip2",
+                "vision_model_name": "google/siglip2-so400m-patch14-384",
+                "connector_type": resolved_v4_connector_type,
+                "num_global_image_tokens": v4_global_tokens,
+                "num_local_image_tokens": v4_local_tokens,
+                "num_image_tokens": pretrain_num_image_tokens,
+                "connector_layers": int(v4_connector_layers or V4_DEFAULT_CONNECTOR_LAYERS),
+                "connector_heads": int(v4_connector_heads or V4_DEFAULT_CONNECTOR_HEADS),
+                "connector_ff_mult": int(v4_connector_ff_mult or V4_DEFAULT_CONNECTOR_FF_MULT),
+                "connector_hidden_dim": (
+                    int(v4_connector_hidden_dim)
+                    if v4_connector_hidden_dim is not None
+                    else V4_DEFAULT_CONNECTOR_HIDDEN_DIM
+                ),
+                "connector_output_scale": (
+                    float(v4_connector_output_scale)
+                    if v4_connector_output_scale is not None
+                    else V4_DEFAULT_CONNECTOR_OUTPUT_SCALE
+                ),
+                "connector_output_gate_init": (
+                    float(v4_connector_output_gate_init)
+                    if v4_connector_output_gate_init is not None
+                    else (
+                        None
+                        if pretrain_checkpoint or resume_checkpoint
+                        else V4_DEFAULT_CONNECTOR_OUTPUT_GATE_INIT
+                    )
+                ),
+                "use_2d_position_features": bool(v4_use_2d_position_features),
+                "project_directly_to_llm_dim": False,
+            }
+        )
+        if resolved_v4_connector_type == "deepstack_spatial_perceiver_resampler":
+            model_cfg["model"].update(
+                {
+                    "deepstack_num_feature_levels": resolved_deepstack_levels or 3,
+                    "deepstack_hidden_state_indices": resolved_deepstack_layers,
+                }
+            )
+        insert_placeholders = True
+        pretrain_max_length = pretrain_num_image_tokens + 384
+        pretrain_image_size = 384
+        pretrain_vision_type = "siglip2"
+        pretrain_vision_model = "google/siglip2-so400m-patch14-384"
 
     model = create_model_from_config(
         model_cfg,
@@ -1317,13 +1795,58 @@ def run_pretrain(
     model.set_training_stage(1)
 
     if pretrain_checkpoint:
-        from model_metadata import validate_checkpoint_architecture
+        from model_metadata import (
+            validate_checkpoint_architecture,
+            validate_checkpoint_metadata_values,
+        )
 
         print(f"Loading Stage 1 connector weights from: {pretrain_checkpoint}")
         validate_checkpoint_architecture(
             checkpoint_dir=pretrain_checkpoint,
             expected_architecture=arch_key,
         )
+        expected_values = {}
+        if arch_key in {"anymal_v3", "anymal_v4"}:
+            expected_values = {
+                "connector_type": getattr(model, "connector_type", None),
+                "num_image_tokens": getattr(model, "num_image_tokens", None),
+                "connector_layers": getattr(model, "connector_layers", None),
+                "connector_heads": getattr(model, "connector_heads", None),
+                "connector_ff_mult": getattr(model, "connector_ff_mult", None),
+            }
+            if arch_key == "anymal_v4":
+                expected_values.update(
+                    {
+                        "num_global_image_tokens": getattr(model, "num_global_image_tokens", None),
+                        "num_local_image_tokens": getattr(model, "num_local_image_tokens", None),
+                        "connector_hidden_dim": getattr(model, "connector_hidden_dim", None),
+                        "connector_output_scale": getattr(model, "connector_output_scale", None),
+                        "connector_output_gate_init": getattr(model, "connector_output_gate_init", None),
+                        "use_2d_position_features": getattr(model, "use_2d_position_features", None),
+                    }
+                )
+                if getattr(model, "connector_type", None) == "deepstack_spatial_perceiver_resampler":
+                    expected_values.update(
+                        {
+                            "deepstack_num_feature_levels": getattr(
+                                model,
+                                "deepstack_num_feature_levels",
+                                None,
+                            ),
+                            "deepstack_hidden_state_indices": list(
+                                getattr(model, "deepstack_hidden_state_indices", [])
+                            ),
+                            "vision_feature_layers": list(
+                                getattr(model, "deepstack_hidden_state_indices", [])
+                            ),
+                        }
+                    )
+        if expected_values:
+            validate_checkpoint_metadata_values(
+                checkpoint_dir=pretrain_checkpoint,
+                expected_architecture=arch_key,
+                expected_values=expected_values,
+            )
         projector_path = os.path.join(pretrain_checkpoint, "projector.pt")
         if not os.path.exists(projector_path):
             raise FileNotFoundError(
@@ -1339,7 +1862,7 @@ def run_pretrain(
 
     # Always load real images
     print(f"Loading dataset ({dataset}) with real images...")
-    if dataset in {"llava_pretrain", "caption_alignment", "v3_caption_alignment"}:
+    if dataset in {"llava_pretrain", "caption_alignment", "v3_caption_alignment", "v4_caption_alignment"}:
         dataset = load_llava_pretrain_dataset(
             model.tokenizer,
             insert_image_placeholders=insert_placeholders,
@@ -1349,10 +1872,19 @@ def run_pretrain(
             vision_encoder_type=pretrain_vision_type,
             vision_model_name=pretrain_vision_model,
         )
-    elif dataset in {"v3_grounding", "v3_grounding_alignment"}:
+    elif dataset in {
+        "v3_grounding",
+        "v3_grounding_alignment",
+        "v4_grounding",
+        "v4_grounding_alignment",
+        "v4_answer_type_focus",
+        "v4_direct_calibration",
+        "v4_semantic_calibration",
+    }:
+        grounding_dataset_name = dataset
         dataset = load_finetune_dataset(
             model.tokenizer,
-            dataset="v3_grounding",
+            dataset=grounding_dataset_name,
             num_image_tokens=pretrain_num_image_tokens,
             image_token_policy="fixed",
             min_image_tokens=pretrain_num_image_tokens,
@@ -1409,15 +1941,18 @@ def run_pretrain(
 
     # Create trainer config
     eval_steps = max(50, max_steps // 10)
+    save_steps = int(pretrain_save_steps or _checkpoint_save_interval(max_steps))
+    print(f"Stage 1 checkpoint save steps: {save_steps}")
+
     config = PretrainConfig(
         max_steps=max_steps,
-        gradient_accumulation_steps=8,
+        gradient_accumulation_steps=int(pretrain_gradient_accumulation_steps or 8),
         learning_rate=learning_rate,
         warmup_steps=min(100, max_steps // 10),
         use_amp=True,
         amp_dtype="bfloat16",
         logging_steps=10,
-        save_steps=_checkpoint_save_interval(max_steps),
+        save_steps=save_steps,
         save_total_limit=5,
         eval_steps=eval_steps,
         max_eval_batches=200,
@@ -1427,7 +1962,14 @@ def run_pretrain(
         commit_on_save=True,
         use_wandb=use_wandb,
         wandb_project="anymal-pretrain",
+        wandb_run_name=run_name,
         resume_from_checkpoint=resume_checkpoint,
+        loss_scale=float(pretrain_loss_scale or 1.0),
+        loss_normalization=pretrain_loss_normalization or "mean",
+        loss_normalization_target_tokens=float(
+            pretrain_loss_normalization_target_tokens or 8.0
+        ),
+        connector_warmup_steps=int(connector_warmup_steps or 0),
     )
 
     # Train
@@ -1979,6 +2521,164 @@ def load_finetune_dataset(
         volume.commit()
         return output_path, vqa_image_dir
 
+    def _vqa_train_direct_answer_path_by_type(answer_type, max_samples=150000):
+        """Build VQAv2 train2014 direct-answer data for one answer_type bucket."""
+        safe_answer_type = str(answer_type).replace("/", "_").replace(" ", "_")
+        output_path = (
+            f"/checkpoints/vqa_data/"
+            f"vqa_train2014_direct_{safe_answer_type}_{int(max_samples)}.json"
+        )
+        if os.path.exists(output_path):
+            questions_path, _annotations_path = _ensure_vqa_train_files()
+            vqa_image_dir = _ensure_vqa_train_images(questions_path)
+            return output_path, vqa_image_dir
+
+        questions_path, annotations_path = _ensure_vqa_train_files()
+        vqa_image_dir = _ensure_vqa_train_images(questions_path)
+
+        available_images = {
+            f for f in os.listdir(vqa_image_dir)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        }
+        with open(questions_path) as f:
+            questions = {
+                int(q["question_id"]): q
+                for q in _json.load(f)["questions"]
+            }
+        with open(annotations_path) as f:
+            annotations = _json.load(f)["annotations"]
+
+        samples = []
+        skipped_missing_image = 0
+        skipped_reserved_markers = 0
+        for ann in annotations:
+            if str(ann.get("answer_type", "")).lower() != str(answer_type).lower():
+                continue
+            question_id = int(ann["question_id"])
+            question = questions.get(question_id)
+            if question is None:
+                continue
+            filename = f"COCO_train2014_{int(question['image_id']):012d}.jpg"
+            if filename not in available_images:
+                skipped_missing_image += 1
+                continue
+            prompt = " ".join(str(question["question"]).split())
+            answer = " ".join(str(ann.get("multiple_choice_answer", "")).split())
+            if not prompt or not answer:
+                continue
+            if _has_reserved_chat_markers(prompt) or _has_reserved_chat_markers(answer):
+                skipped_reserved_markers += 1
+                continue
+            samples.append(
+                {
+                    "id": f"vqa_train2014_{safe_answer_type}_{question_id}",
+                    "image": filename,
+                    "conversations": [
+                        {"from": "human", "value": f"<image>\n{prompt}"},
+                        {"from": "gpt", "value": answer},
+                    ],
+                }
+            )
+
+        rng = random.Random(4217 + sum(ord(c) for c in str(answer_type)))
+        rng.shuffle(samples)
+        samples = samples[: int(max_samples)]
+        if not samples:
+            raise RuntimeError(
+                f"VQAv2 train direct-answer generation produced no {answer_type} samples."
+            )
+
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(
+            f"Built {len(samples)} VQAv2 train direct-answer {answer_type} samples "
+            f"at {output_path}; skipped_missing_image={skipped_missing_image}; "
+            f"skipped_reserved_markers={skipped_reserved_markers}"
+        )
+        volume.commit()
+        return output_path, vqa_image_dir
+
+    def _vqa_train_balanced_yes_no_path(max_per_label=40000):
+        """Build a balanced yes/no VQAv2 source with canonical yes/no labels."""
+        output_path = (
+            f"/checkpoints/vqa_data/"
+            f"vqa_train2014_direct_yes_no_balanced_{int(max_per_label)}.json"
+        )
+        if os.path.exists(output_path):
+            questions_path, _annotations_path = _ensure_vqa_train_files()
+            vqa_image_dir = _ensure_vqa_train_images(questions_path)
+            return output_path, vqa_image_dir
+
+        questions_path, annotations_path = _ensure_vqa_train_files()
+        vqa_image_dir = _ensure_vqa_train_images(questions_path)
+        available_images = {
+            f for f in os.listdir(vqa_image_dir)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        }
+
+        with open(questions_path) as f:
+            questions = {
+                int(q["question_id"]): q
+                for q in _json.load(f)["questions"]
+            }
+        with open(annotations_path) as f:
+            annotations = _json.load(f)["annotations"]
+
+        buckets = {"yes": [], "no": []}
+        skipped_missing_image = 0
+        skipped_reserved_markers = 0
+        for ann in annotations:
+            if str(ann.get("answer_type", "")).lower() != "yes/no":
+                continue
+            question_id = int(ann["question_id"])
+            question = questions.get(question_id)
+            if question is None:
+                continue
+            filename = f"COCO_train2014_{int(question['image_id']):012d}.jpg"
+            if filename not in available_images:
+                skipped_missing_image += 1
+                continue
+            prompt = " ".join(str(question["question"]).split())
+            answer = " ".join(
+                str(ann.get("multiple_choice_answer", "")).lower().split()
+            )
+            if answer not in buckets or not prompt:
+                continue
+            if _has_reserved_chat_markers(prompt):
+                skipped_reserved_markers += 1
+                continue
+            buckets[answer].append(
+                {
+                    "id": f"vqa_train2014_yes_no_balanced_{answer}_{question_id}",
+                    "image": filename,
+                    "conversations": [
+                        {"from": "human", "value": f"<image>\n{prompt}"},
+                        {"from": "gpt", "value": answer},
+                    ],
+                }
+            )
+
+        rng = random.Random(6211)
+        samples = []
+        for answer in ("yes", "no"):
+            rng.shuffle(buckets[answer])
+            samples.extend(buckets[answer][: int(max_per_label)])
+        rng.shuffle(samples)
+        if not samples:
+            raise RuntimeError("Balanced VQAv2 yes/no generation produced no samples.")
+
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(
+            f"Built {len(samples)} balanced VQAv2 yes/no samples at {output_path}; "
+            f"yes={min(len(buckets['yes']), int(max_per_label))}; "
+            f"no={min(len(buckets['no']), int(max_per_label))}; "
+            f"skipped_missing_image={skipped_missing_image}; "
+            f"skipped_reserved_markers={skipped_reserved_markers}"
+        )
+        volume.commit()
+        return output_path, vqa_image_dir
+
     def _llava_caption_long_form_path(max_samples=50000):
         output_path = f"/checkpoints/llava_data/llava_caption_long_form_{int(max_samples)}.json"
         if os.path.exists(output_path):
@@ -2028,7 +2728,7 @@ def load_finetune_dataset(
         volume.commit()
         return output_path
 
-    if dataset in {"v3_grounding", "v3_grounding_alignment"}:
+    if dataset in {"v3_grounding", "v3_grounding_alignment", "v4_grounding", "v4_grounding_alignment"}:
         vqa_direct_path, vqa_image_dir = _vqa_train_direct_answer_path(max_samples=150000)
         coco_direct_path = _coco_object_direct_answer_path()
         short_direct_path = _filtered_direct_answer_path()
@@ -2071,7 +2771,7 @@ def load_finetune_dataset(
             vision_model_name=vision_model_name,
             filter_to_available_images=True,
         )
-        print(f"Loaded {len(ds)} V3 grounding-alignment instruction samples")
+        print(f"Loaded {len(ds)} {dataset} instruction samples")
         return ds
 
     if dataset in {"v3_grounded", "v3_weighted_grounded", "grounded_weighted"}:
@@ -2131,6 +2831,123 @@ def load_finetune_dataset(
             filter_to_available_images=True,
         )
         print(f"Loaded {len(ds)} V3 weighted grounded instruction samples")
+        return ds
+
+    if dataset in {
+        "v3_yn_number_focus",
+        "v3_answer_type_focus",
+        "v3_direct_calibration",
+        "v3_yesno_calibrated",
+        "v4_answer_type_focus",
+        "v4_direct_calibration",
+        "v4_semantic_calibration",
+    }:
+        if dataset == "v4_semantic_calibration":
+            direct_weights = {
+                "yes_no": 0.40,
+                "number": 0.20,
+                "coco": 0.15,
+                "other": 0.20,
+                "short": 0.05,
+            }
+            calibration_prompt = (
+                "Answer the image question directly and briefly. End after the answer."
+            )
+        elif dataset in {"v3_direct_calibration", "v3_yesno_calibrated", "v4_direct_calibration"}:
+            direct_weights = {
+                "yes_no": 0.45,
+                "number": 0.25,
+                "coco": 0.20,
+                "other": 0.05,
+                "short": 0.05,
+            }
+            calibration_prompt = (
+                "Answer the image question directly and briefly. End after the answer."
+            )
+        else:
+            # Historical answer-type recipe from the 2026-05-05 fast screen.
+            direct_weights = {
+                "yes_no": 0.35,
+                "number": 0.30,
+                "coco": 0.20,
+                "other": 0.10,
+                "short": 0.05,
+            }
+            calibration_prompt = training_system_prompt
+
+        if dataset == "v4_semantic_calibration":
+            vqa_yes_no_path, vqa_image_dir = _vqa_train_balanced_yes_no_path(
+                max_per_label=40000,
+            )
+        else:
+            vqa_yes_no_path, vqa_image_dir = _vqa_train_direct_answer_path_by_type(
+                "yes/no",
+                max_samples=80000,
+            )
+        vqa_number_path, _ = _vqa_train_direct_answer_path_by_type(
+            "number",
+            max_samples=50000,
+        )
+        vqa_other_path, _ = _vqa_train_direct_answer_path_by_type(
+            "other",
+            max_samples=80000,
+        )
+        coco_direct_path = _coco_object_direct_answer_path()
+        short_direct_path = _filtered_direct_answer_path()
+
+        ds = create_instruction_dataset(
+            data_path=None,
+            image_dir=image_dir,
+            tokenizer=tokenizer,
+            mixture_config={
+                "strategy": "weighted",
+                "datasets": [
+                    {
+                        "name": "vqa_train_yes_no",
+                        "weight": direct_weights["yes_no"],
+                        "data_path": vqa_yes_no_path,
+                        "image_dir": vqa_image_dir,
+                        "system_prompt": calibration_prompt,
+                    },
+                    {
+                        "name": "vqa_train_number",
+                        "weight": direct_weights["number"],
+                        "data_path": vqa_number_path,
+                        "image_dir": vqa_image_dir,
+                        "system_prompt": calibration_prompt,
+                    },
+                    {
+                        "name": "coco_object_count_color_direct",
+                        "weight": direct_weights["coco"],
+                        "data_path": coco_direct_path,
+                        "system_prompt": calibration_prompt,
+                    },
+                    {
+                        "name": "vqa_train_other",
+                        "weight": direct_weights["other"],
+                        "data_path": vqa_other_path,
+                        "image_dir": vqa_image_dir,
+                        "system_prompt": calibration_prompt,
+                    },
+                    {
+                        "name": "short_llava_mix",
+                        "weight": direct_weights["short"],
+                        "data_path": short_direct_path,
+                        "system_prompt": calibration_prompt,
+                    },
+                ],
+            },
+            image_size=image_size,
+            max_length=max_length,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+            filter_to_available_images=True,
+        )
+        print(f"Loaded {len(ds)} {dataset} instruction samples")
         return ds
 
     if dataset in {"balanced_mix", "balanced_mixture", "mixture"}:
@@ -2457,11 +3274,11 @@ class COCOCaptionDataset:
         image = self.transform(image)
 
         caption = item["caption"]
-        encoding = self.text_processor.encode_text(caption)
-
-        # For captioning, predict all non-pad tokens
-        labels = encoding["input_ids"].clone()
-        labels[labels == self.tokenizer.pad_token_id] = -100
+        encoding = self.text_processor.encode_for_training(
+            caption,
+            response_start_idx=[(0, len(caption))],
+        )
+        labels = encoding["labels"]
 
         if self.insert_image_placeholders:
             placeholder_block = torch.full(
@@ -2784,8 +3601,30 @@ def _pretrain_worker(local_rank, world_size, config):
             resume_checkpoint=config.get("resume_checkpoint"),
             pretrain_checkpoint=config.get("pretrain_checkpoint"),
             output_dir=config["output_dir"],
+            run_name=config.get("run_name"),
             pretrain_image_tokens=config.get("pretrain_image_tokens"),
             dataset=config.get("dataset", "llava_pretrain"),
+            connector_warmup_steps=config.get("connector_warmup_steps", 0),
+            pretrain_loss_scale=config.get("pretrain_loss_scale", 1.0),
+            pretrain_loss_normalization=config.get("pretrain_loss_normalization", "mean"),
+            pretrain_loss_normalization_target_tokens=config.get(
+                "pretrain_loss_normalization_target_tokens",
+                8.0,
+            ),
+            pretrain_gradient_accumulation_steps=config.get("pretrain_gradient_accumulation_steps", 8),
+            pretrain_save_steps=config.get("pretrain_save_steps"),
+            v4_global_image_tokens=config.get("v4_global_image_tokens"),
+            v4_local_image_tokens=config.get("v4_local_image_tokens"),
+            v4_connector_layers=config.get("v4_connector_layers"),
+            v4_connector_heads=config.get("v4_connector_heads"),
+            v4_connector_ff_mult=config.get("v4_connector_ff_mult"),
+            v4_connector_hidden_dim=config.get("v4_connector_hidden_dim"),
+            v4_connector_output_scale=config.get("v4_connector_output_scale"),
+            v4_connector_output_gate_init=config.get("v4_connector_output_gate_init"),
+            v4_use_2d_position_features=config.get("v4_use_2d_position_features", True),
+            v4_connector_type=config.get("v4_connector_type"),
+            v4_deepstack_num_feature_levels=config.get("v4_deepstack_num_feature_levels"),
+            v4_deepstack_hidden_state_indices=config.get("v4_deepstack_hidden_state_indices"),
         )
     finally:
         cleanup_distributed()
@@ -2804,6 +3643,24 @@ def _run_pretrain_distributed(
     run_name=None,
     pretrain_image_tokens=None,
     dataset="llava_pretrain",
+    connector_warmup_steps=0,
+    pretrain_loss_scale=1.0,
+    pretrain_loss_normalization="mean",
+    pretrain_loss_normalization_target_tokens=8.0,
+    pretrain_gradient_accumulation_steps=8,
+    pretrain_save_steps=None,
+    v4_global_image_tokens=None,
+    v4_local_image_tokens=None,
+    v4_connector_layers=None,
+    v4_connector_heads=None,
+    v4_connector_ff_mult=None,
+    v4_connector_hidden_dim=None,
+    v4_connector_output_scale=None,
+    v4_connector_output_gate_init=None,
+    v4_use_2d_position_features=True,
+    v4_connector_type=None,
+    v4_deepstack_num_feature_levels=None,
+    v4_deepstack_hidden_state_indices=None,
 ):
     """Shared implementation for Stage 1 distributed pretraining."""
     import sys
@@ -2855,8 +3712,27 @@ def _run_pretrain_distributed(
         "resume_checkpoint": resume_checkpoint,
         "pretrain_checkpoint": pretrain_checkpoint,
         "output_dir": pretrain_output_dir,
+        "run_name": run_name,
         "pretrain_image_tokens": pretrain_image_tokens,
         "dataset": dataset,
+        "connector_warmup_steps": connector_warmup_steps,
+        "pretrain_loss_scale": pretrain_loss_scale,
+        "pretrain_loss_normalization": pretrain_loss_normalization,
+        "pretrain_loss_normalization_target_tokens": pretrain_loss_normalization_target_tokens,
+        "pretrain_gradient_accumulation_steps": pretrain_gradient_accumulation_steps,
+        "pretrain_save_steps": pretrain_save_steps,
+        "v4_global_image_tokens": v4_global_image_tokens,
+        "v4_local_image_tokens": v4_local_image_tokens,
+        "v4_connector_layers": v4_connector_layers,
+        "v4_connector_heads": v4_connector_heads,
+        "v4_connector_ff_mult": v4_connector_ff_mult,
+        "v4_connector_hidden_dim": v4_connector_hidden_dim,
+        "v4_connector_output_scale": v4_connector_output_scale,
+        "v4_connector_output_gate_init": v4_connector_output_gate_init,
+        "v4_use_2d_position_features": v4_use_2d_position_features,
+        "v4_connector_type": v4_connector_type,
+        "v4_deepstack_num_feature_levels": v4_deepstack_num_feature_levels,
+        "v4_deepstack_hidden_state_indices": v4_deepstack_hidden_state_indices,
     }
 
     mp.spawn(_pretrain_worker, nprocs=num_gpus, args=(num_gpus, config))
@@ -2888,6 +3764,24 @@ def pretrain_distributed(
     run_name=None,
     pretrain_image_tokens=None,
     dataset="llava_pretrain",
+    connector_warmup_steps=0,
+    pretrain_loss_scale=1.0,
+    pretrain_loss_normalization="mean",
+    pretrain_loss_normalization_target_tokens=8.0,
+    pretrain_gradient_accumulation_steps=8,
+    pretrain_save_steps=None,
+    v4_global_image_tokens=None,
+    v4_local_image_tokens=None,
+    v4_connector_layers=None,
+    v4_connector_heads=None,
+    v4_connector_ff_mult=None,
+    v4_connector_hidden_dim=None,
+    v4_connector_output_scale=None,
+    v4_connector_output_gate_init=None,
+    v4_use_2d_position_features=True,
+    v4_connector_type=None,
+    v4_deepstack_num_feature_levels=None,
+    v4_deepstack_hidden_state_indices=None,
 ):
     """Run Stage 1 pretraining on 4x A100-80GB using DDP."""
     return _run_pretrain_distributed(
@@ -2903,6 +3797,24 @@ def pretrain_distributed(
         run_name=run_name,
         pretrain_image_tokens=pretrain_image_tokens,
         dataset=dataset,
+        connector_warmup_steps=connector_warmup_steps,
+        pretrain_loss_scale=pretrain_loss_scale,
+        pretrain_loss_normalization=pretrain_loss_normalization,
+        pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
+        pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
+        pretrain_save_steps=pretrain_save_steps,
+        v4_global_image_tokens=v4_global_image_tokens,
+        v4_local_image_tokens=v4_local_image_tokens,
+        v4_connector_layers=v4_connector_layers,
+        v4_connector_heads=v4_connector_heads,
+        v4_connector_ff_mult=v4_connector_ff_mult,
+        v4_connector_hidden_dim=v4_connector_hidden_dim,
+        v4_connector_output_scale=v4_connector_output_scale,
+        v4_connector_output_gate_init=v4_connector_output_gate_init,
+        v4_use_2d_position_features=v4_use_2d_position_features,
+        v4_connector_type=v4_connector_type,
+        v4_deepstack_num_feature_levels=v4_deepstack_num_feature_levels,
+        v4_deepstack_hidden_state_indices=v4_deepstack_hidden_state_indices,
     )
 
 
@@ -2929,6 +3841,24 @@ def pretrain_distributed_h100(
     run_name=None,
     pretrain_image_tokens=None,
     dataset="llava_pretrain",
+    connector_warmup_steps=0,
+    pretrain_loss_scale=1.0,
+    pretrain_loss_normalization="mean",
+    pretrain_loss_normalization_target_tokens=8.0,
+    pretrain_gradient_accumulation_steps=8,
+    pretrain_save_steps=None,
+    v4_global_image_tokens=None,
+    v4_local_image_tokens=None,
+    v4_connector_layers=None,
+    v4_connector_heads=None,
+    v4_connector_ff_mult=None,
+    v4_connector_hidden_dim=None,
+    v4_connector_output_scale=None,
+    v4_connector_output_gate_init=None,
+    v4_use_2d_position_features=True,
+    v4_connector_type=None,
+    v4_deepstack_num_feature_levels=None,
+    v4_deepstack_hidden_state_indices=None,
 ):
     """Run Stage 1 pretraining on 4x H100 using DDP."""
     return _run_pretrain_distributed(
@@ -2944,6 +3874,24 @@ def pretrain_distributed_h100(
         run_name=run_name,
         pretrain_image_tokens=pretrain_image_tokens,
         dataset=dataset,
+        connector_warmup_steps=connector_warmup_steps,
+        pretrain_loss_scale=pretrain_loss_scale,
+        pretrain_loss_normalization=pretrain_loss_normalization,
+        pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
+        pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
+        pretrain_save_steps=pretrain_save_steps,
+        v4_global_image_tokens=v4_global_image_tokens,
+        v4_local_image_tokens=v4_local_image_tokens,
+        v4_connector_layers=v4_connector_layers,
+        v4_connector_heads=v4_connector_heads,
+        v4_connector_ff_mult=v4_connector_ff_mult,
+        v4_connector_hidden_dim=v4_connector_hidden_dim,
+        v4_connector_output_scale=v4_connector_output_scale,
+        v4_connector_output_gate_init=v4_connector_output_gate_init,
+        v4_use_2d_position_features=v4_use_2d_position_features,
+        v4_connector_type=v4_connector_type,
+        v4_deepstack_num_feature_levels=v4_deepstack_num_feature_levels,
+        v4_deepstack_hidden_state_indices=v4_deepstack_hidden_state_indices,
     )
 
 
@@ -3102,6 +4050,26 @@ def main(
     background: bool = False,
     pretrain_image_tokens: int = None,
     projector_warmup_steps: int = None,
+    freeze_connector: bool = False,
+    finetune_loss_scale: float = 1.0,
+    connector_warmup_steps: int = 0,
+    pretrain_loss_scale: float = 1.0,
+    pretrain_loss_normalization: str = "mean",
+    pretrain_loss_normalization_target_tokens: float = 8.0,
+    pretrain_gradient_accumulation_steps: int = 8,
+    pretrain_save_steps: int = None,
+    v4_global_image_tokens: int = None,
+    v4_local_image_tokens: int = None,
+    v4_connector_layers: int = None,
+    v4_connector_heads: int = None,
+    v4_connector_ff_mult: int = None,
+    v4_connector_hidden_dim: int = None,
+    v4_connector_output_scale: float = None,
+    v4_connector_output_gate_init: float = None,
+    v4_use_2d_position_features: bool = True,
+    v4_connector_type: str = None,
+    v4_deepstack_num_feature_levels: int = None,
+    v4_deepstack_hidden_state_indices: str = None,
 ):
     """
     Entry point for Modal training.
@@ -3122,10 +4090,26 @@ def main(
     """
     selected_gpu = _resolve_modal_gpu(stage, gpu_type)
     arch_key = _normalize_architecture_key(architecture)
-    if pretrain_image_tokens is None:
-        pretrain_image_tokens = 128 if arch_key == "anymal_v3" else 256
-    if arch_key == "anymal_v3" and dataset == "instruct_150k":
+    if pretrain_image_tokens is None and (stage == "pretrain" or arch_key != "anymal_v4"):
+        pretrain_image_tokens = 128 if arch_key in {"anymal_v3", "anymal_v4"} else 256
+    if arch_key in {"anymal_v3", "anymal_v4"} and dataset == "instruct_150k":
         dataset = "v3_grounded"
+    if arch_key in {"anymal_v3", "anymal_v4"} and dataset in {
+        "v3_direct_calibration",
+        "v3_yesno_calibrated",
+        "v4_direct_calibration",
+        "v4_semantic_calibration",
+    }:
+        freeze_connector = True
+    resolved_v4_connector_type = v4_connector_type or V4_DEFAULT_CONNECTOR_TYPE
+    resolved_deepstack_layers = _parse_v4_hidden_state_indices(
+        v4_deepstack_hidden_state_indices
+    )
+    resolved_deepstack_levels = (
+        int(v4_deepstack_num_feature_levels)
+        if v4_deepstack_num_feature_levels is not None
+        else (len(resolved_deepstack_layers) if resolved_deepstack_layers else None)
+    )
     token_compressor_type = str(token_compressor_type).strip().lower()
     if token_compressor_type not in {"learned", "perceiver", "perceiver2", "avg"}:
         raise ValueError(
@@ -3161,8 +4145,74 @@ def main(
     print(f"  Eval benchmarks: {run_eval_benchmarks}")
     if stage == "pretrain":
         print(f"  Stage 1 image tokens: {pretrain_image_tokens}")
-    elif projector_warmup_steps is not None:
+    if arch_key == "anymal_v4" and (
+        stage == "pretrain"
+        or pretrain_image_tokens is not None
+        or v4_global_image_tokens is not None
+        or v4_local_image_tokens is not None
+    ):
+        v4_global_tokens, v4_local_tokens, v4_total_tokens = _resolve_v4_token_split(
+            total_tokens=pretrain_image_tokens,
+            global_tokens=v4_global_image_tokens,
+            local_tokens=v4_local_image_tokens,
+        )
+        pretrain_image_tokens = v4_total_tokens
+        print(f"  V4 connector type: {resolved_v4_connector_type}")
+        print(f"  V4 global/local tokens: {v4_global_tokens}/{v4_local_tokens}")
+        print(f"  V4 connector layers: {v4_connector_layers or V4_DEFAULT_CONNECTOR_LAYERS}")
+        print(f"  V4 connector heads: {v4_connector_heads or V4_DEFAULT_CONNECTOR_HEADS}")
+        print(f"  V4 connector FF multiplier: {v4_connector_ff_mult or V4_DEFAULT_CONNECTOR_FF_MULT}")
+        print(
+            "  V4 connector hidden dim: "
+            f"{v4_connector_hidden_dim if v4_connector_hidden_dim is not None else V4_DEFAULT_CONNECTOR_HIDDEN_DIM}"
+        )
+        print(
+            "  V4 connector output scale: "
+            f"{v4_connector_output_scale if v4_connector_output_scale is not None else V4_DEFAULT_CONNECTOR_OUTPUT_SCALE}"
+        )
+        print(
+            "  V4 connector output gate init: "
+            f"{v4_connector_output_gate_init if v4_connector_output_gate_init is not None else V4_DEFAULT_CONNECTOR_OUTPUT_GATE_INIT}"
+        )
+        print(f"  V4 2D position features: {v4_use_2d_position_features}")
+        if resolved_v4_connector_type == "deepstack_spatial_perceiver_resampler":
+            print(f"  V4 DeepStack feature levels: {resolved_deepstack_levels or 3}")
+            print(
+                "  V4 DeepStack hidden layers: "
+                f"{resolved_deepstack_layers or 'last 3'}"
+            )
+    elif arch_key == "anymal_v4":
+        v4_global_tokens = None
+        v4_local_tokens = None
+        print("  V4 global/local tokens: infer from checkpoint metadata")
+        print("  V4 connector shape: infer from checkpoint metadata")
+        print("  V4 connector type: infer from checkpoint metadata")
+        print("  V4 2D position features: infer from checkpoint metadata")
+    else:
+        v4_global_tokens = None
+        v4_local_tokens = None
+    if stage != "pretrain" and projector_warmup_steps is not None:
         print(f"  Projector warmup steps: {projector_warmup_steps}")
+    if stage == "pretrain" and connector_warmup_steps:
+        print(f"  Stage 1 connector warmup steps: {connector_warmup_steps}")
+    if stage == "pretrain" and pretrain_loss_scale != 1.0:
+        print(f"  Stage 1 loss scale: {pretrain_loss_scale}")
+    if stage == "pretrain" and pretrain_loss_normalization != "mean":
+        print(f"  Stage 1 loss normalization: {pretrain_loss_normalization}")
+        print(
+            "  Stage 1 loss normalization target tokens: "
+            f"{pretrain_loss_normalization_target_tokens}"
+        )
+    if stage == "pretrain":
+        print(f"  Stage 1 gradient accumulation: {pretrain_gradient_accumulation_steps}")
+        print(
+            "  Stage 1 checkpoint save steps: "
+            f"{pretrain_save_steps or _checkpoint_save_interval(max_steps)}"
+        )
+    if stage == "finetune":
+        print(f"  Freeze connector: {freeze_connector}")
+        if finetune_loss_scale != 1.0:
+            print(f"  Stage 2 loss scale: {finetune_loss_scale}")
     if learning_rate:
         print(f"  Learning rate: {learning_rate}")
     if lora_learning_rate:
@@ -3196,6 +4246,24 @@ def main(
             run_name=run_name,
             pretrain_image_tokens=pretrain_image_tokens,
             dataset=dataset,
+            connector_warmup_steps=connector_warmup_steps,
+            pretrain_loss_scale=pretrain_loss_scale,
+            pretrain_loss_normalization=pretrain_loss_normalization,
+            pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
+            pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
+            pretrain_save_steps=pretrain_save_steps,
+            v4_global_image_tokens=v4_global_tokens,
+            v4_local_image_tokens=v4_local_tokens,
+            v4_connector_layers=v4_connector_layers,
+            v4_connector_heads=v4_connector_heads,
+            v4_connector_ff_mult=v4_connector_ff_mult,
+            v4_connector_hidden_dim=v4_connector_hidden_dim,
+            v4_connector_output_scale=v4_connector_output_scale,
+            v4_connector_output_gate_init=v4_connector_output_gate_init,
+            v4_use_2d_position_features=v4_use_2d_position_features,
+            v4_connector_type=v4_connector_type,
+            v4_deepstack_num_feature_levels=v4_deepstack_num_feature_levels,
+            v4_deepstack_hidden_state_indices=v4_deepstack_hidden_state_indices,
         )
     else:
         # Stage 2 uses single-GPU with QLoRA
@@ -3223,4 +4291,18 @@ def main(
             run_name=run_name,
             pretrain_image_tokens=pretrain_image_tokens,
             projector_warmup_steps=projector_warmup_steps,
+            freeze_connector=freeze_connector,
+            finetune_loss_scale=finetune_loss_scale,
+            v4_global_image_tokens=v4_global_tokens,
+            v4_local_image_tokens=v4_local_tokens,
+            v4_connector_layers=v4_connector_layers,
+            v4_connector_heads=v4_connector_heads,
+            v4_connector_ff_mult=v4_connector_ff_mult,
+            v4_connector_hidden_dim=v4_connector_hidden_dim,
+            v4_connector_output_scale=v4_connector_output_scale,
+            v4_connector_output_gate_init=v4_connector_output_gate_init,
+            v4_use_2d_position_features=v4_use_2d_position_features,
+            v4_connector_type=v4_connector_type,
+            v4_deepstack_num_feature_levels=v4_deepstack_num_feature_levels,
+            v4_deepstack_hidden_state_indices=v4_deepstack_hidden_state_indices,
         )

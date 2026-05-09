@@ -1,0 +1,82 @@
+# AnyMALv4 Stage 1A-alt: Grounding-First Connector Alignment
+#
+# Use this after the caption-alignment canaries that pegged W&B clipping. It
+# starts the bottlenecked V4 connector directly on short grounding supervision
+# instead of noisy web captions, keeping the same visual-token contract.
+
+defaults:
+  - base
+
+stage: 1
+stage_name: "grounding_first_v4"
+
+model:
+  architecture: "anymal_v4"
+  llm_model_name: "./checkpoints/llama3-8b-instruct"
+  use_qlora: false
+  use_flash_attention: true
+  gradient_checkpointing: true
+
+  vision_encoder_type: "siglip2"
+  vision_model_name: "google/siglip2-so400m-patch14-384"
+  connector_type: "spatial_perceiver_resampler"
+  num_global_image_tokens: 64
+  num_local_image_tokens: 64
+  num_image_tokens: 128
+  connector_layers: 3
+  connector_heads: 8
+  connector_ff_mult: 2
+  connector_hidden_dim: 1024
+  connector_output_scale: 1.0
+  connector_output_gate_init: 0.0001
+  use_2d_position_features: true
+  project_directly_to_llm_dim: false
+
+data:
+  dataset_type: "v4_grounding"
+  train_data_path: "./data/vqa_train_direct_answers.json"
+  image_dir: "./data/coco/train2014"
+  eval_data_path: null
+  filter_to_available_images: true
+  image_size: 384
+  max_length: 512
+  image_token_policy: "fixed"
+  per_device_batch_size: 16
+  gradient_accumulation_steps: 4
+  dataloader_num_workers: 8
+  pin_memory: true
+
+training:
+  learning_rate: 1.0e-5
+  lr_scheduler_type: "cosine"
+  warmup_steps: 100
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  max_steps: 500
+  num_epochs: null
+  train_projector_only: true
+  loss_scale: 0.1
+  loss_normalization: "supervised_token_target"
+  loss_normalization_target_tokens: 8
+  loss_normalization_min_multiplier: 0.05
+  loss_normalization_max_multiplier: 4.0
+  connector_warmup_steps: 0
+  use_amp: true
+  amp_dtype: "bfloat16"
+  seed: 42
+
+logging:
+  logging_steps: 10
+  use_wandb: true
+  wandb_project: "anymal-pretrain-v4"
+  wandb_run_name: "stage1a-alt-v4-spatial-bottleneck1024-grounding-first"
+
+checkpointing:
+  save_steps: 100
+  save_total_limit: 5
+  output_dir: "./outputs/pretrain_v4_grounding_first"
+
+evaluation:
+  eval_steps: 50
+  eval_strategy: "steps"
+  max_eval_batches: 200

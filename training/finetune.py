@@ -68,6 +68,14 @@ class FinetuneConfig(TrainerConfig):
     # Adapter warmup: zero multimodal adapter grads for N steps to let LoRA warm up first
     projector_warmup_steps: int = 200
 
+    # Whether Stage 2 should continue training the multimodal adapter
+    # (projector / connector / token compressor) alongside LoRA.
+    train_adapter: bool = True
+
+    # Multiplies the backward loss only. The unscaled model loss remains the
+    # train/loss value used for learning curves and health checks.
+    loss_scale: float = 1.0
+
 
 class FinetuneTrainer(Trainer):
     """
@@ -110,17 +118,32 @@ class FinetuneTrainer(Trainer):
         # Configure model for Stage 2
         model.set_training_stage(2)
 
+        self._train_adapter = bool(config.train_adapter)
+        if not self._train_adapter:
+            self._set_adapter_requires_grad(model, False)
+            print_rank_0("Stage 2 adapter training disabled: training LoRA only")
+
         # Adapter warmup keeps adapter params in the optimizer from step 0, then
         # zeroes their gradients during warmup. This avoids rebuilding optimizer
         # and scheduler state mid-run.
         self._adapter_warmup_active = False
         self._projector_warmup_steps = config.projector_warmup_steps
-        if config.projector_warmup_steps > 0:
+        if self._train_adapter and config.projector_warmup_steps > 0:
             self._adapter_warmup_active = True
             print_rank_0(
                 f"Multimodal adapter gradients zeroed for first "
                 f"{config.projector_warmup_steps} steps (LoRA warmup)"
             )
+        elif not self._train_adapter and config.projector_warmup_steps > 0:
+            print_rank_0(
+                "Ignoring projector_warmup_steps because adapter training is disabled"
+            )
+
+        self._loss_scale = float(config.loss_scale)
+        if self._loss_scale <= 0:
+            raise ValueError(f"loss_scale must be > 0, got {config.loss_scale}")
+        if self._loss_scale != 1.0:
+            print_rank_0(f"Stage 2 loss scale: multiplying backward loss by {self._loss_scale:g}")
 
         # Verify trainable params
         if is_main_process():
@@ -149,9 +172,15 @@ class FinetuneTrainer(Trainer):
                     f"Checkpoint token_compressor_type mismatch for {checkpoint_path}: "
                     f"checkpoint={checkpoint_compressor}, model={model_compressor}."
                 )
-        elif expected_arch == "anymal_v3":
+        elif expected_arch in {"anymal_v3", "anymal_v4"}:
             meta = read_model_metadata(checkpoint_path) or {}
-            for key in ("connector_type", "num_image_tokens", "connector_layers"):
+            for key in (
+                "connector_type",
+                "num_image_tokens",
+                "connector_layers",
+                "connector_heads",
+                "connector_ff_mult",
+            ):
                 checkpoint_value = meta.get(key)
                 model_value = getattr(model, key, None)
                 if checkpoint_value is not None and model_value is not None and checkpoint_value != model_value:
@@ -159,6 +188,44 @@ class FinetuneTrainer(Trainer):
                         f"Checkpoint {key} mismatch for {checkpoint_path}: "
                         f"checkpoint={checkpoint_value}, model={model_value}."
                     )
+            if expected_arch == "anymal_v4":
+                for key in (
+                    "num_global_image_tokens",
+                    "num_local_image_tokens",
+                    "connector_hidden_dim",
+                    "connector_output_scale",
+                    "connector_output_gate_init",
+                    "use_2d_position_features",
+                ):
+                    checkpoint_value = meta.get(key)
+                    model_value = getattr(model, key, None)
+                    if checkpoint_value is not None and model_value is not None and checkpoint_value != model_value:
+                        raise RuntimeError(
+                            f"Checkpoint {key} mismatch for {checkpoint_path}: "
+                            f"checkpoint={checkpoint_value}, model={model_value}."
+                        )
+                if getattr(model, "connector_type", None) == "deepstack_spatial_perceiver_resampler":
+                    for key in (
+                        "deepstack_num_feature_levels",
+                        "deepstack_hidden_state_indices",
+                        "vision_feature_layers",
+                    ):
+                        checkpoint_value = meta.get(key)
+                        if key in ("deepstack_hidden_state_indices", "vision_feature_layers"):
+                            if checkpoint_value is not None:
+                                checkpoint_value = [int(i) for i in checkpoint_value]
+                            model_value = list(getattr(model, "deepstack_hidden_state_indices", []))
+                        else:
+                            model_value = getattr(model, key, None)
+                        if (
+                            checkpoint_value is not None
+                            and model_value is not None
+                            and checkpoint_value != model_value
+                        ):
+                            raise RuntimeError(
+                                f"Checkpoint {key} mismatch for {checkpoint_path}: "
+                                f"checkpoint={checkpoint_value}, model={model_value}."
+                            )
 
         projector_path = os.path.join(checkpoint_path, "projector.pt")
 
@@ -254,6 +321,11 @@ class FinetuneTrainer(Trainer):
                 "WARNING: Unexpected parameters are trainable. "
                 "Check model configuration."
             )
+        if not self._train_adapter and trainable_groups["adapter"] > 0:
+            print_rank_0(
+                "WARNING: adapter params are trainable even though "
+                "train_adapter=False."
+            )
 
     def _train_step(self, batch: Dict[str, torch.Tensor]) -> float:
         """
@@ -328,14 +400,18 @@ class FinetuneTrainer(Trainer):
                 attention_mask=attention_mask,
                 labels=labels,
             )
-            loss = outputs.loss
+            raw_loss = outputs.loss
+            backward_loss = raw_loss * self._loss_scale
 
             # NaN/Inf check
-            if torch.isnan(loss) or torch.isinf(loss):
-                print_rank_0(f"WARNING: loss is {loss.item()} at step {self.global_step}!")
+            if torch.isnan(raw_loss) or torch.isinf(raw_loss):
+                print_rank_0(f"WARNING: loss is {raw_loss.item()} at step {self.global_step}!")
+
+            self._last_batch_metrics["train/raw_loss"] = raw_loss.detach().item()
+            self._last_batch_metrics["train/backward_loss"] = backward_loss.detach().item()
 
             # Scale loss for gradient accumulation
-            loss = loss / self.config.gradient_accumulation_steps
+            loss = backward_loss / self.config.gradient_accumulation_steps
 
         # Backward pass
         if self.scaler is not None:
@@ -346,12 +422,17 @@ class FinetuneTrainer(Trainer):
         if self._adapter_warmup_active:
             self._zero_adapter_grads()
 
-        # Return unscaled loss for logging
-        return loss.item() * self.config.gradient_accumulation_steps
+        # Return the unscaled model loss for logging and health monitoring.
+        return raw_loss.item()
 
     @staticmethod
     def _is_adapter_param_name(name: str) -> bool:
         return "projector" in name or "token_compressor" in name
+
+    def _set_adapter_requires_grad(self, model, requires_grad: bool) -> None:
+        for name, param in model.named_parameters():
+            if self._is_adapter_param_name(name):
+                param.requires_grad = requires_grad
 
     def _zero_adapter_grads(self) -> None:
         for name, param in self.unwrapped_model.named_parameters():

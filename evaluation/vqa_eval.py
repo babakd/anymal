@@ -77,12 +77,13 @@ def _build_chat_prompt_ids(
     image_placeholder_token_id: Optional[int],
     num_image_tokens: int,
     max_length: int,
+    system_prompt: str = TRAINING_SYSTEM_PROMPT,
 ) -> Dict[str, torch.Tensor]:
     user_text = question.strip()
     if image_placeholder_token_id is not None and num_image_tokens > 0:
         user_text = f"{IMAGE_SENTINEL}\n{user_text}"
     text = (
-        f"{SYSTEM_HEADER}{TRAINING_SYSTEM_PROMPT}{END_TURN}"
+        f"{SYSTEM_HEADER}{system_prompt}{END_TURN}"
         f"{USER_HEADER}{user_text}{END_TURN}"
         f"{ASSISTANT_HEADER}"
     )
@@ -150,6 +151,7 @@ class VQADataset(Dataset):
         image_placeholder_token_id: Optional[int] = None,
         num_image_tokens: int = 0,
         prompt_style: str = "training_chat",
+        system_prompt: Optional[str] = None,
     ):
         self.image_dir = image_dir
         self.transform = transform
@@ -157,6 +159,7 @@ class VQADataset(Dataset):
         self.image_placeholder_token_id = image_placeholder_token_id
         self.num_image_tokens = int(num_image_tokens or 0)
         self.prompt_style = prompt_style
+        self.system_prompt = system_prompt or TRAINING_SYSTEM_PROMPT
 
         # Load questions
         with open(questions_file, "r") as f:
@@ -221,6 +224,7 @@ class VQADataset(Dataset):
                 image_placeholder_token_id=self.image_placeholder_token_id,
                 num_image_tokens=self.num_image_tokens,
                 max_length=768,
+                system_prompt=self.system_prompt,
             )
             input_ids = encoded["input_ids"]
             attention_mask = encoded["attention_mask"]
@@ -353,25 +357,30 @@ class VQAEvaluator:
                     hit_max_new_tokens_count += 1
 
                 # Decode
-                pred_answer = self.model.tokenizer.decode(
+                raw_answer = self.model.tokenizer.decode(
                     generated,
                     skip_special_tokens=True,
                 ).strip()
 
                 # Clean up answer
-                pred_answer = self._process_answer(pred_answer)
+                pred_answer = self._process_answer(raw_answer)
 
                 question_id = batch["question_id"][i].item() if isinstance(
                     batch["question_id"][i], torch.Tensor
                 ) else batch["question_id"][i]
+                gt_answers = batch["answers"][i] if batch["answers"] else []
 
                 predictions.append({
                     "question_id": question_id,
+                    "question": batch["question"][i] if "question" in batch else "",
+                    "raw_answer": raw_answer,
                     "answer": pred_answer,
+                    "answers": gt_answers,
+                    "answer_type": batch["answer_type"][i] if "answer_type" in batch else "",
+                    "question_type": batch["question_type"][i] if "question_type" in batch else "",
                 })
 
                 # Compute score if ground truth available
-                gt_answers = batch["answers"][i] if batch["answers"] else []
                 if gt_answers:
                     score = self._compute_vqa_score(pred_answer, gt_answers)
                     total_score += score
@@ -426,11 +435,16 @@ class VQAEvaluator:
         - Remove punctuation
         - Remove articles (a, an, the)
         """
-        # Take first line/sentence
-        answer = answer.split("\n")[0].split(".")[0]
-
         # Lowercase
         answer = answer.lower().strip()
+
+        # Some chat models duplicate the assistant role header before content
+        # (e.g. "assistant\n\nyes"). Strip that before first-line truncation.
+        import re
+        answer = re.sub(r"^assistant\s*[:\n\r]+\s*", "", answer).strip()
+
+        # Take first line/sentence
+        answer = answer.split("\n")[0].split(".")[0]
 
         # Remove common prefixes
         prefixes = ["the answer is", "answer:", "it is", "this is"]
@@ -439,7 +453,6 @@ class VQAEvaluator:
                 answer = answer[len(prefix):].strip()
 
         # Remove punctuation
-        import re
         answer = re.sub(r"[^\w\s]", "", answer)
 
         # Remove articles

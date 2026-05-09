@@ -1,0 +1,43 @@
+# AnyMALv4 Stage 2A: Semantic Calibration Configuration
+
+defaults:
+  - finetune_v4
+
+stage_name: "semantic_calibration_v4"
+
+data:
+  mixture:
+    enabled: true
+    strategy: "weighted"
+    datasets:
+      - name: "vqa_train_yes_no_balanced"
+        weight: 0.40
+        data_path: "./data/vqa_train_direct_yes_no_balanced.json"
+        image_dir: "./data/coco/train2014"
+        system_prompt: "Answer the image question directly and briefly. End after the answer."
+      - name: "vqa_train_number"
+        weight: 0.20
+        data_path: "./data/vqa_train_direct_number.json"
+        image_dir: "./data/coco/train2014"
+        system_prompt: "Answer the image question directly and briefly. End after the answer."
+      - name: "coco_object_count_color_direct"
+        weight: 0.15
+        data_path: "./data/coco_object_count_color_direct.json"
+        image_dir: "./data/coco/train2017"
+        system_prompt: "Answer the image question directly and briefly. End after the answer."
+      - name: "vqa_train_other"
+        weight: 0.20
+        data_path: "./data/vqa_train_direct_other.json"
+        image_dir: "./data/coco/train2014"
+        system_prompt: "Answer the image question directly and briefly. End after the answer."
+      - name: "short_llava_mix"
+        weight: 0.05
+        data_path: "./data/llava_short_answer_mix.json"
+        image_dir: "./data/coco/train2017"
+        system_prompt: "Answer the image question directly and briefly. End after the answer."
+
+training:
+  loss_scale: 0.03
+
+logging:
+  wandb_run_name: "stage2a-v4-spatial-semantic-calibration-lora-only-100"

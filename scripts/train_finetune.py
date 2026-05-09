@@ -97,7 +97,18 @@ def parse_args():
     parser.add_argument("--pretrain_checkpoint", type=str, default=None)
     parser.add_argument("--max_steps", type=int, default=None)
     parser.add_argument("--learning_rate", type=float, default=None)
+    parser.add_argument(
+        "--loss_scale",
+        type=float,
+        default=None,
+        help="Multiply the Stage 2 backward loss while logging unscaled train/loss.",
+    )
     parser.add_argument("--output_dir", type=str, default=None)
+    parser.add_argument(
+        "--freeze_adapter",
+        action="store_true",
+        help="Freeze the multimodal adapter/connector during Stage 2 and train LoRA only.",
+    )
 
     # Logging
     parser.add_argument("--use_wandb", action="store_true")
@@ -141,8 +152,12 @@ def main():
         config["training"]["max_steps"] = args.max_steps
     if args.learning_rate:
         config["training"]["learning_rate"] = args.learning_rate
+    if args.loss_scale is not None:
+        config["training"]["loss_scale"] = args.loss_scale
     if args.output_dir:
         config["checkpointing"]["output_dir"] = args.output_dir
+    if args.freeze_adapter:
+        config["training"]["train_adapter"] = False
     if args.use_wandb:
         config["logging"]["use_wandb"] = True
     if args.wandb_project:
@@ -196,7 +211,7 @@ def main():
         image_token_policy=config["data"].get("image_token_policy", "fixed"),
         min_image_tokens=config["model"].get("min_image_tokens"),
         max_image_tokens=config["model"].get("max_image_tokens"),
-        vision_encoder_type="siglip2" if architecture in {"anymal_v2", "anymal_v3"} else "clip",
+        vision_encoder_type="siglip2" if architecture in {"anymal_v2", "anymal_v3", "anymal_v4"} else "clip",
         vision_model_name=config["model"].get("vision_model_name"),
         system_prompt=config["data"].get("system_prompt"),
         filter_to_available_images=config["data"].get("filter_to_available_images", False),
@@ -241,6 +256,7 @@ def main():
         warmup_steps=config["training"].get("warmup_steps", 100),
         weight_decay=config["training"].get("weight_decay", 0.01),
         lr_scheduler_type=config["training"].get("lr_scheduler_type", "cosine"),
+        loss_scale=config["training"].get("loss_scale", 1.0),
 
         # LoRA
         lora_r=config["model"].get("lora_r", 64),
@@ -266,7 +282,11 @@ def main():
         max_eval_batches=eval_config.get("max_eval_batches"),
         projector_warmup_steps=config["training"].get(
             "projector_warmup_steps",
-            0 if architecture in {"anymal_v2", "anymal_v3"} else 200,
+            0 if architecture in {"anymal_v2", "anymal_v3", "anymal_v4"} else 200,
+        ),
+        train_adapter=config["training"].get(
+            "train_adapter",
+            config["training"].get("train_connector", True),
         ),
     )
 
@@ -290,7 +310,7 @@ def main():
                 image_token_policy=config["data"].get("image_token_policy", "fixed"),
                 min_image_tokens=config["model"].get("min_image_tokens"),
                 max_image_tokens=config["model"].get("max_image_tokens"),
-                vision_encoder_type="siglip2" if architecture in {"anymal_v2", "anymal_v3"} else "clip",
+                vision_encoder_type="siglip2" if architecture in {"anymal_v2", "anymal_v3", "anymal_v4"} else "clip",
                 vision_model_name=config["model"].get("vision_model_name"),
                 system_prompt=config["data"].get("system_prompt"),
                 filter_to_available_images=config["data"].get("filter_to_available_images", False),
