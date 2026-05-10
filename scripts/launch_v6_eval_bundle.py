@@ -71,6 +71,8 @@ def build_jobs(args: argparse.Namespace) -> list[Job]:
             perturbation,
             "--prediction-samples",
             str(args.vqa_samples),
+            "--eval-schema-version",
+            args.eval_schema_version,
             "--remote-output-path",
             _remote_path(args.remote_dir, artifact),
             "--output",
@@ -107,6 +109,8 @@ def build_jobs(args: argparse.Namespace) -> list[Job]:
             SYSTEM_PROMPT,
             "--prediction-samples",
             str(args.pope_samples),
+            "--eval-schema-version",
+            args.eval_schema_version,
             "--remote-output-path",
             _remote_path(args.remote_dir, pope_artifact),
             "--output",
@@ -142,6 +146,8 @@ def build_jobs(args: argparse.Namespace) -> list[Job]:
             SYSTEM_PROMPT,
             "--prediction-samples",
             str(args.gqa_samples),
+            "--eval-schema-version",
+            args.eval_schema_version,
             "--remote-output-path",
             _remote_path(args.remote_dir, gqa_artifact),
             "--output",
@@ -170,6 +176,7 @@ def main() -> None:
     parser.add_argument("--vqa-samples", type=int, default=1000)
     parser.add_argument("--pope-samples", type=int, default=1000)
     parser.add_argument("--gqa-samples", type=int, default=500)
+    parser.add_argument("--eval-schema-version", default="v6")
     parser.add_argument("--second-benchmarks", action="store_true")
     parser.add_argument(
         "--start-index",
