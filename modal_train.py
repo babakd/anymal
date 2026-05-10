@@ -874,6 +874,7 @@ class Trainer:
             "v4_semantic_calibration",
             "v5_semantic_calibration",
             "v5_semantic_calibration_robust",
+            "v7_semantic_calibration_counterfactual",
         }:
             freeze_connector = True
         if pretrain_image_tokens is None and (stage == "pretrain" or arch_key != "anymal_v4"):
@@ -2710,6 +2711,222 @@ def load_finetune_dataset(
         volume.commit()
         return output_path, vqa_image_dir
 
+    def _vqa_counterfactual_grounding_path(max_samples=30000):
+        """Build answer-type-balanced blank/wrong-image VQAv2 grounding probes."""
+        output_path = (
+            f"/checkpoints/vqa_data/"
+            f"vqa_train2014_counterfactual_grounding_{int(max_samples)}.json"
+        )
+        questions_path, annotations_path = _ensure_vqa_train_files()
+        vqa_image_dir = _ensure_vqa_train_images(questions_path)
+        blank_filename = "anymal_blank_gray_384.jpg"
+        blank_path = os.path.join(vqa_image_dir, blank_filename)
+        if not os.path.exists(blank_path):
+            from PIL import Image
+
+            Image.new("RGB", (384, 384), color=(128, 128, 128)).save(blank_path)
+            volume.commit()
+
+        if os.path.exists(output_path):
+            return output_path, vqa_image_dir
+
+        available_images = {
+            f for f in os.listdir(vqa_image_dir)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        }
+        with open(questions_path) as f:
+            questions = {
+                int(q["question_id"]): q
+                for q in _json.load(f)["questions"]
+            }
+        with open(annotations_path) as f:
+            annotations = _json.load(f)["annotations"]
+
+        buckets = {"yes/no": [], "number": [], "other": []}
+        skipped_missing_image = 0
+        skipped_reserved_markers = 0
+        for ann in annotations:
+            answer_type = str(ann.get("answer_type", "")).lower()
+            if answer_type not in buckets:
+                continue
+            question_id = int(ann["question_id"])
+            question = questions.get(question_id)
+            if question is None:
+                continue
+            filename = f"COCO_train2014_{int(question['image_id']):012d}.jpg"
+            if filename not in available_images:
+                skipped_missing_image += 1
+                continue
+            prompt = " ".join(str(question["question"]).split())
+            if not prompt:
+                continue
+            if _has_reserved_chat_markers(prompt):
+                skipped_reserved_markers += 1
+                continue
+            buckets[answer_type].append(
+                {
+                    "question_id": question_id,
+                    "image_id": int(question["image_id"]),
+                    "image": filename,
+                    "prompt": prompt,
+                }
+            )
+
+        rng = random.Random(7301)
+        target_per_type = max(1, int(max_samples) // max(len(buckets), 1))
+        samples = []
+        for answer_type, rows in buckets.items():
+            rng.shuffle(rows)
+            if len(rows) < 2:
+                continue
+            wrong_target = int(round(target_per_type * 0.70))
+            blank_target = target_per_type - wrong_target
+
+            for i, row in enumerate(rows[:wrong_target]):
+                candidates = [
+                    candidate
+                    for candidate in rows
+                    if candidate["image_id"] != row["image_id"]
+                ]
+                if not candidates:
+                    continue
+                wrong = candidates[(i * 7919) % len(candidates)]
+                samples.append(
+                    {
+                        "id": f"vqa_cf_wrong_{answer_type.replace('/', '_')}_{row['question_id']}",
+                        "image": wrong["image"],
+                        "source_question_id": row["question_id"],
+                        "source_image": row["image"],
+                        "control_image": wrong["image"],
+                        "counterfactual_type": "wrong_image_same_answer_type",
+                        "answer_type": answer_type,
+                        "conversations": [
+                            {
+                                "from": "human",
+                                "value": (
+                                    f"<image>\n{row['prompt']}\n"
+                                    "Answer based only on the image. If the answer cannot be "
+                                    "determined from the image, answer \"not enough information\"."
+                                ),
+                            },
+                            {"from": "gpt", "value": "not enough information"},
+                        ],
+                    }
+                )
+
+            for row in rows[wrong_target: wrong_target + blank_target]:
+                samples.append(
+                    {
+                        "id": f"vqa_cf_blank_{answer_type.replace('/', '_')}_{row['question_id']}",
+                        "image": blank_filename,
+                        "source_question_id": row["question_id"],
+                        "source_image": row["image"],
+                        "counterfactual_type": "blank_image",
+                        "answer_type": answer_type,
+                        "conversations": [
+                            {
+                                "from": "human",
+                                "value": (
+                                    f"<image>\n{row['prompt']}\n"
+                                    "Answer based only on the image. If the answer cannot be "
+                                    "determined from the image, answer \"not enough information\"."
+                                ),
+                            },
+                            {"from": "gpt", "value": "not enough information"},
+                        ],
+                    }
+                )
+
+        rng.shuffle(samples)
+        samples = samples[: int(max_samples)]
+        if not samples:
+            raise RuntimeError("VQAv2 counterfactual grounding generation produced no samples.")
+
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(
+            f"Built {len(samples)} VQAv2 counterfactual grounding samples at {output_path}; "
+            f"skipped_missing_image={skipped_missing_image}; "
+            f"skipped_reserved_markers={skipped_reserved_markers}"
+        )
+        volume.commit()
+        return output_path, vqa_image_dir
+
+    def _coco_absence_pope_style_path(max_samples=10000):
+        """Build POPE-style object absence probes from COCO train2017 instances."""
+        output_path = (
+            f"/checkpoints/llava_data/"
+            f"coco_pope_style_absence_train2017_{int(max_samples)}.json"
+        )
+        if os.path.exists(output_path):
+            return output_path
+
+        instances_path = _ensure_coco_instance_annotations()
+        with open(instances_path, "r") as f:
+            instances = _json.load(f)
+
+        available_images = {
+            f for f in os.listdir(image_dir)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        }
+        images = {
+            image["id"]: image
+            for image in instances.get("images", [])
+            if image.get("file_name") in available_images
+        }
+        categories = {
+            category["id"]: category["name"]
+            for category in instances.get("categories", [])
+        }
+        all_category_names = sorted(set(categories.values()))
+        present_by_image = {image_id: set() for image_id in images}
+        for ann in instances.get("annotations", []):
+            if ann.get("iscrowd"):
+                continue
+            image_id = ann.get("image_id")
+            if image_id not in present_by_image:
+                continue
+            category_name = categories.get(ann.get("category_id"))
+            if category_name:
+                present_by_image[image_id].add(category_name)
+
+        rng = random.Random(7321)
+        image_ids = list(images.keys())
+        rng.shuffle(image_ids)
+        samples = []
+        for image_id in image_ids:
+            absent = [
+                name for name in all_category_names
+                if name not in present_by_image.get(image_id, set())
+            ]
+            if not absent:
+                continue
+            category = absent[(image_id * 1543) % len(absent)]
+            article = "an" if category[:1].lower() in {"a", "e", "i", "o", "u"} else "a"
+            samples.append(
+                {
+                    "id": f"coco_absence_{image_id}_{category.replace(' ', '_')}",
+                    "image": images[image_id]["file_name"],
+                    "counterfactual_type": "pope_style_object_absence",
+                    "absent_category": category,
+                    "conversations": [
+                        {"from": "human", "value": f"<image>\nIs there {article} {category} in the image?"},
+                        {"from": "gpt", "value": "no"},
+                    ],
+                }
+            )
+            if len(samples) >= int(max_samples):
+                break
+
+        if not samples:
+            raise RuntimeError("COCO POPE-style absence generation produced no samples.")
+
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(f"Built {len(samples)} COCO POPE-style absence samples at {output_path}")
+        volume.commit()
+        return output_path
+
     def _llava_caption_long_form_path(max_samples=50000):
         output_path = f"/checkpoints/llava_data/llava_caption_long_form_{int(max_samples)}.json"
         if os.path.exists(output_path):
@@ -2874,8 +3091,13 @@ def load_finetune_dataset(
         "v4_semantic_calibration",
         "v5_semantic_calibration",
         "v5_semantic_calibration_robust",
+        "v7_semantic_calibration_counterfactual",
     }:
-        if dataset in {"v5_semantic_calibration", "v5_semantic_calibration_robust"}:
+        if dataset in {
+            "v5_semantic_calibration",
+            "v5_semantic_calibration_robust",
+            "v7_semantic_calibration_counterfactual",
+        }:
             direct_weights = {
                 "yes_no": 0.40,
                 "number": 0.20,
@@ -2888,7 +3110,9 @@ def load_finetune_dataset(
                 "explanations, or the word assistant. End after the answer."
             )
             calibration_image_augmentation_mode = (
-                "vqa_light" if dataset == "v5_semantic_calibration_robust" else image_augmentation_mode
+                "vqa_light"
+                if dataset in {"v5_semantic_calibration_robust", "v7_semantic_calibration_counterfactual"}
+                else image_augmentation_mode
             )
         elif dataset == "v4_semantic_calibration":
             direct_weights = {
@@ -2926,7 +3150,12 @@ def load_finetune_dataset(
             calibration_prompt = training_system_prompt
             calibration_image_augmentation_mode = image_augmentation_mode
 
-        if dataset in {"v4_semantic_calibration", "v5_semantic_calibration", "v5_semantic_calibration_robust"}:
+        if dataset in {
+            "v4_semantic_calibration",
+            "v5_semantic_calibration",
+            "v5_semantic_calibration_robust",
+            "v7_semantic_calibration_counterfactual",
+        }:
             vqa_yes_no_path, vqa_image_dir = _vqa_train_balanced_yes_no_path(
                 max_per_label=40000,
             )
@@ -2945,6 +3174,72 @@ def load_finetune_dataset(
         )
         coco_direct_path = _coco_object_direct_answer_path()
         short_direct_path = _filtered_direct_answer_path()
+        counterfactual_path, counterfactual_image_dir = (
+            _vqa_counterfactual_grounding_path(max_samples=30000)
+            if dataset == "v7_semantic_calibration_counterfactual"
+            else (None, None)
+        )
+        absence_path = (
+            _coco_absence_pope_style_path(max_samples=10000)
+            if dataset == "v7_semantic_calibration_counterfactual"
+            else None
+        )
+
+        mixture_sources = [
+            {
+                "name": "vqa_train_yes_no",
+                "weight": direct_weights["yes_no"],
+                "data_path": vqa_yes_no_path,
+                "image_dir": vqa_image_dir,
+                "system_prompt": calibration_prompt,
+            },
+            {
+                "name": "vqa_train_number",
+                "weight": direct_weights["number"],
+                "data_path": vqa_number_path,
+                "image_dir": vqa_image_dir,
+                "system_prompt": calibration_prompt,
+            },
+            {
+                "name": "coco_object_count_color_direct",
+                "weight": direct_weights["coco"],
+                "data_path": coco_direct_path,
+                "system_prompt": calibration_prompt,
+            },
+            {
+                "name": "vqa_train_other",
+                "weight": direct_weights["other"],
+                "data_path": vqa_other_path,
+                "image_dir": vqa_image_dir,
+                "system_prompt": calibration_prompt,
+            },
+            {
+                "name": "short_llava_mix",
+                "weight": direct_weights["short"],
+                "data_path": short_direct_path,
+                "system_prompt": calibration_prompt,
+            },
+        ]
+        if dataset == "v7_semantic_calibration_counterfactual":
+            for source in mixture_sources:
+                source["weight"] = float(source["weight"]) * 0.80
+            mixture_sources.extend(
+                [
+                    {
+                        "name": "vqa_counterfactual_grounding",
+                        "weight": 0.15,
+                        "data_path": counterfactual_path,
+                        "image_dir": counterfactual_image_dir,
+                        "system_prompt": calibration_prompt,
+                    },
+                    {
+                        "name": "coco_pope_style_absence",
+                        "weight": 0.05,
+                        "data_path": absence_path,
+                        "system_prompt": calibration_prompt,
+                    },
+                ]
+            )
 
         ds = create_instruction_dataset(
             data_path=None,
@@ -2952,41 +3247,7 @@ def load_finetune_dataset(
             tokenizer=tokenizer,
             mixture_config={
                 "strategy": "weighted",
-                "datasets": [
-                    {
-                        "name": "vqa_train_yes_no",
-                        "weight": direct_weights["yes_no"],
-                        "data_path": vqa_yes_no_path,
-                        "image_dir": vqa_image_dir,
-                        "system_prompt": calibration_prompt,
-                    },
-                    {
-                        "name": "vqa_train_number",
-                        "weight": direct_weights["number"],
-                        "data_path": vqa_number_path,
-                        "image_dir": vqa_image_dir,
-                        "system_prompt": calibration_prompt,
-                    },
-                    {
-                        "name": "coco_object_count_color_direct",
-                        "weight": direct_weights["coco"],
-                        "data_path": coco_direct_path,
-                        "system_prompt": calibration_prompt,
-                    },
-                    {
-                        "name": "vqa_train_other",
-                        "weight": direct_weights["other"],
-                        "data_path": vqa_other_path,
-                        "image_dir": vqa_image_dir,
-                        "system_prompt": calibration_prompt,
-                    },
-                    {
-                        "name": "short_llava_mix",
-                        "weight": direct_weights["short"],
-                        "data_path": short_direct_path,
-                        "system_prompt": calibration_prompt,
-                    },
-                ],
+                "datasets": mixture_sources,
             },
             image_size=image_size,
             max_length=max_length,
@@ -4163,6 +4424,7 @@ def main(
         "v4_semantic_calibration",
         "v5_semantic_calibration",
         "v5_semantic_calibration_robust",
+        "v7_semantic_calibration_counterfactual",
     }:
         freeze_connector = True
     resolved_v4_connector_type = v4_connector_type or V4_DEFAULT_CONNECTOR_TYPE
