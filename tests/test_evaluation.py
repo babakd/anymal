@@ -182,6 +182,7 @@ def test_vqa_evaluator_counts_first_stop_token_not_padding():
         "image": torch.zeros(2, 3, 4, 4),
         "input_ids": torch.tensor([[10, 11], [10, 11]], dtype=torch.long),
         "attention_mask": torch.ones(2, 2, dtype=torch.long),
+        "image_id": [101, 102],
         "question_id": [1, 2],
         "answers": [["tok50"], ["tok51"]],
         "answer_type": ["other", "other"],
@@ -193,3 +194,97 @@ def test_vqa_evaluator_counts_first_stop_token_not_padding():
     assert results["avg_generated_tokens"] == 3.0
     assert results["eos_rate"] == 0.5
     assert results["hit_max_new_tokens_rate"] == 0.5
+
+
+def test_vqa_collate_fn_left_pads_for_decoder_only_generation():
+    from evaluation.vqa_eval import vqa_collate_fn
+
+    batch = [
+        {
+            "image": torch.zeros(3, 4, 4),
+            "input_ids": torch.tensor([10, 11, 12], dtype=torch.long),
+            "attention_mask": torch.ones(3, dtype=torch.long),
+            "image_id": 101,
+            "question_id": 1,
+            "question": "long?",
+            "answers": ["yes"],
+            "answer_type": "yes/no",
+            "question_type": "",
+        },
+        {
+            "image": torch.ones(3, 4, 4),
+            "input_ids": torch.tensor([20], dtype=torch.long),
+            "attention_mask": torch.ones(1, dtype=torch.long),
+            "image_id": 102,
+            "source_image_id": 201,
+            "image_control": "shuffled_image",
+            "question_id": 2,
+            "question": "short?",
+            "answers": ["no"],
+            "answer_type": "yes/no",
+            "question_type": "",
+        },
+    ]
+
+    collated = vqa_collate_fn(batch, pad_token_id=0)
+
+    assert collated["input_ids"].tolist() == [[10, 11, 12], [0, 0, 20]]
+    assert collated["attention_mask"].tolist() == [[1, 1, 1], [0, 0, 1]]
+    assert collated["source_image_id"] == [101, 201]
+    assert collated["image_control"] == ["none", "shuffled_image"]
+
+
+def test_vqa_evaluator_reports_strict_accuracy_and_role_prefix_rate():
+    from evaluation.vqa_eval import VQAEvaluator
+
+    class PrefixTokenizer(TinyTokenizer):
+        def decode(self, token_ids, skip_special_tokens=True):
+            ids = token_ids.tolist() if isinstance(token_ids, torch.Tensor) else list(token_ids)
+            if skip_special_tokens:
+                ids = [
+                    token_id for token_id in ids
+                    if token_id not in {self.pad_token_id, self.eos_token_id, self.eot_token_id}
+                ]
+            if ids == [70, 71, 72]:
+                return "assistant\n\nyes"
+            if ids == [73]:
+                return "no"
+            return super().decode(ids, skip_special_tokens=skip_special_tokens)
+
+    class TinyModel:
+        tokenizer = PrefixTokenizer()
+
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return self
+
+        def generate(self, images, input_ids, attention_mask, max_new_tokens, do_sample):
+            new_tokens = torch.tensor(
+                [
+                    [70, 71, 72, self.tokenizer.eot_token_id],
+                    [73, self.tokenizer.eot_token_id, self.tokenizer.pad_token_id, self.tokenizer.pad_token_id],
+                ],
+                dtype=torch.long,
+                device=input_ids.device,
+            )
+            return torch.cat([input_ids, new_tokens], dim=1)
+
+    batch = {
+        "image": torch.zeros(2, 3, 4, 4),
+        "input_ids": torch.tensor([[10, 11], [10, 11]], dtype=torch.long),
+        "attention_mask": torch.ones(2, 2, dtype=torch.long),
+        "image_id": [101, 102],
+        "question_id": [1, 2],
+        "answers": [["yes", "yes", "yes"], ["no", "no", "no"]],
+        "answer_type": ["yes/no", "yes/no"],
+    }
+
+    evaluator = VQAEvaluator(TinyModel(), device=torch.device("cpu"), max_new_tokens=4)
+    results = evaluator.evaluate([batch])
+
+    assert results["accuracy"] == 100.0
+    assert results["strict_accuracy"] == 50.0
+    assert results["assistant_role_prefix_rate"] == 0.5
+    assert results["assistant_role_prefix_rate_yes_no"] == 0.5

@@ -29,6 +29,7 @@ This handles answer variation:
 
 import os
 import json
+import re
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
@@ -46,6 +47,22 @@ USER_HEADER = "<|start_header_id|>user<|end_header_id|>\n\n"
 ASSISTANT_HEADER = "<|start_header_id|>assistant<|end_header_id|>\n\n"
 END_TURN = "<|eot_id|>"
 IMAGE_SENTINEL = "<|image_sentinel|>"
+ASSISTANT_ROLE_PREFIX_RE = re.compile(r"^assistant\s*[:\n\r]+\s*", re.IGNORECASE)
+NUMBER_WORDS = {
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+}
 
 
 def _special_stop_token_ids(tokenizer) -> List[int]:
@@ -267,6 +284,7 @@ class VQADataset(Dataset):
             "image": image_tensor,
             "input_ids": input_ids,
             "attention_mask": attention_mask,
+            "image_id": image_id,
             "question_id": question_id,
             "question": question,
             "answers": answers,
@@ -322,6 +340,13 @@ class VQAEvaluator:
         clean_eos_count = 0
         hit_max_new_tokens_count = 0
         answer_type_scores = {}
+        strict_total_score = 0.0
+        strict_answer_type_scores = {}
+        assistant_prefix_count = 0
+        predicted_kind_by_answer_type = {}
+        assistant_prefix_by_answer_type = {}
+        answer_counts = Counter()
+        raw_answer_counts = Counter()
 
         for batch in tqdm(dataloader, desc="Evaluating VQA"):
             if batch is None:
@@ -361,40 +386,84 @@ class VQAEvaluator:
                     generated,
                     skip_special_tokens=True,
                 ).strip()
+                has_assistant_prefix = bool(ASSISTANT_ROLE_PREFIX_RE.match(raw_answer))
+                if has_assistant_prefix:
+                    assistant_prefix_count += 1
 
                 # Clean up answer
                 pred_answer = self._process_answer(raw_answer)
+                strict_answer = self._process_answer(
+                    raw_answer,
+                    strip_assistant_prefix=False,
+                )
+                answer_counts[pred_answer] += 1
+                raw_answer_counts[raw_answer] += 1
 
                 question_id = batch["question_id"][i].item() if isinstance(
                     batch["question_id"][i], torch.Tensor
                 ) else batch["question_id"][i]
+                image_id = batch["image_id"][i].item() if isinstance(
+                    batch["image_id"][i], torch.Tensor
+                ) else batch["image_id"][i]
+                source_image_id = batch.get("source_image_id", [image_id] * len(generated_ids))[i]
+                if isinstance(source_image_id, torch.Tensor):
+                    source_image_id = source_image_id.item()
                 gt_answers = batch["answers"][i] if batch["answers"] else []
+                answer_type = ""
+                if "answer_type" in batch:
+                    answer_type = batch["answer_type"][i] or ""
+                if answer_type:
+                    predicted_kind = self._classify_processed_answer(pred_answer)
+                    confusion_bucket = predicted_kind_by_answer_type.setdefault(
+                        answer_type,
+                        Counter(),
+                    )
+                    confusion_bucket[predicted_kind] += 1
+                    prefix_bucket = assistant_prefix_by_answer_type.setdefault(
+                        answer_type,
+                        {"count": 0, "prefix": 0},
+                    )
+                    prefix_bucket["count"] += 1
+                    if has_assistant_prefix:
+                        prefix_bucket["prefix"] += 1
 
                 predictions.append({
+                    "image_id": image_id,
+                    "source_image_id": source_image_id,
+                    "image_control": batch.get("image_control", ["none"] * len(generated_ids))[i],
                     "question_id": question_id,
                     "question": batch["question"][i] if "question" in batch else "",
                     "raw_answer": raw_answer,
                     "answer": pred_answer,
+                    "strict_answer": strict_answer,
+                    "assistant_role_prefix": has_assistant_prefix,
+                    "predicted_answer_kind": self._classify_processed_answer(pred_answer),
                     "answers": gt_answers,
-                    "answer_type": batch["answer_type"][i] if "answer_type" in batch else "",
+                    "answer_type": answer_type,
                     "question_type": batch["question_type"][i] if "question_type" in batch else "",
                 })
 
                 # Compute score if ground truth available
                 if gt_answers:
                     score = self._compute_vqa_score(pred_answer, gt_answers)
+                    strict_score = self._compute_vqa_score(strict_answer, gt_answers)
                     total_score += score
+                    strict_total_score += strict_score
                     num_samples += 1
-                    answer_type = ""
-                    if "answer_type" in batch:
-                        answer_type = batch["answer_type"][i] or ""
                     if answer_type:
                         bucket = answer_type_scores.setdefault(answer_type, {"score": 0.0, "count": 0})
                         bucket["score"] += score
                         bucket["count"] += 1
+                        strict_bucket = strict_answer_type_scores.setdefault(
+                            answer_type,
+                            {"score": 0.0, "count": 0},
+                        )
+                        strict_bucket["score"] += strict_score
+                        strict_bucket["count"] += 1
 
         # Compute overall accuracy
         accuracy = total_score / num_samples if num_samples > 0 else 0.0
+        strict_accuracy = strict_total_score / num_samples if num_samples > 0 else 0.0
 
         # Save predictions
         if output_file:
@@ -409,13 +478,21 @@ class VQAEvaluator:
         hit_max_new_tokens_rate = (
             hit_max_new_tokens_count / len(generated_token_counts) if generated_token_counts else 0.0
         )
+        assistant_prefix_rate = (
+            assistant_prefix_count / len(generated_token_counts)
+            if generated_token_counts else 0.0
+        )
 
         results = {
             "accuracy": accuracy * 100,  # Percentage
+            "strict_accuracy": strict_accuracy * 100,
             "num_samples": num_samples,
             "avg_generated_tokens": avg_generated_tokens,
             "eos_rate": eos_rate,
             "hit_max_new_tokens_rate": hit_max_new_tokens_rate,
+            "assistant_role_prefix_rate": assistant_prefix_rate,
+            "top_answers": answer_counts.most_common(20),
+            "top_raw_answers": raw_answer_counts.most_common(20),
         }
         for answer_type, bucket in sorted(answer_type_scores.items()):
             key = answer_type.replace("/", "_").replace(" ", "_")
@@ -423,10 +500,27 @@ class VQAEvaluator:
                 100.0 * bucket["score"] / bucket["count"] if bucket["count"] else 0.0
             )
             results[f"num_samples_{key}"] = bucket["count"]
+            strict_bucket = strict_answer_type_scores.get(answer_type, {})
+            results[f"strict_accuracy_{key}"] = (
+                100.0 * strict_bucket.get("score", 0.0) / strict_bucket.get("count", 1)
+                if strict_bucket.get("count") else 0.0
+            )
+            prefix_bucket = assistant_prefix_by_answer_type.get(answer_type, {})
+            prefix_count = prefix_bucket.get("prefix", 0)
+            type_count = prefix_bucket.get("count", 0)
+            results[f"assistant_role_prefix_rate_{key}"] = (
+                prefix_count / type_count if type_count else 0.0
+            )
+            confusion = predicted_kind_by_answer_type.get(answer_type, Counter())
+            for predicted_kind in ("empty", "yes_no", "number", "other"):
+                count = confusion.get(predicted_kind, 0)
+                results[f"predicted_{predicted_kind}_rate_on_{key}"] = (
+                    count / type_count if type_count else 0.0
+                )
 
         return results
 
-    def _process_answer(self, answer: str) -> str:
+    def _process_answer(self, answer: str, strip_assistant_prefix: bool = True) -> str:
         """
         Process generated answer for evaluation.
 
@@ -440,8 +534,8 @@ class VQAEvaluator:
 
         # Some chat models duplicate the assistant role header before content
         # (e.g. "assistant\n\nyes"). Strip that before first-line truncation.
-        import re
-        answer = re.sub(r"^assistant\s*[:\n\r]+\s*", "", answer).strip()
+        if strip_assistant_prefix:
+            answer = ASSISTANT_ROLE_PREFIX_RE.sub("", answer).strip()
 
         # Take first line/sentence
         answer = answer.split("\n")[0].split(".")[0]
@@ -462,6 +556,19 @@ class VQAEvaluator:
         answer = " ".join(words)
 
         return answer.strip()
+
+    @staticmethod
+    def _classify_processed_answer(answer: str) -> str:
+        answer = str(answer or "").strip().lower()
+        if not answer:
+            return "empty"
+        if answer in {"yes", "no"}:
+            return "yes_no"
+        if re.fullmatch(r"\d+([./-]\d+)?", answer):
+            return "number"
+        if answer in NUMBER_WORDS:
+            return "number"
+        return "other"
 
     def _compute_vqa_score(
         self,
@@ -511,13 +618,18 @@ def vqa_collate_fn(batch: List[Dict[str, Any]], pad_token_id: int) -> Optional[D
         ids = item["input_ids"]
         mask = item["attention_mask"]
         pad_len = max_len - ids.shape[0]
-        input_ids_list.append(F.pad(ids, (0, pad_len), value=pad_token_id))
-        attention_masks_list.append(F.pad(mask, (0, pad_len), value=0))
+        # Decoder-only generation must start from the real prompt end. Right
+        # padding makes shorter prompts generate from a pad token position.
+        input_ids_list.append(F.pad(ids, (pad_len, 0), value=pad_token_id))
+        attention_masks_list.append(F.pad(mask, (pad_len, 0), value=0))
 
     return {
         "image": images,
         "input_ids": torch.stack(input_ids_list),
         "attention_mask": torch.stack(attention_masks_list),
+        "image_id": [item["image_id"] for item in batch],
+        "source_image_id": [item.get("source_image_id", item["image_id"]) for item in batch],
+        "image_control": [item.get("image_control", "none") for item in batch],
         "question_id": [item["question_id"] for item in batch],
         "question": [item["question"] for item in batch],
         "answers": [item["answers"] for item in batch],
@@ -550,7 +662,11 @@ def evaluate_vqav2(
     """
     from data import get_vision_transform
 
-    is_siglip_arch = getattr(model, "architecture", "") in {"anymal_v2", "anymal_v3"}
+    is_siglip_arch = getattr(model, "architecture", "") in {
+        "anymal_v2",
+        "anymal_v3",
+        "anymal_v4",
+    }
     vision_type = getattr(model, "vision_encoder_type", "clip")
     vision_model = getattr(getattr(model, "image_encoder", None), "model_name", None)
     transform = get_vision_transform(

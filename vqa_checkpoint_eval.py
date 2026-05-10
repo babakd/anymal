@@ -52,6 +52,11 @@ IMAGE_PERTURBATIONS = {
     "mild_blur",
     "center_crop_90",
     "translate_5pct",
+    "blank_image",
+    "gray_image",
+    "shuffled_image",
+    "shuffle_image",
+    "wrong_image_same_answer_type",
 }
 
 
@@ -82,6 +87,8 @@ def _default_runs(
     if candidate_checkpoint:
         candidate_architecture = str(candidate_architecture).lower()
         architecture_aliases = {
+            "anymal": "v1",
+            "anymal_v1": "v1",
             "anymal_v2": "v2",
             "anymal_v3": "v3",
             "anymal_v4": "v4",
@@ -90,10 +97,10 @@ def _default_runs(
             candidate_architecture,
             candidate_architecture,
         )
-        if candidate_architecture not in {"v2", "v3", "v4"}:
+        if candidate_architecture not in {"v1", "v2", "v3", "v4"}:
             raise ValueError(
                 f"Unsupported candidate_architecture '{candidate_architecture}'. "
-                "Expected 'v2', 'v3', or 'v4'."
+                "Expected 'v1', 'v2', 'v3', or 'v4'."
             )
         runs.append(
             {
@@ -211,21 +218,56 @@ def _require_vqa_files(min_images, image_dir=DEFAULT_IMAGE_DIR, ensure_num_image
     return questions, annotations, image_dir
 
 
+def _canonical_image_perturbation(image_perturbation):
+    value = str(image_perturbation or "none").strip().lower().replace("-", "_")
+    aliases = {
+        "blank": "blank_image",
+        "blankimage": "blank_image",
+        "gray": "blank_image",
+        "grey": "blank_image",
+        "gray_image": "blank_image",
+        "grey_image": "blank_image",
+        "shuffle": "shuffled_image",
+        "shuffleimage": "shuffled_image",
+        "shuffled": "shuffled_image",
+        "wrong_image": "wrong_image_same_answer_type",
+        "wrongimage": "wrong_image_same_answer_type",
+        "wrong_image_same_type": "wrong_image_same_answer_type",
+        "wrongimage_sameanswertype": "wrong_image_same_answer_type",
+    }
+    return aliases.get(value, value)
+
+
+def _parse_train_sources(train_sources):
+    if not train_sources:
+        return []
+    if isinstance(train_sources, (list, tuple)):
+        return [str(source) for source in train_sources if str(source).strip()]
+    text = str(train_sources).strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        return [str(source) for source in json.loads(text)]
+    return [source for source in text.replace(",", " ").split() if source]
+
+
 def _make_image_transform(base_transform, image_perturbation):
-    image_perturbation = str(image_perturbation or "none").lower()
+    image_perturbation = _canonical_image_perturbation(image_perturbation)
     if image_perturbation not in IMAGE_PERTURBATIONS:
         raise ValueError(
             f"Unknown image_perturbation '{image_perturbation}'. "
             f"Expected one of {sorted(IMAGE_PERTURBATIONS)}."
         )
-    if image_perturbation == "none":
+    if image_perturbation in {"none", "shuffled_image", "shuffle_image", "wrong_image_same_answer_type"}:
         return base_transform
 
     def transform(image):
         from PIL import Image, ImageFilter
 
         width, height = image.size
-        if image_perturbation == "resize_up":
+        if image_perturbation == "blank_image":
+            image = Image.new("RGB", (width, height), color=(128, 128, 128))
+        elif image_perturbation == "resize_up":
             image = image.resize(
                 (max(1, int(width * 1.25)), max(1, int(height * 1.25))),
                 resample=Image.Resampling.BICUBIC,
@@ -256,6 +298,41 @@ def _make_image_transform(base_transform, image_perturbation):
     return transform
 
 
+class ControlledVQASubset:
+    def __init__(self, base_dataset, question_indices, source_indices=None, control_name="none"):
+        self.base_dataset = base_dataset
+        self.question_indices = list(question_indices)
+        self.source_indices = list(source_indices) if source_indices is not None else None
+        self.control_name = control_name
+
+    def __len__(self):
+        return len(self.question_indices)
+
+    def _load_source_image(self, source_index):
+        from PIL import Image
+
+        image_id = self.base_dataset.questions[source_index]["image_id"]
+        image_path = os.path.join(
+            self.base_dataset.image_dir,
+            f"COCO_val2014_{image_id:012d}.jpg",
+        )
+        image = Image.open(image_path).convert("RGB")
+        return self.base_dataset.transform(image)
+
+    def __getitem__(self, idx):
+        question_index = self.question_indices[idx]
+        sample = self.base_dataset[question_index]
+        if sample is None:
+            return None
+        sample["image_control"] = self.control_name
+        sample["source_image_id"] = sample["image_id"]
+        if self.source_indices is not None:
+            source_index = self.source_indices[idx]
+            sample["image"] = self._load_source_image(source_index)
+            sample["source_image_id"] = int(self.base_dataset.questions[source_index]["image_id"])
+        return sample
+
+
 def _build_vqa_dataloader(
     model,
     architecture,
@@ -273,12 +350,13 @@ def _build_vqa_dataloader(
     import sys
 
     import torch
-    from torch.utils.data import DataLoader, Subset
+    from torch.utils.data import DataLoader
 
     sys.path.insert(0, "/root/anymal")
     from data.data_utils import get_image_transform, get_vision_transform
     from evaluation.vqa_eval import VQADataset, vqa_collate_fn
 
+    image_perturbation = _canonical_image_perturbation(image_perturbation)
     if architecture in {"v2", "v3", "v4"}:
         transform = get_vision_transform(
             vision_encoder_type="siglip2",
@@ -291,8 +369,8 @@ def _build_vqa_dataloader(
         num_image_tokens = getattr(model, "num_image_tokens", 0)
     else:
         transform = get_image_transform(image_size=224, is_train=False, use_augmentation=False)
-        placeholder_id = None
-        num_image_tokens = 0
+        placeholder_id = getattr(model, "image_placeholder_token_id", None)
+        num_image_tokens = getattr(model, "num_image_tokens", 0)
     transform = _make_image_transform(transform, image_perturbation)
 
     dataset = VQADataset(
@@ -313,16 +391,91 @@ def _build_vqa_dataloader(
     rng = random.Random(seed)
     indices = list(range(len(dataset)))
     rng.shuffle(indices)
-    dataset = Subset(dataset, indices[:max_samples])
+    selected_indices = indices[:max_samples]
+    selected_image_ids = [
+        int(dataset.questions[idx]["image_id"])
+        for idx in selected_indices
+    ]
+
+    control_source_indices = None
+    if image_perturbation in {"shuffled_image", "shuffle_image"}:
+        control_source_indices = list(selected_indices)
+        shuffle_rng = random.Random((int(seed) * 1009) + 17)
+        shuffle_rng.shuffle(control_source_indices)
+        if len(control_source_indices) > 1:
+            for _ in range(len(control_source_indices)):
+                if all(
+                    dataset.questions[src]["image_id"] != dataset.questions[dst]["image_id"]
+                    for src, dst in zip(control_source_indices, selected_indices)
+                ):
+                    break
+                control_source_indices = control_source_indices[1:] + control_source_indices[:1]
+    elif image_perturbation == "wrong_image_same_answer_type":
+        groups = {}
+        for idx in selected_indices:
+            question_id = dataset.questions[idx]["question_id"]
+            answer_type = dataset.annotation_meta.get(question_id, {}).get("answer_type", "")
+            groups.setdefault(answer_type, []).append(idx)
+
+        wrong_rng = random.Random((int(seed) * 1009) + 31)
+        control_source_indices = []
+        for idx in selected_indices:
+            question_id = dataset.questions[idx]["question_id"]
+            answer_type = dataset.annotation_meta.get(question_id, {}).get("answer_type", "")
+            original_image_id = dataset.questions[idx]["image_id"]
+            candidates = [
+                cand
+                for cand in groups.get(answer_type, [])
+                if dataset.questions[cand]["image_id"] != original_image_id
+            ]
+            if not candidates:
+                candidates = [
+                    cand
+                    for cand in selected_indices
+                    if dataset.questions[cand]["image_id"] != original_image_id
+                ]
+            control_source_indices.append(wrong_rng.choice(candidates) if candidates else idx)
+
+    controlled_dataset = ControlledVQASubset(
+        dataset,
+        selected_indices,
+        source_indices=control_source_indices,
+        control_name=image_perturbation,
+    )
 
     pad_token_id = model.tokenizer.pad_token_id or model.tokenizer.eos_token_id
-    return DataLoader(
-        dataset,
+    dataloader = DataLoader(
+        controlled_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=2,
         collate_fn=lambda b: vqa_collate_fn(b, pad_token_id),
     )
+    source_image_ids = [
+        int(dataset.questions[idx]["image_id"])
+        for idx in (control_source_indices or selected_indices)
+    ]
+    dataset_meta = {
+        "questions_file": questions,
+        "annotations_file": annotations,
+        "image_dir": image_dir,
+        "prompt_style": str(prompt_style),
+        "seed": int(seed),
+        "max_samples": int(max_samples),
+        "original_num_questions": int(getattr(dataset, "original_num_questions", len(dataset))),
+        "available_questions": int(len(dataset)),
+        "selected_image_ids": selected_image_ids,
+        "selected_unique_image_ids": int(len(set(selected_image_ids))),
+        "source_image_ids": source_image_ids,
+        "source_unique_image_ids": int(len(set(source_image_ids))),
+    }
+    image_transform_meta = {
+        "name": image_perturbation,
+        "base_transform": "siglip2_384" if architecture in {"v2", "v3", "v4"} else "clip_224",
+        "control_uses_wrong_images": bool(control_source_indices is not None),
+        "control_seed": int(seed),
+    }
+    return dataloader, dataset_meta, image_transform_meta
 
 
 @app.function(
@@ -350,6 +503,8 @@ def evaluate_vqa(
     remote_output_path=None,
     prediction_samples=0,
     system_prompt=None,
+    train_sources=None,
+    eval_schema_version="v6",
 ):
     import gc
     import sys
@@ -358,6 +513,7 @@ def evaluate_vqa(
 
     sys.path.insert(0, "/root/anymal")
     from evaluation.vqa_eval import VQAEvaluator
+    from model_metadata import read_model_metadata
     from v1_v2_compare_inference import _load_v1_model, _load_v2_model
     from models.anymal_v3 import AnyMALv3
     from models.anymal_v4 import AnyMALv4
@@ -369,6 +525,8 @@ def evaluate_vqa(
         image_sample_seed=image_sample_seed,
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    image_perturbation = _canonical_image_perturbation(image_perturbation)
+    parsed_train_sources = _parse_train_sources(train_sources)
 
     results = []
     if v2_checkpoint and not candidate_checkpoint:
@@ -383,6 +541,7 @@ def evaluate_vqa(
         include_baselines=bool(include_baselines),
     ):
         print(f"Evaluating {run['label']} from {run['checkpoint']}")
+        run_model_meta = read_model_metadata(run["checkpoint"]) or {}
         if run["architecture"] == "v1":
             model = _load_v1_model(run["checkpoint"], LLAMA_PATH, device)
         elif run["architecture"] == "v2":
@@ -412,9 +571,7 @@ def evaluate_vqa(
             model.image_encoder.to(device)
             model.projector.to(device)
         elif run["architecture"] == "v4":
-            from model_metadata import read_model_metadata
-
-            meta = read_model_metadata(run["checkpoint"]) or {}
+            meta = run_model_meta
             connector_type = meta.get("connector_type", "spatial_perceiver_resampler")
             deepstack_layers = (
                 meta.get("deepstack_hidden_state_indices")
@@ -471,7 +628,7 @@ def evaluate_vqa(
         else:
             raise ValueError(f"Unknown architecture: {run['architecture']}")
 
-        dataloader = _build_vqa_dataloader(
+        dataloader, dataset_meta, image_transform_meta = _build_vqa_dataloader(
             model=model,
             architecture=run["architecture"],
             questions=questions,
@@ -488,7 +645,42 @@ def evaluate_vqa(
         prediction_output = f"/tmp/{run['key']}_vqa_predictions.json" if int(prediction_samples or 0) > 0 else None
         metrics = evaluator.evaluate(dataloader, output_file=prediction_output)
         print(f"{run['key']}: {metrics}")
-        result_entry = {**run, "metrics": metrics}
+        connector_meta_keys = {
+            "connector_type",
+            "num_image_tokens",
+            "num_global_image_tokens",
+            "num_local_image_tokens",
+            "connector_layers",
+            "connector_heads",
+            "connector_ff_mult",
+            "connector_hidden_dim",
+            "connector_output_scale",
+            "connector_output_gate_init",
+            "use_2d_position_features",
+            "project_directly_to_llm_dim",
+            "deepstack_num_feature_levels",
+            "deepstack_hidden_state_indices",
+            "vision_feature_layers",
+        }
+        connector_meta = {
+            key: value
+            for key, value in run_model_meta.items()
+            if key in connector_meta_keys
+        }
+        result_entry = {
+            **run,
+            "candidate_checkpoint": run["checkpoint"],
+            "candidate_architecture": run["architecture"],
+            "model_meta": run_model_meta,
+            "connector_meta": connector_meta,
+            "dataset_meta": dataset_meta,
+            "train_source_meta": {
+                "train_sources": parsed_train_sources,
+                "leakage_audit_required": True,
+            },
+            "image_transform_meta": image_transform_meta,
+            "metrics": metrics,
+        }
         if prediction_output:
             with open(prediction_output) as f:
                 result_entry["prediction_samples"] = json.load(f)[: int(prediction_samples)]
@@ -500,6 +692,9 @@ def evaluate_vqa(
             torch.cuda.empty_cache()
 
     result = {
+        "eval_schema_version": str(eval_schema_version),
+        "padding_side": "left",
+        "generation_mode": "decoder_leftpad_greedy",
         "max_samples": int(max_samples),
         "seed": int(seed),
         "batch_size": int(batch_size),
@@ -509,6 +704,10 @@ def evaluate_vqa(
         "prompt_style": str(prompt_style),
         "system_prompt": system_prompt,
         "image_perturbation": str(image_perturbation),
+        "train_source_meta": {
+            "train_sources": parsed_train_sources,
+            "leakage_audit_required": True,
+        },
         "runs": results,
     }
     if remote_output_path:
@@ -541,10 +740,11 @@ def main(
     remote_output_path: str = None,
     prediction_samples: int = 0,
     system_prompt: str = None,
+    train_sources: str = "",
+    eval_schema_version: str = "v6",
+    background: bool = False,
 ):
-    # Spawn + get keeps the remote call durable under `modal run --detach`
-    # without relying on a foreground .remote() call from the local entrypoint.
-    result = evaluate_vqa.spawn(
+    function_call = evaluate_vqa.spawn(
         v2_checkpoint=v2_checkpoint,
         v2_label=v2_label,
         candidate_checkpoint=candidate_checkpoint,
@@ -562,7 +762,17 @@ def main(
         remote_output_path=remote_output_path,
         prediction_samples=prediction_samples,
         system_prompt=system_prompt,
-    ).get()
+        train_sources=train_sources,
+        eval_schema_version=eval_schema_version,
+    )
+    if background:
+        print(f"Spawned background VQA eval: {function_call}")
+        print(f"Remote output path: {remote_output_path or '(none)'}")
+        return
+
+    # Spawn + get keeps the remote call durable under `modal run --detach`
+    # without relying on a foreground .remote() call from the local entrypoint.
+    result = function_call.get()
     with open(output, "w") as f:
         json.dump(result, f, indent=2)
     print(f"Saved {output}")
