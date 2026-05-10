@@ -1,0 +1,19 @@
+# AnyMAL V5 Stage 2A R1: Role-Clean Semantic Calibration With Light Visual Robustness
+
+defaults:
+  - finetune_v5_semantic_calibration
+
+stage_name: "semantic_calibration_v5_role_clean_robust"
+
+data:
+  image_augmentation_mode: "vqa_light"
+  augmentation_notes:
+    - "Random resized crop scale 0.95-1.0, ratio 0.95-1.05."
+    - "Low-probability Gaussian blur with p=0.15."
+    - "No horizontal flip for VQA-style left/right semantics."
+
+training:
+  gradient_accumulation_steps: 16
+
+logging:
+  wandb_run_name: "stage2a-v5-role-clean-semantic-calibration-robust-lora-only-100"
