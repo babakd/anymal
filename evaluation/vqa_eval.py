@@ -37,16 +37,17 @@ from typing import Optional, Dict, Any, List
 from tqdm import tqdm
 from collections import Counter
 
-
-TRAINING_SYSTEM_PROMPT = (
-    "You are a helpful AI assistant that can see and understand images. "
-    "Provide detailed, accurate, and helpful responses to questions about images."
+from data.chat_templates import (
+    IMAGE_SENTINEL,
+    TRAINING_SYSTEM_PROMPT,
+    build_generation_prompt_text,
 )
+
+
 SYSTEM_HEADER = "<|start_header_id|>system<|end_header_id|>\n\n"
 USER_HEADER = "<|start_header_id|>user<|end_header_id|>\n\n"
 ASSISTANT_HEADER = "<|start_header_id|>assistant<|end_header_id|>\n\n"
 END_TURN = "<|eot_id|>"
-IMAGE_SENTINEL = "<|image_sentinel|>"
 ASSISTANT_ROLE_PREFIX_RE = re.compile(r"^assistant\s*[:\n\r]+\s*", re.IGNORECASE)
 NUMBER_WORDS = {
     "zero",
@@ -72,9 +73,11 @@ def _special_stop_token_ids(tokenizer) -> List[int]:
         stop_ids.append(int(eos_id))
     get_vocab = getattr(tokenizer, "get_vocab", None)
     if callable(get_vocab):
-        eot_id = get_vocab().get(END_TURN)
-        if eot_id is not None:
-            stop_ids.append(int(eot_id))
+        vocab = get_vocab()
+        for token in (END_TURN, "<|im_end|>"):
+            stop_id = vocab.get(token)
+            if stop_id is not None:
+                stop_ids.append(int(stop_id))
     return list(dict.fromkeys(stop_ids))
 
 
@@ -95,14 +98,17 @@ def _build_chat_prompt_ids(
     num_image_tokens: int,
     max_length: int,
     system_prompt: str = TRAINING_SYSTEM_PROMPT,
+    chat_template_family: Optional[str] = None,
 ) -> Dict[str, torch.Tensor]:
     user_text = question.strip()
     if image_placeholder_token_id is not None and num_image_tokens > 0:
         user_text = f"{IMAGE_SENTINEL}\n{user_text}"
-    text = (
-        f"{SYSTEM_HEADER}{system_prompt}{END_TURN}"
-        f"{USER_HEADER}{user_text}{END_TURN}"
-        f"{ASSISTANT_HEADER}"
+    text = build_generation_prompt_text(
+        tokenizer=tokenizer,
+        question=question,
+        system_prompt=system_prompt,
+        image_sentinel=IMAGE_SENTINEL if image_placeholder_token_id is not None and num_image_tokens > 0 else None,
+        chat_template_family=chat_template_family,
     )
     encoding = tokenizer(
         text,
@@ -169,6 +175,7 @@ class VQADataset(Dataset):
         num_image_tokens: int = 0,
         prompt_style: str = "training_chat",
         system_prompt: Optional[str] = None,
+        chat_template_family: Optional[str] = None,
     ):
         self.image_dir = image_dir
         self.transform = transform
@@ -177,6 +184,7 @@ class VQADataset(Dataset):
         self.num_image_tokens = int(num_image_tokens or 0)
         self.prompt_style = prompt_style
         self.system_prompt = system_prompt or TRAINING_SYSTEM_PROMPT
+        self.chat_template_family = chat_template_family
 
         # Load questions
         with open(questions_file, "r") as f:
@@ -242,6 +250,7 @@ class VQADataset(Dataset):
                 num_image_tokens=self.num_image_tokens,
                 max_length=768,
                 system_prompt=self.system_prompt,
+                chat_template_family=self.chat_template_family,
             )
             input_ids = encoded["input_ids"]
             attention_mask = encoded["attention_mask"]
@@ -685,6 +694,7 @@ def evaluate_vqav2(
         tokenizer=model.tokenizer,
         image_placeholder_token_id=getattr(model, "image_placeholder_token_id", None),
         num_image_tokens=getattr(model, "num_image_tokens", 0) if is_siglip_arch else 0,
+        chat_template_family=getattr(getattr(model, "llm", None), "chat_template_family", None),
     )
 
     pad_token_id = model.tokenizer.pad_token_id or model.tokenizer.eos_token_id

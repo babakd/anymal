@@ -87,6 +87,7 @@ def parse_args():
 
     # Model overrides
     parser.add_argument("--llm_model_name", type=str, default=None)
+    parser.add_argument("--llm-backbone", dest="llm_backbone", type=str, default=None)
     parser.add_argument("--vision_model_name", type=str, default=None)
     parser.add_argument("--num_image_tokens", type=int, default=None)
     parser.add_argument("--architecture", type=str, default=None)
@@ -158,6 +159,9 @@ def main():
     # Apply command-line overrides
     if args.llm_model_name:
         config["model"]["llm_model_name"] = args.llm_model_name
+    if args.llm_backbone:
+        config["model"]["llm_model_name"] = args.llm_backbone
+        config["model"]["llm_backbone"] = args.llm_backbone
     if args.vision_model_name:
         config["model"]["vision_model_name"] = args.vision_model_name
     if args.architecture:

@@ -51,6 +51,7 @@ image = (
 app = modal.App("anymal-pope-checkpoint-eval")
 
 LLAMA_PATH = "/checkpoints/llama3-8b-instruct"
+CURRENT_LLAMA3_BACKBONE = "meta-llama/Meta-Llama-3-8B-Instruct"
 DEFAULT_IMAGE_DIR = "/checkpoints/coco_val2014"
 POPE_DIR = "/checkpoints/pope_data"
 POPE_URLS = {
@@ -239,7 +240,7 @@ def _compute_pope_metrics(predictions: list[dict]) -> dict:
     }
 
 
-def _load_model(run: dict, device):
+def _load_model(run: dict, device, llm_backbone=None):
     import sys
 
     import torch
@@ -249,16 +250,22 @@ def _load_model(run: dict, device):
     from models.anymal_v3 import AnyMALv3
     from models.anymal_v4 import AnyMALv4
     from v1_v2_compare_inference import _load_v1_model, _load_v2_model
+    from vqa_checkpoint_eval import _ensure_eval_llm_path, _resolve_eval_llm_path
 
     meta = read_model_metadata(run["checkpoint"]) or {}
+    llm_path = _ensure_eval_llm_path(
+        _resolve_eval_llm_path(meta, llm_backbone),
+        model_meta=meta,
+        llm_backbone=llm_backbone,
+    )
     if run["architecture"] == "v1":
-        model = _load_v1_model(run["checkpoint"], LLAMA_PATH, device)
+        model = _load_v1_model(run["checkpoint"], llm_path, device)
     elif run["architecture"] == "v2":
-        model = _load_v2_model(run["checkpoint"], LLAMA_PATH, device)
+        model = _load_v2_model(run["checkpoint"], llm_path, device)
     elif run["architecture"] == "v3":
         model = AnyMALv3.from_pretrained(
             run["checkpoint"],
-            llm_model_name=LLAMA_PATH,
+            llm_model_name=llm_path,
             vision_encoder_type="siglip2",
             vision_model_name="google/siglip2-so400m-patch14-384",
             connector_type=meta.get("connector_type", "perceiver_resampler"),
@@ -292,7 +299,7 @@ def _load_model(run: dict, device):
             }
         model = AnyMALv4.from_pretrained(
             run["checkpoint"],
-            llm_model_name=LLAMA_PATH,
+            llm_model_name=llm_path,
             vision_encoder_type="siglip2",
             vision_model_name="google/siglip2-so400m-patch14-384",
             connector_type=connector_type,
@@ -353,6 +360,7 @@ def evaluate_pope(
     remote_output_path=None,
     train_sources=None,
     eval_schema_version="v6",
+    llm_backbone=CURRENT_LLAMA3_BACKBONE,
 ):
     import sys
 
@@ -383,7 +391,7 @@ def evaluate_pope(
         include_baselines=False,
     ):
         print(f"Evaluating POPE {pope_split}: {run['label']} from {run['checkpoint']}")
-        model, run_model_meta = _load_model(run, device)
+        model, run_model_meta = _load_model(run, device, llm_backbone=llm_backbone)
         dataloader, dataset_meta, image_transform_meta = _build_vqa_dataloader(
             model=model,
             architecture=run["architecture"],
@@ -449,6 +457,7 @@ def evaluate_pope(
     result = {
         "eval_schema_version": str(eval_schema_version),
         "benchmark": "pope",
+        "llm_backbone": str(llm_backbone),
         "padding_side": "left",
         "generation_mode": "decoder_leftpad_greedy",
         "pope_split": pope_split,
@@ -486,6 +495,7 @@ def main(
     remote_output_path: str = None,
     train_sources: str = "",
     eval_schema_version: str = "v6",
+    llm_backbone: str = CURRENT_LLAMA3_BACKBONE,
     background: bool = False,
 ):
     call = evaluate_pope.spawn(
@@ -503,6 +513,7 @@ def main(
         remote_output_path=remote_output_path,
         train_sources=train_sources,
         eval_schema_version=eval_schema_version,
+        llm_backbone=llm_backbone,
     )
     if background:
         print(f"Spawned background POPE eval: {call}")

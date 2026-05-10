@@ -39,6 +39,8 @@ from typing import Optional, Dict, Any, List, Tuple, Callable
 from PIL import Image
 import io
 
+from .chat_templates import LLAMA3_TEMPLATE, resolve_chat_template_spec
+
 
 # CLIP normalization statistics
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
@@ -254,11 +256,12 @@ class TextProcessor:
         truncation: Whether to truncate long sequences
     """
 
-    # Special tokens for conversation format (LLaMA 3)
-    SYSTEM_HEADER = "<|start_header_id|>system<|end_header_id|>\n\n"
-    USER_HEADER = "<|start_header_id|>user<|end_header_id|>\n\n"
-    ASSISTANT_HEADER = "<|start_header_id|>assistant<|end_header_id|>\n\n"
-    END_TURN = "<|eot_id|>"
+    # Defaults preserve the historical LLaMA 3 conversation format.
+    SYSTEM_HEADER = LLAMA3_TEMPLATE.system_header
+    USER_HEADER = LLAMA3_TEMPLATE.user_header
+    ASSISTANT_HEADER = LLAMA3_TEMPLATE.assistant_header
+    END_TURN = LLAMA3_TEMPLATE.end_turn
+    ASSISTANT_PREFILL = LLAMA3_TEMPLATE.assistant_prefill
 
     def __init__(
         self,
@@ -266,11 +269,23 @@ class TextProcessor:
         max_length: int = 2048,
         padding: str = "max_length",
         truncation: bool = True,
+        chat_template_family: Optional[str] = None,
     ):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.padding = padding
         self.truncation = truncation
+        self.chat_template_spec = resolve_chat_template_spec(
+            tokenizer,
+            model_name=getattr(tokenizer, "name_or_path", None),
+            family=chat_template_family,
+        )
+        self.chat_template_family = self.chat_template_spec.family
+        self.SYSTEM_HEADER = self.chat_template_spec.system_header
+        self.USER_HEADER = self.chat_template_spec.user_header
+        self.ASSISTANT_HEADER = self.chat_template_spec.assistant_header
+        self.END_TURN = self.chat_template_spec.end_turn
+        self.ASSISTANT_PREFILL = self.chat_template_spec.assistant_prefill
 
         # Ensure padding token is set
         # Use a dedicated pad token, not eos_token (to avoid masking

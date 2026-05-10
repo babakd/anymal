@@ -41,6 +41,9 @@ image = (
 )
 
 LLAMA_PATH = "/checkpoints/llama3-8b-instruct"
+QWEN3_PATH = "/checkpoints/qwen3-8b"
+CURRENT_LLAMA3_BACKBONE = "meta-llama/Meta-Llama-3-8B-Instruct"
+QWEN3_8B_BACKBONE = "Qwen/Qwen3-8B"
 V1_CKPT = "/checkpoints/finetune-output/ablation-F/checkpoint-500"
 V2_FINAL_CKPT = "/checkpoints/finetune-output/v2-stage2-balanced-mix-3000-20260428/checkpoint-3000"
 VQA_QUESTIONS = "/checkpoints/vqa_data/v2_OpenEnded_mscoco_val2014_questions.json"
@@ -58,6 +61,42 @@ IMAGE_PERTURBATIONS = {
     "shuffle_image",
     "wrong_image_same_answer_type",
 }
+
+
+def _canonical_llm_backbone(value=None):
+    raw = str(value or CURRENT_LLAMA3_BACKBONE).strip()
+    lowered = raw.lower()
+    base = os.path.basename(raw.rstrip("/")).lower()
+    if "llama-3.1" in lowered or "llama3.1" in lowered:
+        raise ValueError("Llama 3.1 is intentionally excluded from this V8 execution.")
+    if lowered in {CURRENT_LLAMA3_BACKBONE.lower(), "llama3", "llama3-8b-instruct"} or base == "llama3-8b-instruct":
+        return CURRENT_LLAMA3_BACKBONE
+    if lowered in {QWEN3_8B_BACKBONE.lower(), "qwen3", "qwen3-8b"} or base == "qwen3-8b":
+        return QWEN3_8B_BACKBONE
+    return raw
+
+
+def _resolve_eval_llm_path(model_meta=None, llm_backbone=None):
+    backbone = _canonical_llm_backbone((model_meta or {}).get("llm_backbone") or llm_backbone)
+    if os.path.isabs(backbone):
+        return backbone
+    if backbone == QWEN3_8B_BACKBONE:
+        return QWEN3_PATH
+    return LLAMA_PATH
+
+
+def _ensure_eval_llm_path(path, model_meta=None, llm_backbone=None):
+    if os.path.exists(os.path.join(path, "config.json")):
+        return path
+    backbone = _canonical_llm_backbone((model_meta or {}).get("llm_backbone") or llm_backbone)
+    if os.path.isabs(backbone):
+        raise FileNotFoundError(f"Missing decoder config.json at {path}")
+    from huggingface_hub import snapshot_download
+
+    print(f"Downloading decoder backbone {backbone} to {path}...")
+    snapshot_download(repo_id=backbone, local_dir=path, local_dir_use_symlinks=False)
+    volume.commit()
+    return path
 
 
 def _default_runs(
@@ -384,6 +423,7 @@ def _build_vqa_dataloader(
         num_image_tokens=num_image_tokens,
         prompt_style=prompt_style,
         system_prompt=system_prompt,
+        chat_template_family=getattr(getattr(model, "llm", None), "chat_template_family", None),
     )
     if len(dataset) < max_samples:
         raise RuntimeError(f"VQA dataset has only {len(dataset)} available samples; requested {max_samples}")
@@ -505,6 +545,7 @@ def evaluate_vqa(
     system_prompt=None,
     train_sources=None,
     eval_schema_version="v6",
+    llm_backbone=CURRENT_LLAMA3_BACKBONE,
 ):
     import gc
     import sys
@@ -542,15 +583,20 @@ def evaluate_vqa(
     ):
         print(f"Evaluating {run['label']} from {run['checkpoint']}")
         run_model_meta = read_model_metadata(run["checkpoint"]) or {}
+        run_llm_path = _ensure_eval_llm_path(
+            _resolve_eval_llm_path(run_model_meta, llm_backbone),
+            model_meta=run_model_meta,
+            llm_backbone=llm_backbone,
+        )
         if run["architecture"] == "v1":
-            model = _load_v1_model(run["checkpoint"], LLAMA_PATH, device)
+            model = _load_v1_model(run["checkpoint"], run_llm_path, device)
         elif run["architecture"] == "v2":
-            model = _load_v2_model(run["checkpoint"], LLAMA_PATH, device)
+            model = _load_v2_model(run["checkpoint"], run_llm_path, device)
         elif run["architecture"] == "v3":
             meta = run_model_meta
             model = AnyMALv3.from_pretrained(
                 run["checkpoint"],
-                llm_model_name=LLAMA_PATH,
+                llm_model_name=run_llm_path,
                 vision_encoder_type="siglip2",
                 vision_model_name="google/siglip2-so400m-patch14-384",
                 connector_type=meta.get("connector_type", "perceiver_resampler"),
@@ -590,7 +636,7 @@ def evaluate_vqa(
                 }
             model = AnyMALv4.from_pretrained(
                 run["checkpoint"],
-                llm_model_name=LLAMA_PATH,
+                llm_model_name=run_llm_path,
                 vision_encoder_type="siglip2",
                 vision_model_name="google/siglip2-so400m-patch14-384",
                 connector_type=connector_type,
@@ -694,6 +740,7 @@ def evaluate_vqa(
 
     result = {
         "eval_schema_version": str(eval_schema_version),
+        "llm_backbone": str(llm_backbone),
         "padding_side": "left",
         "generation_mode": "decoder_leftpad_greedy",
         "max_samples": int(max_samples),
@@ -743,6 +790,7 @@ def main(
     system_prompt: str = None,
     train_sources: str = "",
     eval_schema_version: str = "v6",
+    llm_backbone: str = CURRENT_LLAMA3_BACKBONE,
     background: bool = False,
 ):
     function_call = evaluate_vqa.spawn(
@@ -765,6 +813,7 @@ def main(
         system_prompt=system_prompt,
         train_sources=train_sources,
         eval_schema_version=eval_schema_version,
+        llm_backbone=llm_backbone,
     )
     if background:
         print(f"Spawned background VQA eval: {function_call}")
