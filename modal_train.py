@@ -38,11 +38,12 @@ image = (
     .pip_install(  # Stable - changes weekly at most
         "torch>=2.0.0",
         "torchvision>=0.15.0",
-        "transformers>=4.36.0",
+        "transformers>=4.53.0,<5.0.0",
         "accelerate>=0.25.0",
         "peft>=0.7.0",
         "bitsandbytes>=0.41.0",
         "open_clip_torch>=2.23.0",
+        "timm>=0.9.0",
         "pillow>=10.0.0",
         "pyyaml>=6.0",
         "tqdm>=4.66.0",
@@ -87,6 +88,12 @@ V4_DEFAULT_CONNECTOR_OUTPUT_GATE_INIT = 0.0001
 V4_DEFAULT_CONNECTOR_TYPE = "spatial_perceiver_resampler"
 V4_LEGACY_DIRECT_CONNECTOR_HIDDEN_DIM = 4096
 V3_DEFAULT_CONNECTOR_TYPE = "perceiver_resampler"
+CURRENT_LLAMA3_BACKBONE = "meta-llama/Meta-Llama-3-8B-Instruct"
+QWEN3_8B_BACKBONE = "Qwen/Qwen3-8B"
+MODAL_LLM_CACHE_DIRS = {
+    CURRENT_LLAMA3_BACKBONE: "/checkpoints/llama3-8b-instruct",
+    QWEN3_8B_BACKBONE: "/checkpoints/qwen3-8b",
+}
 
 
 def _normalize_gpu_type(gpu_type: str) -> str:
@@ -104,6 +111,70 @@ def _normalize_architecture_key(architecture: str) -> str:
     from model_metadata import normalize_architecture_name
 
     return normalize_architecture_name(architecture)
+
+
+def _canonicalize_llm_backbone(value: str = None) -> str:
+    raw = str(value or CURRENT_LLAMA3_BACKBONE).strip()
+    lowered = raw.lower()
+    base = os.path.basename(raw.rstrip("/")).lower()
+    if "llama-3.1" in lowered or "llama3.1" in lowered:
+        raise ValueError(
+            "Llama 3.1 is intentionally excluded from this V8 execution. "
+            "Use Qwen/Qwen3-8B or the current LLaMA-3-8B incumbent."
+        )
+    if lowered in {
+        CURRENT_LLAMA3_BACKBONE.lower(),
+        "meta-llama/meta-llama-3-8b-instruct",
+        "llama3",
+        "llama-3",
+        "llama3-8b-instruct",
+        "meta-llama-3-8b-instruct",
+    } or base in {"llama3-8b-instruct", "meta-llama-3-8b-instruct"}:
+        return CURRENT_LLAMA3_BACKBONE
+    if lowered in {
+        QWEN3_8B_BACKBONE.lower(),
+        "qwen3",
+        "qwen3-8b",
+        "qwen/qwen3-8b",
+    } or base in {"qwen3-8b", "qwen3_8b"}:
+        return QWEN3_8B_BACKBONE
+    return raw
+
+
+def _metadata_llm_backbone(value: str = None) -> str:
+    canonical = _canonicalize_llm_backbone(value)
+    if os.path.isabs(canonical):
+        return _canonicalize_llm_backbone(os.path.basename(canonical))
+    return canonical
+
+
+def _ensure_llm_backbone_cached(llm_backbone: str = None) -> str:
+    canonical = _canonicalize_llm_backbone(llm_backbone)
+    if os.path.isabs(canonical):
+        if not os.path.exists(os.path.join(canonical, "config.json")):
+            raise FileNotFoundError(f"Requested llm_backbone path has no config.json: {canonical}")
+        return canonical
+    if canonical not in MODAL_LLM_CACHE_DIRS:
+        raise ValueError(
+            f"Unsupported llm_backbone={llm_backbone!r}. "
+            f"Supported values: {sorted(MODAL_LLM_CACHE_DIRS)}"
+        )
+
+    local_dir = MODAL_LLM_CACHE_DIRS[canonical]
+    if not os.path.exists(os.path.join(local_dir, "config.json")):
+        print(f"Downloading decoder backbone {canonical} to {local_dir}...")
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(
+            repo_id=canonical,
+            local_dir=local_dir,
+            local_dir_use_symlinks=False,
+        )
+        volume.commit()
+        print(f"Decoder backbone saved to {local_dir}")
+    else:
+        print(f"Using cached decoder backbone {canonical} from {local_dir}")
+    return local_dir
 
 
 def _resolve_v4_token_split(
@@ -329,6 +400,7 @@ def _checkpoint_save_interval(max_steps: int, max_interval: int = 250) -> int:
 def _checkpoint_matches_run_config(
     checkpoint_dir: str,
     expected_architecture: str,
+    expected_llm_backbone: str = None,
     token_compressor_type: str = None,
     v3_connector_type: str = None,
     v4_connector_type: str = None,
@@ -356,6 +428,16 @@ def _checkpoint_matches_run_config(
         return False
 
     meta = read_model_metadata(checkpoint_dir) or {}
+    if expected_llm_backbone:
+        requested_backbone = _metadata_llm_backbone(expected_llm_backbone)
+        checkpoint_backbone = meta.get("llm_backbone")
+        if checkpoint_backbone != requested_backbone:
+            print(
+                f"Skipping checkpoint {checkpoint_dir}: llm_backbone="
+                f"{checkpoint_backbone!r}, requested={requested_backbone!r}"
+            )
+            return False
+
     if expected_architecture == "anymal_v2" and token_compressor_type:
         checkpoint_compressor = meta.get("token_compressor_type")
         if checkpoint_compressor and checkpoint_compressor != token_compressor_type:
@@ -407,6 +489,7 @@ def _checkpoint_matches_run_config(
 
 def _auto_discover_pretrain_checkpoint(
     arch_key: str,
+    llm_backbone: str = None,
     token_compressor_type: str = None,
     v3_connector_type: str = None,
     v4_connector_type: str = None,
@@ -428,6 +511,7 @@ def _auto_discover_pretrain_checkpoint(
         if _checkpoint_matches_run_config(
             checkpoint_dir=path,
             expected_architecture=arch_key,
+            expected_llm_backbone=llm_backbone,
             token_compressor_type=token_compressor_type,
             v3_connector_type=v3_connector_type,
             v4_connector_type=v4_connector_type,
@@ -482,20 +566,9 @@ class Trainer:
         print("Container startup - loading model (runs once per container)")
         print("=" * 60)
 
-        # Download LLaMA weights if not cached in volume
-        self.llama_path = "/checkpoints/llama3-8b-instruct"
-        if not os.path.exists(os.path.join(self.llama_path, "config.json")):
-            print("Downloading LLaMA-3-8B-Instruct weights...")
-            from huggingface_hub import snapshot_download
-            snapshot_download(
-                repo_id="meta-llama/Meta-Llama-3-8B-Instruct",
-                local_dir=self.llama_path,
-                local_dir_use_symlinks=False,
-            )
-            volume.commit()
-            print(f"LLaMA weights saved to {self.llama_path}")
-        else:
-            print(f"Using cached LLaMA weights from {self.llama_path}")
+        # The requested decoder is resolved inside train(); V8 supports Qwen3
+        # without an unconditional LLaMA download during container startup.
+        self.llama_path = None
 
         # Download LLaVA dataset JSON if not cached
         self._ensure_llava_data_cached()
@@ -827,6 +900,7 @@ class Trainer:
         v4_connector_type: str = None,
         v4_deepstack_num_feature_levels: int = None,
         v4_deepstack_hidden_state_indices: str = None,
+        llm_backbone: str = CURRENT_LLAMA3_BACKBONE,
     ):
         """
         Run AnyMAL training on Modal.
@@ -865,6 +939,9 @@ class Trainer:
         from training.distributed import print_rank_0
 
         arch_key = _normalize_architecture_key(architecture)
+        llm_path = _ensure_llm_backbone_cached(llm_backbone)
+        resolved_llm_backbone = _metadata_llm_backbone(llm_backbone)
+        self.llama_path = llm_path
         if arch_key in {"anymal_v3", "anymal_v4"} and dataset == "instruct_150k":
             dataset = "v3_grounded"
         if arch_key in {"anymal_v3", "anymal_v4"} and dataset in {
@@ -896,6 +973,7 @@ class Trainer:
         print_rank_0("=" * 60)
         print_rank_0(f"AnyMAL Training on Modal")
         print_rank_0(f"Stage: {stage}")
+        print_rank_0(f"LLM backbone: {resolved_llm_backbone} ({llm_path})")
         print_rank_0(f"Max steps: {max_steps}")
         print_rank_0(f"Batch size: {batch_size}")
         print_rank_0(f"Data: {'dummy' if use_dummy_data else 'LLaVA'}")
@@ -905,7 +983,8 @@ class Trainer:
             lr = learning_rate or 2e-5
             lora_lr = lora_learning_rate or 2e-4
             run_finetune(
-                llama_path=self.llama_path,
+                llama_path=llm_path,
+                llm_backbone=resolved_llm_backbone,
                 architecture=arch_key,
                 max_steps=max_steps,
                 learning_rate=lr,
@@ -954,7 +1033,8 @@ class Trainer:
                 run_name=run_name,
             )
             run_pretrain(
-                llama_path=self.llama_path,
+                llama_path=llm_path,
+                llm_backbone=resolved_llm_backbone,
                 architecture=arch_key,
                 max_steps=max_steps,
                 learning_rate=lr,
@@ -1066,7 +1146,7 @@ def _diagnose_dataset_sample(dataset, tokenizer, num_samples=3):
         if placeholder_id is None:
             # try the tokenizer vocab
             vocab = tokenizer.get_vocab()
-            for c in ["<|reserved_special_token_0|>", "<|image|>"]:
+            for c in ["<|reserved_special_token_0|>", "<|image|>", "<image>"]:
                 if c in vocab:
                     placeholder_id = vocab[c]
                     break
@@ -1091,13 +1171,17 @@ def _diagnose_dataset_sample(dataset, tokenizer, num_samples=3):
 
         # Check that eos_token is NOT masked (should be supervised if at end of response)
         eos_id = tokenizer.eos_token_id
-        eot_vocab = tokenizer.get_vocab()
-        eot_id = eot_vocab.get("<|eot_id|>", None)
-        if eot_id is not None:
-            eot_positions = (ids == eot_id).nonzero(as_tuple=True)[0]
-            if len(eot_positions) > 0:
-                eot_supervised = sum(1 for pos in eot_positions if labels[pos] != -100)
-                print(f"    <|eot_id|> tokens: {len(eot_positions)} total, {eot_supervised} supervised")
+        vocab = tokenizer.get_vocab()
+        for stop_token in ("<|eot_id|>", "<|im_end|>"):
+            stop_id = vocab.get(stop_token, None)
+            if stop_id is not None:
+                stop_positions = (ids == stop_id).nonzero(as_tuple=True)[0]
+                if len(stop_positions) > 0:
+                    stop_supervised = sum(1 for pos in stop_positions if labels[pos] != -100)
+                    print(
+                        f"    {stop_token} tokens: {len(stop_positions)} total, "
+                        f"{stop_supervised} supervised"
+                    )
 
     print("=" * 60 + "\n")
 
@@ -1143,6 +1227,9 @@ def _load_full_finetune_checkpoint(model, checkpoint_path: str):
             "connector_heads": getattr(model, "connector_heads", None),
             "connector_ff_mult": getattr(model, "connector_ff_mult", None),
         }
+        model_backbone = getattr(model, "llm_backbone", None)
+        if model_backbone and model_backbone != CURRENT_LLAMA3_BACKBONE:
+            expected_values["llm_backbone"] = model_backbone
         if expected_arch == "anymal_v4":
             expected_values.update(
                 {
@@ -1205,6 +1292,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                   finetune_loss_scale=1.0,
                   finetune_gradient_accumulation_steps=8,
                   pretrain_image_tokens=None,
+                  llm_backbone=None,
                   v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
                   v4_global_image_tokens=None, v4_local_image_tokens=None,
                   v4_connector_layers=None, v4_connector_heads=None,
@@ -1230,12 +1318,18 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
     # Initialize model
     print("Initializing model...")
     arch_key = _normalize_architecture_key(architecture)
+    expected_llm_backbone = _metadata_llm_backbone(llm_backbone or llama_path)
     if finetune_checkpoint:
         pretrain_checkpoint = None
         print("Skipping Stage 1 checkpoint load because full Stage 2 checkpoint is loaded.")
     elif pretrain_checkpoint is None:
         pretrain_checkpoint = _auto_discover_pretrain_checkpoint(
             arch_key=arch_key,
+            llm_backbone=(
+                expected_llm_backbone
+                if expected_llm_backbone != CURRENT_LLAMA3_BACKBONE
+                else None
+            ),
             token_compressor_type=token_compressor_type,
             v3_connector_type=v3_connector_type or V3_DEFAULT_CONNECTOR_TYPE,
             v4_global_image_tokens=v4_global_image_tokens,
@@ -1296,6 +1390,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         "model": {
             "architecture": arch_key,
             "llm_model_name": llama_path,
+            "llm_backbone": llm_backbone or llama_path,
             "cache_dir": "/checkpoints/hf_cache",
             "use_qlora": True,
             "lora_r": 64,
@@ -1605,6 +1700,7 @@ def run_pretrain(
     output_dir="/checkpoints/pretrain-output",
     run_name=None,
     pretrain_image_tokens=None,
+    llm_backbone=None,
     dataset="llava_pretrain",
     connector_warmup_steps=0,
     pretrain_loss_scale=1.0,
@@ -1649,6 +1745,7 @@ def run_pretrain(
     # For DDP, disable device_map so each process places model on its own GPU
     device_map = None if distributed else "auto"
     arch_key = _normalize_architecture_key(architecture)
+    expected_llm_backbone = _metadata_llm_backbone(llm_backbone or llama_path)
     if arch_key == "anymal_v4" and (pretrain_checkpoint or resume_checkpoint):
         from model_metadata import read_model_metadata
 
@@ -1688,6 +1785,7 @@ def run_pretrain(
         "model": {
             "architecture": arch_key,
             "llm_model_name": llama_path,
+            "llm_backbone": llm_backbone or llama_path,
             "cache_dir": "/checkpoints/hf_cache",
             "use_qlora": False,  # No LoRA for Stage 1
             "use_lora": False,
@@ -1841,6 +1939,8 @@ def run_pretrain(
                 "connector_heads": getattr(model, "connector_heads", None),
                 "connector_ff_mult": getattr(model, "connector_ff_mult", None),
             }
+            if expected_llm_backbone != CURRENT_LLAMA3_BACKBONE:
+                expected_values["llm_backbone"] = expected_llm_backbone
             if arch_key == "anymal_v4":
                 expected_values.update(
                     {
@@ -3570,6 +3670,8 @@ class COCOCaptionDataset:
             return vocab["<|reserved_special_token_0|>"]
         if "<|image|>" in vocab:
             return vocab["<|image|>"]
+        if "<image>" in vocab:
+            return vocab["<image>"]
         raise ValueError(
             "insert_image_placeholders=True but tokenizer has no placeholder token."
         )
@@ -3905,6 +4007,7 @@ def _pretrain_worker(local_rank, world_size, config):
     try:
         run_pretrain(
             llama_path=config["llama_path"],
+            llm_backbone=config.get("llm_backbone", config["llama_path"]),
             architecture=config.get("architecture", "anymal_v1"),
             max_steps=config["max_steps"],
             learning_rate=config["learning_rate"],
@@ -3977,6 +4080,7 @@ def _run_pretrain_distributed(
     v4_connector_type=None,
     v4_deepstack_num_feature_levels=None,
     v4_deepstack_hidden_state_indices=None,
+    llm_backbone=CURRENT_LLAMA3_BACKBONE,
 ):
     """Shared implementation for Stage 1 distributed pretraining."""
     import sys
@@ -3994,17 +4098,8 @@ def _run_pretrain_distributed(
             print("WARNING: use_wandb=True but no WANDB_API_KEY found. Disabling W&B.")
             use_wandb = False
 
-    # Ensure data is cached
-    llama_path = "/checkpoints/llama3-8b-instruct"
-    if not os.path.exists(os.path.join(llama_path, "config.json")):
-        print("Downloading LLaMA-3-8B-Instruct weights...")
-        from huggingface_hub import snapshot_download
-        snapshot_download(
-            repo_id="meta-llama/Meta-Llama-3-8B-Instruct",
-            local_dir=llama_path,
-            local_dir_use_symlinks=False,
-        )
-        volume.commit()
+    llama_path = _ensure_llm_backbone_cached(llm_backbone)
+    resolved_llm_backbone = _metadata_llm_backbone(llm_backbone)
 
     num_gpus = torch.cuda.device_count()
     print(f"Starting distributed pretraining on {num_gpus} GPUs")
@@ -4019,6 +4114,7 @@ def _run_pretrain_distributed(
 
     config = {
         "llama_path": llama_path,
+        "llm_backbone": resolved_llm_backbone,
         "max_steps": max_steps,
         "learning_rate": learning_rate,
         "batch_size": batch_size,
@@ -4100,6 +4196,7 @@ def pretrain_distributed(
     v4_connector_type=None,
     v4_deepstack_num_feature_levels=None,
     v4_deepstack_hidden_state_indices=None,
+    llm_backbone=CURRENT_LLAMA3_BACKBONE,
 ):
     """Run Stage 1 pretraining on 4x A100-80GB using DDP."""
     return _run_pretrain_distributed(
@@ -4134,6 +4231,7 @@ def pretrain_distributed(
         v4_connector_type=v4_connector_type,
         v4_deepstack_num_feature_levels=v4_deepstack_num_feature_levels,
         v4_deepstack_hidden_state_indices=v4_deepstack_hidden_state_indices,
+        llm_backbone=llm_backbone,
     )
 
 
@@ -4179,6 +4277,7 @@ def pretrain_distributed_h100(
     v4_connector_type=None,
     v4_deepstack_num_feature_levels=None,
     v4_deepstack_hidden_state_indices=None,
+    llm_backbone=CURRENT_LLAMA3_BACKBONE,
 ):
     """Run Stage 1 pretraining on 4x H100 using DDP."""
     return _run_pretrain_distributed(
@@ -4213,6 +4312,7 @@ def pretrain_distributed_h100(
         v4_connector_type=v4_connector_type,
         v4_deepstack_num_feature_levels=v4_deepstack_num_feature_levels,
         v4_deepstack_hidden_state_indices=v4_deepstack_hidden_state_indices,
+        llm_backbone=llm_backbone,
     )
 
 
@@ -4393,6 +4493,7 @@ def main(
     v4_connector_type: str = None,
     v4_deepstack_num_feature_levels: int = None,
     v4_deepstack_hidden_state_indices: str = None,
+    llm_backbone: str = CURRENT_LLAMA3_BACKBONE,
 ):
     """
     Entry point for Modal training.
@@ -4406,6 +4507,7 @@ def main(
         modal run modal_train.py --stage finetune             # Stage 2 (auto-discovers pretrain ckpt)
         modal run modal_train.py --architecture anymal_v2 --token-compressor-type perceiver --stage pretrain
         modal run modal_train.py --architecture anymal_v3 --stage pretrain --max-steps 20000
+        modal run modal_train.py --architecture anymal_v3 --llm-backbone Qwen/Qwen3-8B --stage pretrain --max-steps 20
         modal run modal_train.py --use-wandb --wandb-api-key YOUR_KEY  # With W&B
         modal run modal_train.py --stage pretrain --resume-checkpoint /checkpoints/pretrain-output/run-0001/checkpoint-250
         modal run modal_train.py --stage finetune --learning-rate 2e-5 --lora-learning-rate 2e-4 --dataset mix_665k
@@ -4413,6 +4515,7 @@ def main(
     """
     selected_gpu = _resolve_modal_gpu(stage, gpu_type)
     arch_key = _normalize_architecture_key(architecture)
+    resolved_llm_backbone = _metadata_llm_backbone(llm_backbone)
     if pretrain_image_tokens is None and (stage == "pretrain" or arch_key != "anymal_v4"):
         pretrain_image_tokens = 128 if arch_key in {"anymal_v3", "anymal_v4"} else 256
     if arch_key in {"anymal_v3", "anymal_v4"} and dataset == "instruct_150k":
@@ -4454,6 +4557,7 @@ def main(
     print(f"  Stage: {stage}")
     print(f"  Run name: {run_name}")
     print(f"  Architecture: {arch_key}")
+    print(f"  LLM backbone: {resolved_llm_backbone}")
     print(f"  Token compressor: {token_compressor_type}")
     if arch_key == "anymal_v3":
         print(f"  V3 connector type: {v3_connector_type or V3_DEFAULT_CONNECTOR_TYPE}")
@@ -4595,6 +4699,7 @@ def main(
             v4_connector_type=v4_connector_type,
             v4_deepstack_num_feature_levels=v4_deepstack_num_feature_levels,
             v4_deepstack_hidden_state_indices=v4_deepstack_hidden_state_indices,
+            llm_backbone=resolved_llm_backbone,
         )
     else:
         # Stage 2 uses single-GPU with QLoRA
@@ -4638,4 +4743,5 @@ def main(
             v4_connector_type=v4_connector_type,
             v4_deepstack_num_feature_levels=v4_deepstack_num_feature_levels,
             v4_deepstack_hidden_state_indices=v4_deepstack_hidden_state_indices,
+            llm_backbone=resolved_llm_backbone,
         )

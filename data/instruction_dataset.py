@@ -46,6 +46,7 @@ import os
 import random
 
 from .data_utils import get_image_transform, get_vision_transform, TextProcessor, CLIP_MEAN, CLIP_STD
+from .chat_templates import TRAINING_SYSTEM_PROMPT
 
 
 class InstructionDataset(Dataset):
@@ -74,10 +75,7 @@ class InstructionDataset(Dataset):
     """
 
     # Default system prompt for instruction following
-    DEFAULT_SYSTEM_PROMPT = (
-        "You are a helpful AI assistant that can see and understand images. "
-        "Provide detailed, accurate, and helpful responses to questions about images."
-    )
+    DEFAULT_SYSTEM_PROMPT = TRAINING_SYSTEM_PROMPT
 
     # Placeholder for image tokens
     IMAGE_PLACEHOLDER = "<image>"
@@ -100,6 +98,7 @@ class InstructionDataset(Dataset):
         filter_to_available_images: bool = False,
         use_augmentation: bool = False,
         image_augmentation_mode: str = "none",
+        chat_template_family: Optional[str] = None,
     ):
         super().__init__()
 
@@ -114,6 +113,7 @@ class InstructionDataset(Dataset):
         self.vision_encoder_type = vision_encoder_type
         self.vision_model_name = vision_model_name
         self.system_prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
+        self.chat_template_family = chat_template_family
 
         if self.image_token_policy not in {"fixed", "uniform"}:
             raise ValueError(
@@ -140,6 +140,8 @@ class InstructionDataset(Dataset):
             self.image_placeholder_token_id = vocab["<|reserved_special_token_0|>"]
         elif "<|image|>" in vocab:
             self.image_placeholder_token_id = vocab["<|image|>"]
+        elif "<image>" in vocab:
+            self.image_placeholder_token_id = vocab["<image>"]
         else:
             self.image_placeholder_token_id = None  # fallback: strip <image>
 
@@ -157,7 +159,9 @@ class InstructionDataset(Dataset):
         self.text_processor = TextProcessor(
             tokenizer=tokenizer,
             max_length=max_length,
+            chat_template_family=chat_template_family,
         )
+        self.chat_template_family = self.text_processor.chat_template_family
 
         # Load data
         self.samples = self._load_data(data_path)
@@ -421,7 +425,13 @@ class InstructionDataset(Dataset):
                     )
                 )
             elif role in ["gpt", "assistant"]:
-                segments.append((self.text_processor.ASSISTANT_HEADER, False))
+                segments.append(
+                    (
+                        f"{self.text_processor.ASSISTANT_HEADER}"
+                        f"{self.text_processor.ASSISTANT_PREFILL}",
+                        False,
+                    )
+                )
                 segments.append((f"{content}{self.text_processor.END_TURN}", True))
 
         return segments, IMAGE_SENTINEL
@@ -827,6 +837,7 @@ def build_instruction_mixture_dataset(
             "filter_to_available_images",
             "use_augmentation",
             "image_augmentation_mode",
+            "chat_template_family",
         ):
             if key in entry:
                 entry_kwargs[key] = entry[key]

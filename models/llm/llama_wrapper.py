@@ -1,7 +1,7 @@
 """
-LLaMA Wrapper for AnyMAL
+Causal LM wrapper for AnyMAL
 
-Wraps LLaMA-3-8B for multimodal input with QLoRA support.
+Wraps decoder-only language models for multimodal input with QLoRA support.
 
 Educational Notes:
 -----------------
@@ -55,6 +55,8 @@ from peft import (
     TaskType,
 )
 
+from .backbone import canonicalize_llm_backbone, infer_chat_template_family
+
 
 class LlamaWrapper(nn.Module):
     """
@@ -92,7 +94,7 @@ class LlamaWrapper(nn.Module):
         >>> outputs = llm(inputs_embeds=inputs_embeds, labels=labels)
     """
 
-    # Default LoRA target modules for LLaMA
+    # Default target modules for LLaMA/Qwen-style decoder blocks.
     DEFAULT_LORA_TARGETS = [
         "q_proj", "k_proj", "v_proj", "o_proj",  # Attention
         "gate_proj", "up_proj", "down_proj",  # FFN (MLP)
@@ -117,10 +119,14 @@ class LlamaWrapper(nn.Module):
         super().__init__()
 
         self.model_name = model_name
+        self.llm_backbone = canonicalize_llm_backbone(model_name)
         self.use_qlora = use_qlora
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.use_lora = use_lora
+        self.added_special_tokens = []
+        self.lora_target_modules = []
+        self.generation_path = "hf_generate"
 
         # Configure quantization
         bnb_config = None
@@ -159,6 +165,13 @@ class LlamaWrapper(nn.Module):
             model_name,
             cache_dir=cache_dir,
         )
+        self.tokenizer_name = getattr(self.tokenizer, "name_or_path", model_name)
+        self.llm_model_type = getattr(self.model.config, "model_type", None)
+        self.chat_template_family = infer_chat_template_family(
+            model_name=model_name,
+            model_type=self.llm_model_type,
+            tokenizer=self.tokenizer,
+        )
 
         # Set padding token if not set
         # Use LLaMA 3's dedicated pad token instead of eos_token to avoid
@@ -171,6 +184,9 @@ class LlamaWrapper(nn.Module):
             else:
                 self.tokenizer.add_special_tokens({"pad_token": "<pad>"})
                 self.model.resize_token_embeddings(len(self.tokenizer))
+                self.added_special_tokens.append("<pad>")
+            self.model.config.pad_token_id = self.tokenizer.pad_token_id
+        elif self.model.config.pad_token_id is None:
             self.model.config.pad_token_id = self.tokenizer.pad_token_id
 
         # Enable gradient checkpointing for memory efficiency
@@ -186,12 +202,21 @@ class LlamaWrapper(nn.Module):
 
         enable_lora = use_qlora if use_lora is None else use_lora
 
+        resolved_lora_targets = lora_target_modules or self.DEFAULT_LORA_TARGETS
+
+        if enable_lora and lora_r > 0:
+            self.lora_target_modules = self._validate_lora_target_modules(
+                resolved_lora_targets
+            )
+        else:
+            self.lora_target_modules = []
+
         # Add LoRA adapters
         if enable_lora and lora_r > 0:
             lora_config = LoraConfig(
                 r=lora_r,
                 lora_alpha=lora_alpha,
-                target_modules=lora_target_modules or self.DEFAULT_LORA_TARGETS,
+                target_modules=self.lora_target_modules,
                 lora_dropout=lora_dropout,
                 bias="none",
                 task_type=TaskType.CAUSAL_LM,
@@ -201,6 +226,73 @@ class LlamaWrapper(nn.Module):
         # Store model dimensions
         self.hidden_size = self.model.config.hidden_size
         self.vocab_size = self.model.config.vocab_size
+
+    def _validate_lora_target_modules(self, target_modules: List[str]) -> List[str]:
+        """Fail early if requested LoRA module suffixes are absent."""
+        module_names = [name for name, _module in self.model.named_modules()]
+        missing = []
+        present = []
+        for target in target_modules:
+            target = str(target)
+            if any(name == target or name.endswith(f".{target}") for name in module_names):
+                present.append(target)
+            else:
+                missing.append(target)
+        if missing:
+            raise ValueError(
+                "Requested LoRA target modules not found in decoder "
+                f"{self.model_name!r}: {missing}. Available module suffixes include "
+                f"{sorted({name.split('.')[-1] for name in module_names})[:50]}"
+            )
+        return present
+
+    def ensure_single_token_placeholder(self, preferred_tokens: Optional[List[str]] = None) -> int:
+        """Resolve/add a single-token image placeholder and return its token ID."""
+        preferred_tokens = preferred_tokens or [
+            "<|reserved_special_token_0|>",
+            "<|image|>",
+            "<image>",
+        ]
+        vocab = self.tokenizer.get_vocab()
+        for token in preferred_tokens:
+            if token in vocab:
+                token_id = self.tokenizer.convert_tokens_to_ids(token)
+                if isinstance(token_id, int) and token_id >= 0:
+                    return int(token_id)
+
+        token_to_add = preferred_tokens[-1]
+        added = self.tokenizer.add_special_tokens(
+            {"additional_special_tokens": [token_to_add]}
+        )
+        if added:
+            self.model.resize_token_embeddings(len(self.tokenizer))
+            self.added_special_tokens.append(token_to_add)
+        token_id = self.tokenizer.convert_tokens_to_ids(token_to_add)
+        if not isinstance(token_id, int) or token_id < 0:
+            raise RuntimeError(f"Could not create image placeholder token {token_to_add!r}")
+        return int(token_id)
+
+    def get_model_metadata(self) -> Dict[str, Any]:
+        """Return decoder metadata to persist in AnyMAL checkpoints."""
+        config = self.model.config
+        return {
+            "llm_backbone": self.llm_backbone,
+            "llm_model_name": self.model_name,
+            "llm_model_type": getattr(config, "model_type", None),
+            "llm_hidden_size": getattr(config, "hidden_size", None),
+            "llm_num_hidden_layers": getattr(config, "num_hidden_layers", None),
+            "llm_num_attention_heads": getattr(config, "num_attention_heads", None),
+            "llm_num_key_value_heads": getattr(config, "num_key_value_heads", None),
+            "tokenizer_name": self.tokenizer_name,
+            "chat_template_family": self.chat_template_family,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "bos_token_id": self.tokenizer.bos_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "added_special_tokens": list(self.added_special_tokens),
+            "padding_side_for_generation": "left",
+            "generation_path": self.generation_path,
+            "stage2_lora_target_modules": list(self.lora_target_modules),
+        }
 
     def get_input_embeddings(self) -> nn.Module:
         """
@@ -294,24 +386,118 @@ class LlamaWrapper(nn.Module):
             stop_ids = []
             if self.tokenizer.eos_token_id is not None:
                 stop_ids.append(int(self.tokenizer.eos_token_id))
-            eot_id = self.tokenizer.get_vocab().get("<|eot_id|>")
-            if eot_id is not None:
-                stop_ids.append(int(eot_id))
-            # LLaMA-3-Instruct turns end with <|eot_id|>; end-of-text alone
-            # does not match the token supervised during chat fine-tuning.
+            vocab = self.tokenizer.get_vocab()
+            for stop_token in ("<|eot_id|>", "<|im_end|>"):
+                stop_id = vocab.get(stop_token)
+                if stop_id is not None:
+                    stop_ids.append(int(stop_id))
             if stop_ids:
                 kwargs["eos_token_id"] = list(dict.fromkeys(stop_ids))
-        return self.model.generate(
-            inputs_embeds=inputs_embeds,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            do_sample=do_sample,
-            pad_token_id=self.tokenizer.pad_token_id,
-            **kwargs,
+        try:
+            self.generation_path = "hf_generate"
+            return self.model.generate(
+                inputs_embeds=inputs_embeds,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                do_sample=do_sample,
+                pad_token_id=self.tokenizer.pad_token_id,
+                **kwargs,
+            )
+        except Exception:
+            if inputs_embeds is None or do_sample:
+                raise
+            self.generation_path = "custom_greedy_inputs_embeds"
+            return self._custom_greedy_generate_from_embeds(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                max_new_tokens=max_new_tokens,
+                eos_token_id=kwargs.get("eos_token_id"),
+            )
+
+    @torch.no_grad()
+    def _custom_greedy_generate_from_embeds(
+        self,
+        inputs_embeds: torch.FloatTensor,
+        attention_mask: Optional[torch.Tensor],
+        max_new_tokens: int,
+        eos_token_id: Optional[Union[int, List[int]]] = None,
+    ) -> torch.LongTensor:
+        """Greedy generation fallback for decoders whose HF generate rejects inputs_embeds."""
+        if attention_mask is None:
+            attention_mask = torch.ones(
+                inputs_embeds.shape[:2],
+                dtype=torch.long,
+                device=inputs_embeds.device,
+            )
+        if eos_token_id is None:
+            eos_ids = []
+            if self.tokenizer.eos_token_id is not None:
+                eos_ids.append(int(self.tokenizer.eos_token_id))
+        elif isinstance(eos_token_id, (list, tuple, set)):
+            eos_ids = [int(i) for i in eos_token_id]
+        else:
+            eos_ids = [int(eos_token_id)]
+        eos_set = set(eos_ids)
+        pad_token_id = (
+            self.tokenizer.pad_token_id
+            if self.tokenizer.pad_token_id is not None
+            else (self.tokenizer.eos_token_id or 0)
         )
+
+        outputs = self.model(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            use_cache=True,
+            return_dict=True,
+        )
+        next_token = outputs.logits[:, -1, :].argmax(dim=-1)
+        past_key_values = outputs.past_key_values
+        generated = []
+        stopped = torch.zeros(next_token.shape[0], dtype=torch.bool, device=next_token.device)
+
+        for _step in range(int(max_new_tokens)):
+            emitted = torch.where(
+                stopped,
+                torch.full_like(next_token, int(pad_token_id)),
+                next_token,
+            )
+            generated.append(emitted)
+            if eos_set:
+                stopped = stopped | torch.tensor(
+                    [int(token.item()) in eos_set for token in emitted],
+                    dtype=torch.bool,
+                    device=emitted.device,
+                )
+                if bool(stopped.all()):
+                    break
+
+            attention_mask = torch.cat(
+                [
+                    attention_mask,
+                    torch.ones(
+                        (attention_mask.shape[0], 1),
+                        dtype=attention_mask.dtype,
+                        device=attention_mask.device,
+                    ),
+                ],
+                dim=1,
+            )
+            outputs = self.model(
+                input_ids=emitted.unsqueeze(1),
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                use_cache=True,
+                return_dict=True,
+            )
+            next_token = outputs.logits[:, -1, :].argmax(dim=-1)
+            past_key_values = outputs.past_key_values
+
+        if not generated:
+            return torch.empty((inputs_embeds.shape[0], 0), dtype=torch.long, device=inputs_embeds.device)
+        return torch.stack(generated, dim=1)
 
     def freeze_base_model(self) -> None:
         """

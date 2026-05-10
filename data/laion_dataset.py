@@ -180,6 +180,8 @@ class LaionDataset(Dataset):
             return vocab["<|reserved_special_token_0|>"]
         if "<|image|>" in vocab:
             return vocab["<|image|>"]
+        if "<image>" in vocab:
+            return vocab["<image>"]
         raise ValueError(
             "insert_image_placeholders=True but tokenizer has no image placeholder token. "
             "Initialize model placeholder token before creating the dataset."
@@ -670,6 +672,8 @@ class LaionStreamingDataset(IterableDataset):
             return vocab["<|reserved_special_token_0|>"]
         if "<|image|>" in vocab:
             return vocab["<|image|>"]
+        if "<image>" in vocab:
+            return vocab["<image>"]
         raise ValueError(
             "insert_image_placeholders=True but tokenizer has no image placeholder token."
         )

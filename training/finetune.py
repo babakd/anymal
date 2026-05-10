@@ -174,6 +174,14 @@ class FinetuneTrainer(Trainer):
                 )
         elif expected_arch in {"anymal_v3", "anymal_v4"}:
             meta = read_model_metadata(checkpoint_path) or {}
+            model_backbone = getattr(model, "llm_backbone", None)
+            checkpoint_backbone = meta.get("llm_backbone")
+            if model_backbone and model_backbone != "meta-llama/Meta-Llama-3-8B-Instruct":
+                if checkpoint_backbone != model_backbone:
+                    raise RuntimeError(
+                        f"Checkpoint llm_backbone mismatch for {checkpoint_path}: "
+                        f"checkpoint={checkpoint_backbone!r}, model={model_backbone!r}."
+                    )
             for key in (
                 "connector_type",
                 "num_image_tokens",

@@ -127,14 +127,27 @@ class AnyMALv2(nn.Module):
         self._setup_image_placeholder_token()
 
     def _setup_image_placeholder_token(self):
-        vocab = self.tokenizer.get_vocab()
-        for candidate in ["<|reserved_special_token_0|>", "<|image|>"]:
-            if candidate in vocab:
-                self.image_placeholder_token_id = vocab[candidate]
-                return
-        self.tokenizer.add_special_tokens({"additional_special_tokens": ["<|image|>"]})
-        self.llm.model.resize_token_embeddings(len(self.tokenizer))
-        self.image_placeholder_token_id = self.tokenizer.convert_tokens_to_ids("<|image|>")
+        if hasattr(self.llm, "ensure_single_token_placeholder"):
+            model_type = str(getattr(self.llm, "llm_model_type", "") or "").lower()
+            candidates = (
+                ["<image>", "<|image|>"]
+                if model_type == "qwen3"
+                else ["<|reserved_special_token_0|>", "<|image|>", "<image>"]
+            )
+            self.image_placeholder_token_id = self.llm.ensure_single_token_placeholder(candidates)
+        else:
+            vocab = self.tokenizer.get_vocab()
+            for candidate in ["<|reserved_special_token_0|>", "<|image|>"]:
+                if candidate in vocab:
+                    self.image_placeholder_token_id = vocab[candidate]
+                    break
+            else:
+                self.tokenizer.add_special_tokens({"additional_special_tokens": ["<|image|>"]})
+                self.llm.model.resize_token_embeddings(len(self.tokenizer))
+                self.image_placeholder_token_id = self.tokenizer.convert_tokens_to_ids("<|image|>")
+        self.image_placeholder_token = self.tokenizer.convert_ids_to_tokens(
+            int(self.image_placeholder_token_id)
+        )
 
     def _extract_placeholder_counts(
         self,
@@ -509,6 +522,14 @@ class AnyMALv2(nn.Module):
                 "token_compressor_type": self.token_compressor_type,
                 "max_image_tokens": self.max_image_tokens,
                 "min_image_tokens": self.min_image_tokens,
+                **(
+                    self.llm.get_model_metadata()
+                    if hasattr(self.llm, "get_model_metadata")
+                    else {}
+                ),
+                "image_placeholder_token": getattr(self, "image_placeholder_token", None),
+                "image_placeholder_token_id": getattr(self, "image_placeholder_token_id", None),
+                "image_placeholder_count": self.num_image_tokens,
                 "llm_checkpoint_saved": llm_saved,
                 "llm_base_weights_saved": bool(llm_saved and save_llm_base),
             },

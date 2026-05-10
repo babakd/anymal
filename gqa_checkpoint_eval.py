@@ -51,6 +51,7 @@ image = (
 app = modal.App("anymal-gqa-checkpoint-eval")
 
 LLAMA_PATH = "/checkpoints/llama3-8b-instruct"
+CURRENT_LLAMA3_BACKBONE = "meta-llama/Meta-Llama-3-8B-Instruct"
 GQA_DIR = "/checkpoints/gqa_data"
 DEFAULT_IMAGE_DIR = "/checkpoints/gqa_images_hf"
 HF_GQA_CACHE_DIR = "/checkpoints/hf_datasets"
@@ -371,6 +372,7 @@ class GQAHFDataset:
         num_image_tokens: int,
         prompt_style: str,
         system_prompt: str | None,
+        chat_template_family: str | None = None,
     ):
         self.records = list(records)
         self.transform = transform
@@ -379,6 +381,7 @@ class GQAHFDataset:
         self.num_image_tokens = int(num_image_tokens or 0)
         self.prompt_style = str(prompt_style)
         self.system_prompt = system_prompt
+        self.chat_template_family = chat_template_family
 
     def __len__(self) -> int:
         return len(self.records)
@@ -400,6 +403,7 @@ class GQAHFDataset:
             num_image_tokens=self.num_image_tokens,
             max_length=768,
             system_prompt=self.system_prompt,
+            chat_template_family=self.chat_template_family,
         )
         return {
             "image": image_tensor,
@@ -448,6 +452,7 @@ def _build_gqa_dataloader(
         num_image_tokens=getattr(model, "num_image_tokens", 0),
         prompt_style=prompt_style,
         system_prompt=system_prompt,
+        chat_template_family=getattr(getattr(model, "llm", None), "chat_template_family", None),
     )
     pad_token_id = model.tokenizer.pad_token_id or model.tokenizer.eos_token_id
 
@@ -508,7 +513,7 @@ def _build_gqa_dataloader(
     return dataloader, dataset_meta, image_transform_meta
 
 
-def _load_model(run: dict, device):
+def _load_model(run: dict, device, llm_backbone=None):
     import torch
 
     sys.path.insert(0, "/root/anymal")
@@ -516,16 +521,22 @@ def _load_model(run: dict, device):
     from models.anymal_v3 import AnyMALv3
     from models.anymal_v4 import AnyMALv4
     from v1_v2_compare_inference import _load_v1_model, _load_v2_model
+    from vqa_checkpoint_eval import _ensure_eval_llm_path, _resolve_eval_llm_path
 
     meta = read_model_metadata(run["checkpoint"]) or {}
+    llm_path = _ensure_eval_llm_path(
+        _resolve_eval_llm_path(meta, llm_backbone),
+        model_meta=meta,
+        llm_backbone=llm_backbone,
+    )
     if run["architecture"] == "v1":
-        model = _load_v1_model(run["checkpoint"], LLAMA_PATH, device)
+        model = _load_v1_model(run["checkpoint"], llm_path, device)
     elif run["architecture"] == "v2":
-        model = _load_v2_model(run["checkpoint"], LLAMA_PATH, device)
+        model = _load_v2_model(run["checkpoint"], llm_path, device)
     elif run["architecture"] == "v3":
         model = AnyMALv3.from_pretrained(
             run["checkpoint"],
-            llm_model_name=LLAMA_PATH,
+            llm_model_name=llm_path,
             vision_encoder_type="siglip2",
             vision_model_name="google/siglip2-so400m-patch14-384",
             connector_type=meta.get("connector_type", "perceiver_resampler"),
@@ -559,7 +570,7 @@ def _load_model(run: dict, device):
             }
         model = AnyMALv4.from_pretrained(
             run["checkpoint"],
-            llm_model_name=LLAMA_PATH,
+            llm_model_name=llm_path,
             vision_encoder_type="siglip2",
             vision_model_name="google/siglip2-so400m-patch14-384",
             connector_type=connector_type,
@@ -620,6 +631,7 @@ def evaluate_gqa(
     remote_output_path=None,
     train_sources=None,
     eval_schema_version="v6",
+    llm_backbone=CURRENT_LLAMA3_BACKBONE,
 ):
     import torch
 
@@ -653,7 +665,7 @@ def evaluate_gqa(
         include_baselines=False,
     ):
         print(f"Evaluating GQA {gqa_split}: {run['label']} from {run['checkpoint']}")
-        model, run_model_meta = _load_model(run, device)
+        model, run_model_meta = _load_model(run, device, llm_backbone=llm_backbone)
         dataloader, dataset_meta, image_transform_meta = _build_gqa_dataloader(
             model=model,
             architecture=run["architecture"],
@@ -715,6 +727,7 @@ def evaluate_gqa(
     result = {
         "eval_schema_version": str(eval_schema_version),
         "benchmark": "gqa",
+        "llm_backbone": str(llm_backbone),
         "padding_side": "left",
         "generation_mode": "decoder_leftpad_greedy",
         "gqa_split": str(gqa_split),
@@ -752,6 +765,7 @@ def main(
     remote_output_path: str = None,
     train_sources: str = "",
     eval_schema_version: str = "v6",
+    llm_backbone: str = CURRENT_LLAMA3_BACKBONE,
     background: bool = False,
 ):
     call = evaluate_gqa.spawn(
@@ -769,6 +783,7 @@ def main(
         remote_output_path=remote_output_path,
         train_sources=train_sources,
         eval_schema_version=eval_schema_version,
+        llm_backbone=llm_backbone,
     )
     if background:
         print(f"Spawned background GQA eval: {call}")

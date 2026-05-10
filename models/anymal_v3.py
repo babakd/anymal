@@ -15,9 +15,11 @@ import torch.nn as nn
 
 from .anymal_v2 import AnyMALv2
 from .encoders import SigLIP2Encoder
-from .llm import LlamaWrapper
+from .llm import LlamaWrapper, canonicalize_llm_backbone
+from .llm.backbone import CURRENT_LLAMA3_BACKBONE
 from .projectors import PerceiverResampler, QuestionConditionedPerceiverResampler
 from model_metadata import (
+    read_model_metadata,
     validate_checkpoint_architecture,
     validate_checkpoint_metadata_values,
     write_model_metadata,
@@ -40,6 +42,7 @@ class AnyMALv3(AnyMALv2):
     def __init__(
         self,
         llm_model_name: str = "meta-llama/Meta-Llama-3-8B-Instruct",
+        llm_backbone: Optional[str] = None,
         vision_encoder_type: str = "siglip2",
         vision_model_name: str = "google/siglip2-so400m-patch14-384",
         connector_type: str = "perceiver_resampler",
@@ -63,6 +66,7 @@ class AnyMALv3(AnyMALv2):
         cache_dir: Optional[str] = None,
     ):
         nn.Module.__init__(self)
+        self.llm_backbone = canonicalize_llm_backbone(llm_backbone or llm_model_name)
 
         if num_image_tokens <= 0:
             raise ValueError(f"num_image_tokens must be > 0, got {num_image_tokens}")
@@ -274,6 +278,13 @@ class AnyMALv3(AnyMALv2):
                 dtype=torch.bool,
                 device=image_tokens.device,
             )
+        valid_counts = image_token_mask.sum(dim=1).to(dtype=torch.long)
+        expected_counts = torch.full_like(valid_counts, self.num_image_tokens)
+        if not torch.equal(valid_counts, expected_counts):
+            raise ValueError(
+                "AnyMALv3 requires exactly "
+                f"{self.num_image_tokens} image tokens per sample, got {valid_counts.tolist()}."
+            )
 
         inputs_embeds, full_attention_mask, full_labels = self._splice_image_tokens_strict(
             input_ids=input_ids,
@@ -339,6 +350,13 @@ class AnyMALv3(AnyMALv2):
                 image_tokens.shape[:2],
                 dtype=torch.bool,
                 device=image_tokens.device,
+            )
+        valid_counts = image_token_mask.sum(dim=1).to(dtype=torch.long)
+        expected_counts = torch.full_like(valid_counts, self.num_image_tokens)
+        if not torch.equal(valid_counts, expected_counts):
+            raise ValueError(
+                "AnyMALv3 generation requires exactly "
+                f"{self.num_image_tokens} image tokens per sample, got {valid_counts.tolist()}."
             )
 
         inputs_embeds, full_attention_mask, _ = self._splice_image_tokens_strict(
@@ -427,14 +445,25 @@ class AnyMALv3(AnyMALv2):
             architecture=self.architecture,
             extra={
                 "vision_encoder_type": self.vision_encoder_type,
+                "vision_tower": "SigLIP2-So400m-384",
                 "connector_type": self.connector_type,
                 "num_image_tokens": self.num_image_tokens,
                 "max_image_tokens": self.max_image_tokens,
                 "min_image_tokens": self.min_image_tokens,
+                "image_tokens": self.num_image_tokens,
                 "connector_layers": self.connector_layers,
                 "connector_heads": self.connector_heads,
                 "connector_ff_mult": self.connector_ff_mult,
                 "project_directly_to_llm_dim": self.project_directly_to_llm_dim,
+                **(
+                    self.llm.get_model_metadata()
+                    if hasattr(self.llm, "get_model_metadata")
+                    else {"llm_backbone": self.llm_backbone, "llm_model_name": self.llm_backbone}
+                ),
+                "image_placeholder_token": getattr(self, "image_placeholder_token", None),
+                "image_placeholder_token_id": getattr(self, "image_placeholder_token_id", None),
+                "image_placeholder_count": self.num_image_tokens,
+                "stage1_connector_init": "fresh_random",
                 "llm_checkpoint_saved": llm_saved,
                 "llm_base_weights_saved": bool(llm_saved and save_llm_base),
                 "question_conditioning": (
@@ -451,6 +480,7 @@ class AnyMALv3(AnyMALv2):
         cls,
         save_path: str,
         llm_model_name: str = "meta-llama/Meta-Llama-3-8B-Instruct",
+        llm_backbone: Optional[str] = None,
         **kwargs,
     ) -> "AnyMALv3":
         import os
@@ -459,20 +489,25 @@ class AnyMALv3(AnyMALv2):
         validate_checkpoint_architecture(save_path, expected_architecture=cls.architecture)
 
         model = cls(llm_model_name=llm_model_name, **kwargs)
+        meta = read_model_metadata(save_path) or {}
+        expected_values = {
+            "vision_encoder_type": getattr(model, "vision_encoder_type", None),
+            "connector_type": getattr(model, "connector_type", None),
+            "num_image_tokens": getattr(model, "num_image_tokens", None),
+            "max_image_tokens": getattr(model, "max_image_tokens", None),
+            "min_image_tokens": getattr(model, "min_image_tokens", None),
+            "connector_layers": getattr(model, "connector_layers", None),
+            "connector_heads": getattr(model, "connector_heads", None),
+            "connector_ff_mult": getattr(model, "connector_ff_mult", None),
+            "project_directly_to_llm_dim": getattr(model, "project_directly_to_llm_dim", None),
+        }
+        if "llm_backbone" in meta or getattr(model, "llm_backbone", None) != CURRENT_LLAMA3_BACKBONE:
+            expected_values["llm_backbone"] = getattr(model, "llm_backbone", None)
+
         validate_checkpoint_metadata_values(
             save_path,
             expected_architecture=cls.architecture,
-            expected_values={
-                "vision_encoder_type": getattr(model, "vision_encoder_type", None),
-                "connector_type": getattr(model, "connector_type", None),
-                "num_image_tokens": getattr(model, "num_image_tokens", None),
-                "max_image_tokens": getattr(model, "max_image_tokens", None),
-                "min_image_tokens": getattr(model, "min_image_tokens", None),
-                "connector_layers": getattr(model, "connector_layers", None),
-                "connector_heads": getattr(model, "connector_heads", None),
-                "connector_ff_mult": getattr(model, "connector_ff_mult", None),
-                "project_directly_to_llm_dim": getattr(model, "project_directly_to_llm_dim", None),
-            },
+            expected_values=expected_values,
         )
         projector_path = os.path.join(save_path, "projector.pt")
         if os.path.exists(projector_path):

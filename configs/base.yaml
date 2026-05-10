@@ -7,6 +7,7 @@ model:
   # LLM settings
   # Use local path if downloaded, or HuggingFace model name
   llm_model_name: "./checkpoints/llama3-8b-instruct"  # or "meta-llama/Meta-Llama-3-8B-Instruct"
+  llm_backbone: "meta-llama/Meta-Llama-3-8B-Instruct"
   use_qlora: true
   lora_r: 64
   lora_alpha: 16
