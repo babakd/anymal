@@ -125,6 +125,45 @@ class TestPerceiverResampler:
         assert num_params > 1_000_000, \
             f"Expected >1M params, got {num_params}"
 
+    def test_question_conditioned_output_shape(self):
+        """Question-conditioned resampler preserves the fixed visual-token contract."""
+        from models.projectors.perceiver_resampler import QuestionConditionedPerceiverResampler
+
+        resampler = QuestionConditionedPerceiverResampler(
+            input_dim=16,
+            output_dim=32,
+            num_latents=8,
+            num_layers=2,
+            num_heads=4,
+            ff_mult=2,
+        )
+
+        x = torch.randn(2, 17, 16)
+        question_summary = torch.randn(2, 32)
+        output = resampler(x, question_summary=question_summary)
+
+        assert output.shape == (2, 8, 32)
+
+    def test_question_conditioning_changes_latents(self):
+        """Different question summaries should be able to route the same image differently."""
+        from models.projectors.perceiver_resampler import QuestionConditionedPerceiverResampler
+
+        torch.manual_seed(7)
+        resampler = QuestionConditionedPerceiverResampler(
+            input_dim=16,
+            output_dim=32,
+            num_latents=8,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+        )
+        x = torch.randn(1, 17, 16)
+
+        out_a = resampler(x, question_summary=torch.zeros(1, 32))
+        out_b = resampler(x, question_summary=torch.ones(1, 32))
+
+        assert not torch.allclose(out_a, out_b)
+
 
 class TestSpatialPerceiverResampler:
     """Tests for the v4 spatial global/local connector."""

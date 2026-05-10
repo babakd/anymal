@@ -86,6 +86,7 @@ V4_DEFAULT_CONNECTOR_OUTPUT_SCALE = 1.0
 V4_DEFAULT_CONNECTOR_OUTPUT_GATE_INIT = 0.0001
 V4_DEFAULT_CONNECTOR_TYPE = "spatial_perceiver_resampler"
 V4_LEGACY_DIRECT_CONNECTOR_HIDDEN_DIM = 4096
+V3_DEFAULT_CONNECTOR_TYPE = "perceiver_resampler"
 
 
 def _normalize_gpu_type(gpu_type: str) -> str:
@@ -329,6 +330,7 @@ def _checkpoint_matches_run_config(
     checkpoint_dir: str,
     expected_architecture: str,
     token_compressor_type: str = None,
+    v3_connector_type: str = None,
     v4_connector_type: str = None,
     v4_global_image_tokens: int = None,
     v4_local_image_tokens: int = None,
@@ -360,6 +362,15 @@ def _checkpoint_matches_run_config(
             print(
                 f"Skipping checkpoint {checkpoint_dir}: token_compressor_type="
                 f"{checkpoint_compressor!r}, requested={token_compressor_type!r}"
+            )
+            return False
+
+    if expected_architecture == "anymal_v3" and v3_connector_type:
+        checkpoint_connector = meta.get("connector_type")
+        if checkpoint_connector and checkpoint_connector != v3_connector_type:
+            print(
+                f"Skipping checkpoint {checkpoint_dir}: connector_type="
+                f"{checkpoint_connector!r}, requested={v3_connector_type!r}"
             )
             return False
 
@@ -397,6 +408,7 @@ def _checkpoint_matches_run_config(
 def _auto_discover_pretrain_checkpoint(
     arch_key: str,
     token_compressor_type: str = None,
+    v3_connector_type: str = None,
     v4_connector_type: str = None,
     v4_global_image_tokens: int = None,
     v4_local_image_tokens: int = None,
@@ -417,6 +429,7 @@ def _auto_discover_pretrain_checkpoint(
             checkpoint_dir=path,
             expected_architecture=arch_key,
             token_compressor_type=token_compressor_type,
+            v3_connector_type=v3_connector_type,
             v4_connector_type=v4_connector_type,
             v4_global_image_tokens=v4_global_image_tokens,
             v4_local_image_tokens=v4_local_image_tokens,
@@ -801,6 +814,7 @@ class Trainer:
         pretrain_loss_normalization: str = "mean",
         pretrain_loss_normalization_target_tokens: float = 8.0,
         pretrain_gradient_accumulation_steps: int = 8,
+        v3_connector_type: str = V3_DEFAULT_CONNECTOR_TYPE,
         v4_global_image_tokens: int = None,
         v4_local_image_tokens: int = None,
         v4_connector_layers: int = None,
@@ -911,6 +925,7 @@ class Trainer:
                 finetune_loss_scale=finetune_loss_scale,
                 finetune_gradient_accumulation_steps=finetune_gradient_accumulation_steps,
                 pretrain_image_tokens=pretrain_image_tokens,
+                v3_connector_type=v3_connector_type,
                 v4_global_image_tokens=v4_global_tokens,
                 v4_local_image_tokens=v4_local_tokens,
                 v4_connector_layers=v4_connector_layers,
@@ -951,6 +966,7 @@ class Trainer:
                 output_dir=pretrain_output_dir,
                 pretrain_image_tokens=effective_pretrain_image_tokens,
                 dataset=dataset,
+                v3_connector_type=v3_connector_type,
                 connector_warmup_steps=connector_warmup_steps,
                 pretrain_loss_scale=pretrain_loss_scale,
                 pretrain_loss_normalization=pretrain_loss_normalization,
@@ -1188,6 +1204,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                   finetune_loss_scale=1.0,
                   finetune_gradient_accumulation_steps=8,
                   pretrain_image_tokens=None,
+                  v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
                   v4_global_image_tokens=None, v4_local_image_tokens=None,
                   v4_connector_layers=None, v4_connector_heads=None,
                   v4_connector_ff_mult=None, v4_connector_hidden_dim=None,
@@ -1219,6 +1236,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         pretrain_checkpoint = _auto_discover_pretrain_checkpoint(
             arch_key=arch_key,
             token_compressor_type=token_compressor_type,
+            v3_connector_type=v3_connector_type or V3_DEFAULT_CONNECTOR_TYPE,
             v4_global_image_tokens=v4_global_image_tokens,
             v4_local_image_tokens=v4_local_image_tokens,
             v4_connector_layers=v4_connector_layers,
@@ -1323,11 +1341,12 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         dataset_vision_model = "google/siglip2-so400m-patch14-384"
         dataset_max_length = 2304
     elif arch_key == "anymal_v3":
+        resolved_v3_connector_type = v3_connector_type or V3_DEFAULT_CONNECTOR_TYPE
         model_cfg["model"].update(
             {
                 "vision_encoder_type": "siglip2",
                 "vision_model_name": "google/siglip2-so400m-patch14-384",
-                "connector_type": "perceiver_resampler",
+                "connector_type": resolved_v3_connector_type,
                 "num_image_tokens": 128,
                 "connector_layers": 6,
                 "connector_heads": 16,
@@ -1592,6 +1611,7 @@ def run_pretrain(
     pretrain_loss_normalization_target_tokens=8.0,
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
+    v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
     v4_global_image_tokens=None,
     v4_local_image_tokens=None,
     v4_connector_layers=None,
@@ -1712,11 +1732,12 @@ def run_pretrain(
         pretrain_num_image_tokens = int(pretrain_image_tokens or 128)
         if pretrain_num_image_tokens <= 0:
             raise ValueError(f"pretrain_image_tokens must be > 0, got {pretrain_image_tokens}")
+        resolved_v3_connector_type = v3_connector_type or V3_DEFAULT_CONNECTOR_TYPE
         model_cfg["model"].update(
             {
                 "vision_encoder_type": "siglip2",
                 "vision_model_name": "google/siglip2-so400m-patch14-384",
-                "connector_type": "perceiver_resampler",
+                "connector_type": resolved_v3_connector_type,
                 "num_image_tokens": pretrain_num_image_tokens,
                 "connector_layers": 6,
                 "connector_heads": 16,
@@ -3645,6 +3666,7 @@ def _pretrain_worker(local_rank, world_size, config):
             ),
             pretrain_gradient_accumulation_steps=config.get("pretrain_gradient_accumulation_steps", 8),
             pretrain_save_steps=config.get("pretrain_save_steps"),
+            v3_connector_type=config.get("v3_connector_type", V3_DEFAULT_CONNECTOR_TYPE),
             v4_global_image_tokens=config.get("v4_global_image_tokens"),
             v4_local_image_tokens=config.get("v4_local_image_tokens"),
             v4_connector_layers=config.get("v4_connector_layers"),
@@ -3681,6 +3703,7 @@ def _run_pretrain_distributed(
     pretrain_loss_normalization_target_tokens=8.0,
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
+    v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
     v4_global_image_tokens=None,
     v4_local_image_tokens=None,
     v4_connector_layers=None,
@@ -3753,6 +3776,7 @@ def _run_pretrain_distributed(
         "pretrain_loss_normalization_target_tokens": pretrain_loss_normalization_target_tokens,
         "pretrain_gradient_accumulation_steps": pretrain_gradient_accumulation_steps,
         "pretrain_save_steps": pretrain_save_steps,
+        "v3_connector_type": v3_connector_type,
         "v4_global_image_tokens": v4_global_image_tokens,
         "v4_local_image_tokens": v4_local_image_tokens,
         "v4_connector_layers": v4_connector_layers,
@@ -3802,6 +3826,7 @@ def pretrain_distributed(
     pretrain_loss_normalization_target_tokens=8.0,
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
+    v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
     v4_global_image_tokens=None,
     v4_local_image_tokens=None,
     v4_connector_layers=None,
@@ -3835,6 +3860,7 @@ def pretrain_distributed(
         pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
         pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
         pretrain_save_steps=pretrain_save_steps,
+        v3_connector_type=v3_connector_type,
         v4_global_image_tokens=v4_global_image_tokens,
         v4_local_image_tokens=v4_local_image_tokens,
         v4_connector_layers=v4_connector_layers,
@@ -3879,6 +3905,7 @@ def pretrain_distributed_h100(
     pretrain_loss_normalization_target_tokens=8.0,
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
+    v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
     v4_global_image_tokens=None,
     v4_local_image_tokens=None,
     v4_connector_layers=None,
@@ -3912,6 +3939,7 @@ def pretrain_distributed_h100(
         pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
         pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
         pretrain_save_steps=pretrain_save_steps,
+        v3_connector_type=v3_connector_type,
         v4_global_image_tokens=v4_global_image_tokens,
         v4_local_image_tokens=v4_local_image_tokens,
         v4_connector_layers=v4_connector_layers,
@@ -4091,6 +4119,7 @@ def main(
     pretrain_loss_normalization_target_tokens: float = 8.0,
     pretrain_gradient_accumulation_steps: int = 8,
     pretrain_save_steps: int = None,
+    v3_connector_type: str = V3_DEFAULT_CONNECTOR_TYPE,
     v4_global_image_tokens: int = None,
     v4_local_image_tokens: int = None,
     v4_connector_layers: int = None,
@@ -4164,6 +4193,8 @@ def main(
     print(f"  Run name: {run_name}")
     print(f"  Architecture: {arch_key}")
     print(f"  Token compressor: {token_compressor_type}")
+    if arch_key == "anymal_v3":
+        print(f"  V3 connector type: {v3_connector_type or V3_DEFAULT_CONNECTOR_TYPE}")
     print(f"  GPU type: {gpu_type}")
     print(f"  Modal GPU resource: {selected_gpu}")
     print(
@@ -4289,6 +4320,7 @@ def main(
             pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
             pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
             pretrain_save_steps=pretrain_save_steps,
+            v3_connector_type=v3_connector_type,
             v4_global_image_tokens=v4_global_tokens,
             v4_local_image_tokens=v4_local_tokens,
             v4_connector_layers=v4_connector_layers,
@@ -4331,6 +4363,7 @@ def main(
             freeze_connector=freeze_connector,
             finetune_loss_scale=finetune_loss_scale,
             finetune_gradient_accumulation_steps=finetune_gradient_accumulation_steps,
+            v3_connector_type=v3_connector_type,
             v4_global_image_tokens=v4_global_tokens,
             v4_local_image_tokens=v4_local_tokens,
             v4_connector_layers=v4_connector_layers,

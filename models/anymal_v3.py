@@ -16,7 +16,7 @@ import torch.nn as nn
 from .anymal_v2 import AnyMALv2
 from .encoders import SigLIP2Encoder
 from .llm import LlamaWrapper
-from .projectors import PerceiverResampler
+from .projectors import PerceiverResampler, QuestionConditionedPerceiverResampler
 from model_metadata import (
     validate_checkpoint_architecture,
     validate_checkpoint_metadata_values,
@@ -70,9 +70,14 @@ class AnyMALv3(AnyMALv2):
             raise ValueError(
                 f"Unsupported vision_encoder_type '{vision_encoder_type}'. Expected 'siglip2'."
             )
-        if connector_type != "perceiver_resampler":
+        supported_connectors = {
+            "perceiver_resampler",
+            "question_conditioned_perceiver_resampler",
+        }
+        if connector_type not in supported_connectors:
             raise ValueError(
-                f"Unsupported connector_type '{connector_type}'. Expected 'perceiver_resampler'."
+                "Unsupported connector_type "
+                f"'{connector_type}'. Expected one of {sorted(supported_connectors)}."
             )
         if not project_directly_to_llm_dim:
             raise ValueError("AnyMALv3 requires project_directly_to_llm_dim=True.")
@@ -113,13 +118,22 @@ class AnyMALv3(AnyMALv2):
 
         vision_dim = self.image_encoder.get_output_dim()
         llm_dim = self.llm.hidden_size
-        self.projector = PerceiverResampler(
+        projector_cls = (
+            QuestionConditionedPerceiverResampler
+            if connector_type == "question_conditioned_perceiver_resampler"
+            else PerceiverResampler
+        )
+        projector_kwargs = {}
+        if connector_type == "question_conditioned_perceiver_resampler":
+            projector_kwargs["condition_dim"] = llm_dim
+        self.projector = projector_cls(
             input_dim=vision_dim,
             output_dim=llm_dim,
             num_latents=num_image_tokens,
             num_layers=connector_layers,
             num_heads=connector_heads,
             ff_mult=connector_ff_mult,
+            **projector_kwargs,
         )
 
         if freeze_llm:
@@ -132,6 +146,7 @@ class AnyMALv3(AnyMALv2):
         self,
         images: torch.Tensor,
         target_num_tokens: Optional[torch.Tensor] = None,
+        question_summary: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.BoolTensor, torch.LongTensor]:
         """
         Encode images with a fixed-size V3 Perceiver visual prefix.
@@ -164,7 +179,13 @@ class AnyMALv3(AnyMALv2):
         if vision_features.dtype != projector_dtype:
             vision_features = vision_features.to(projector_dtype)
 
-        image_tokens = self.projector(vision_features)
+        if self.connector_type == "question_conditioned_perceiver_resampler":
+            image_tokens = self.projector(
+                vision_features,
+                question_summary=question_summary,
+            )
+        else:
+            image_tokens = self.projector(vision_features)
         token_mask = torch.ones(
             image_tokens.shape[:2],
             dtype=torch.bool,
@@ -177,6 +198,169 @@ class AnyMALv3(AnyMALv2):
             device=image_tokens.device,
         )
         return image_tokens, token_mask, token_counts
+
+    def _build_question_summary(
+        self,
+        input_ids: torch.LongTensor,
+        attention_mask: Optional[torch.Tensor],
+        labels: Optional[torch.LongTensor] = None,
+    ) -> Optional[torch.Tensor]:
+        """Pool frozen LLM token embeddings over prompt/context tokens only."""
+        if self.connector_type != "question_conditioned_perceiver_resampler":
+            return None
+        if input_ids is None:
+            return None
+
+        text_embeds = self.llm.get_input_embeddings()(input_ids)
+        mask = torch.ones(input_ids.shape, dtype=torch.bool, device=input_ids.device)
+        if attention_mask is not None:
+            mask = mask & attention_mask.bool()
+        mask = mask & (input_ids != self.image_placeholder_token_id)
+        if labels is not None:
+            mask = mask & (labels == -100)
+
+        fallback_mask = torch.ones_like(mask)
+        if attention_mask is not None:
+            fallback_mask = fallback_mask & attention_mask.bool()
+        fallback_mask = fallback_mask & (input_ids != self.image_placeholder_token_id)
+        empty = mask.sum(dim=1) == 0
+        if empty.any():
+            mask = torch.where(empty.unsqueeze(1), fallback_mask, mask)
+
+        weights = mask.to(device=text_embeds.device, dtype=text_embeds.dtype).unsqueeze(-1)
+        denom = weights.sum(dim=1).clamp_min(1.0)
+        return (text_embeds * weights).sum(dim=1) / denom
+
+    def forward(
+        self,
+        images: Optional[torch.Tensor] = None,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        image_tokens: Optional[torch.Tensor] = None,
+        image_token_mask: Optional[torch.BoolTensor] = None,
+        return_dict: bool = True,
+    ) -> AnyMALv3Output:
+        if images is None and image_tokens is None:
+            outputs = self.llm(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+                return_dict=True,
+            )
+            return AnyMALv3Output(loss=outputs.loss, logits=outputs.logits)
+
+        if input_ids is None:
+            raise ValueError("AnyMALv3 multimodal forward requires input_ids for strict placeholder splice.")
+
+        if image_tokens is None:
+            requested_counts = self._extract_placeholder_counts(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                strict=True,
+            )
+            image_tokens, image_token_mask, _ = self.encode_images(
+                images=images,
+                target_num_tokens=requested_counts,
+                question_summary=self._build_question_summary(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                ),
+            )
+        elif image_token_mask is None:
+            image_token_mask = torch.ones(
+                image_tokens.shape[:2],
+                dtype=torch.bool,
+                device=image_tokens.device,
+            )
+
+        inputs_embeds, full_attention_mask, full_labels = self._splice_image_tokens_strict(
+            input_ids=input_ids,
+            image_tokens=image_tokens,
+            image_token_mask=image_token_mask,
+            attention_mask=attention_mask,
+            labels=labels,
+        )
+
+        outputs = self.llm(
+            inputs_embeds=inputs_embeds,
+            attention_mask=full_attention_mask,
+            labels=full_labels,
+            return_dict=True,
+        )
+        return AnyMALv3Output(loss=outputs.loss, logits=outputs.logits)
+
+    @torch.no_grad()
+    def generate(
+        self,
+        images: Optional[torch.Tensor] = None,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        image_tokens: Optional[torch.Tensor] = None,
+        image_token_mask: Optional[torch.BoolTensor] = None,
+        max_new_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        do_sample: bool = True,
+        **kwargs,
+    ) -> torch.LongTensor:
+        if images is None and image_tokens is None:
+            return self.llm.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                do_sample=do_sample,
+                **kwargs,
+            )
+
+        if input_ids is None:
+            raise ValueError("AnyMALv3 multimodal generate requires input_ids with placeholders.")
+
+        if image_tokens is None:
+            requested_counts = self._extract_placeholder_counts(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                strict=True,
+            )
+            image_tokens, image_token_mask, _ = self.encode_images(
+                images=images,
+                target_num_tokens=requested_counts,
+                question_summary=self._build_question_summary(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=None,
+                ),
+            )
+        elif image_token_mask is None:
+            image_token_mask = torch.ones(
+                image_tokens.shape[:2],
+                dtype=torch.bool,
+                device=image_tokens.device,
+            )
+
+        inputs_embeds, full_attention_mask, _ = self._splice_image_tokens_strict(
+            input_ids=input_ids,
+            image_tokens=image_tokens,
+            image_token_mask=image_token_mask,
+            attention_mask=attention_mask,
+            labels=None,
+        )
+
+        generated = self.llm.generate(
+            inputs_embeds=inputs_embeds,
+            attention_mask=full_attention_mask,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=do_sample,
+            **kwargs,
+        )
+        if isinstance(generated, torch.Tensor):
+            return torch.cat([input_ids, generated], dim=1)
+        return generated
 
     def set_training_stage(self, stage: int) -> None:
         if stage == 1:
@@ -253,6 +437,11 @@ class AnyMALv3(AnyMALv2):
                 "project_directly_to_llm_dim": self.project_directly_to_llm_dim,
                 "llm_checkpoint_saved": llm_saved,
                 "llm_base_weights_saved": bool(llm_saved and save_llm_base),
+                "question_conditioning": (
+                    "pooled_prompt_embedding_additive_latent_shift"
+                    if self.connector_type == "question_conditioned_perceiver_resampler"
+                    else None
+                ),
             },
         )
         print(f"Model saved to {save_path}")

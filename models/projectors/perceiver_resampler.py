@@ -160,6 +160,92 @@ class PerceiverResampler(nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
+class QuestionConditionedPerceiverResampler(PerceiverResampler):
+    """
+    Perceiver Resampler with additive question-conditioned latent shifts.
+
+    The base image-token contract stays identical to ``PerceiverResampler``.
+    When a pooled question/context embedding is provided, a small conditioning
+    MLP produces a bounded shift that is added to the learned latent queries
+    before the normal image cross-attention stack.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        num_latents: int = 64,
+        num_layers: int = 6,
+        num_heads: int = 16,
+        ff_mult: int = 4,
+        dropout: float = 0.0,
+        condition_dim: Optional[int] = None,
+        condition_scale_init: float = 0.02,
+    ):
+        super().__init__(
+            input_dim=input_dim,
+            output_dim=output_dim,
+            num_latents=num_latents,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            ff_mult=ff_mult,
+            dropout=dropout,
+        )
+        self.condition_dim = int(condition_dim or output_dim)
+        self.condition_norm = nn.LayerNorm(self.condition_dim)
+        self.condition_proj = (
+            nn.Identity()
+            if self.condition_dim == output_dim
+            else nn.Linear(self.condition_dim, output_dim)
+        )
+        self.condition_mlp = nn.Sequential(
+            nn.Linear(output_dim, output_dim),
+            nn.GELU(),
+            nn.Linear(output_dim, output_dim),
+        )
+        self.latent_condition_gates = nn.Parameter(torch.ones(num_latents, output_dim))
+        self.condition_scale = nn.Parameter(torch.tensor(float(condition_scale_init)))
+
+    def _condition_latents(
+        self,
+        latents: torch.Tensor,
+        question_summary: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if question_summary is None:
+            return latents
+
+        question_summary = question_summary.to(device=latents.device, dtype=latents.dtype)
+        summary = self.condition_norm(question_summary)
+        summary = self.condition_proj(summary)
+        shift = torch.tanh(self.condition_mlp(summary))
+        shift = shift.unsqueeze(1) * self.latent_condition_gates.unsqueeze(0)
+        return latents + (self.condition_scale * shift)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        question_summary: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Project vision features to LLM token space.
+
+        Args:
+            x: Vision features [B, num_patches, input_dim]
+            attention_mask: Optional mask for vision features [B, num_patches]
+            question_summary: Optional pooled prompt/context embedding [B, H]
+        """
+        batch_size = x.shape[0]
+        context = self.input_proj(x)
+        latents = self.latents.unsqueeze(0).expand(batch_size, -1, -1)
+        latents = self._condition_latents(latents, question_summary)
+
+        for layer in self.layers:
+            latents = layer(latents, context, attention_mask)
+
+        return self.norm(latents)
+
+
 class PerceiverResamplerBlock(nn.Module):
     """
     Single Perceiver Resampler block.

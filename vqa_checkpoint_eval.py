@@ -547,17 +547,18 @@ def evaluate_vqa(
         elif run["architecture"] == "v2":
             model = _load_v2_model(run["checkpoint"], LLAMA_PATH, device)
         elif run["architecture"] == "v3":
+            meta = run_model_meta
             model = AnyMALv3.from_pretrained(
                 run["checkpoint"],
                 llm_model_name=LLAMA_PATH,
                 vision_encoder_type="siglip2",
                 vision_model_name="google/siglip2-so400m-patch14-384",
-                connector_type="perceiver_resampler",
-                num_image_tokens=128,
-                connector_layers=6,
-                connector_heads=16,
-                connector_ff_mult=4,
-                project_directly_to_llm_dim=True,
+                connector_type=meta.get("connector_type", "perceiver_resampler"),
+                num_image_tokens=int(meta.get("num_image_tokens", 128)),
+                connector_layers=int(meta.get("connector_layers", 6)),
+                connector_heads=int(meta.get("connector_heads", 16)),
+                connector_ff_mult=int(meta.get("connector_ff_mult", 4)),
+                project_directly_to_llm_dim=bool(meta.get("project_directly_to_llm_dim", True)),
                 use_qlora=True,
                 use_lora=False,
                 lora_r=64,
