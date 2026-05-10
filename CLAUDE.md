@@ -2,7 +2,12 @@
 
 ## Project Status (Last Updated: May 2026)
 
-**Current State**: V3 is the strongest stable path. V1 is the legacy baseline, V2 is preserved for diagnosis, and V3 is the current incumbent to beat. The best corrected fast-screen result is V3 direct-calibration LoRA-only checkpoint 100: `9.10%` overall on VQAv2 val2014 `1000` samples, seed `42`, `training_chat`, versus V1 ablation-F at `7.57%`. V3 wins overall, number, other, EOS, and max-token behavior, while V1 still has stronger yes/no calibration. The next major workstream should be V4: a new architecture closer to modern VLMs, using the V1/V2/V3 lessons and predeclared architecture/recipe ablations from `V4_ARCHITECTURE_PLAN.md`.
+**Current State**: V3 is the strongest stable path. V1 is the legacy baseline, V2 is preserved for diagnosis, and V3 is the current incumbent to beat. The best corrected fast-screen result is V3 direct-calibration LoRA-only checkpoint 100: `9.10%` overall on VQAv2 val2014 `1000` samples, seed `42`, `training_chat`, versus V1 ablation-F at `7.57%`. V3 wins overall, number, other, EOS, and max-token behavior, while V1 still has stronger yes/no calibration. The next major workstream should be V4: a new architecture closer to modern VLMs, using the V1/V2/V3 lessons and predeclared architecture/recipe ablations from `docs/V4_ARCHITECTURE_PLAN.md`.
+
+**Repo layout note (May 2026):** active design docs and runbooks live under
+`docs/`; frozen historical reports and old plans live under `docs/history/`.
+Eval JSON artifacts live under `results/` — root-level `vqa_eval_*.json` and
+similar patterns are gitignored to prevent re-pollution.
 
 | Component | Status |
 |-----------|--------|
@@ -25,7 +30,7 @@
 
 ### V4 Handoff Notes (May 2026)
 
-Future architecture work should start from `V4_ARCHITECTURE_PLAN.md`. That file
+Future architecture work should start from `docs/V4_ARCHITECTURE_PLAN.md`. That file
 records the incumbent V3 baseline, the lessons from V1/V2/V3, the proposed V4
 global/local spatial Perceiver direction, recipe ablations, promotion gates, and
 babysitting rules for long Modal runs.
@@ -75,18 +80,18 @@ Verified Modal smoke runs:
 
 Recommended next real experiment: evaluate the completed learned-compressor baseline, then run the Perceiver connector ablation from the same zip-backed Stage 1 data path. Do not compare V2 Stage 2 numbers against V1 Stage 1-loaded runs.
 
-V2 quality roadmap: see `V2_QUALITY_PLAN.md`. In short, prioritize eval hardening, real Stage 1 pretraining data, balanced Stage 2 data, dynamic/high-resolution visual tokens, a stronger spatial connector, and hallucination/verbosity alignment before doing more LR sweeps.
+V2 quality roadmap: see `docs/history/V2_QUALITY_PLAN.md`. In short, prioritize eval hardening, real Stage 1 pretraining data, balanced Stage 2 data, dynamic/high-resolution visual tokens, a stronger spatial connector, and hallucination/verbosity alignment before doing more LR sweeps.
 
 V2 quality-plan batch 1 is implemented and smoke-tested. It adds V2-compatible captioning eval metrics, LLaVA-Pretrain caption dataset plumbing, balanced Stage 2 instruction mixtures, config-gated `token_compressor_type="perceiver"` / `"perceiver2"`, and Modal support for `--dataset balanced_mix`. Validation: `pytest tests -q` -> 118 passed, 1 skipped; Modal smoke runs `ap-krX0b1NJwdAD0WGO4VdJAD` (Stage 1) and `ap-jEdIuwx1tvvHe4TiSdlE1v` (Stage 2 balanced mix). Current V2 Stage 1 uses `/checkpoints/llava_pretrain/images.zip` directly; if the zip manifest is missing, it still falls back to COCO-backed captions.
 
-V2 Stage 1/2 run prep lives in `V2_TRAINING_RUNBOOK.md`. It includes Modal canary run IDs, learned-compressor baseline commands, Perceiver connector ablation commands, and the required reporting template. True LLaVA-Pretrain image staging now works through `/checkpoints/llava_pretrain/images.zip`, read directly from the zip to avoid the existing Modal volume inode/device limit.
+V2 Stage 1/2 run prep lives in `docs/history/V2_TRAINING_RUNBOOK.md`. It includes Modal canary run IDs, learned-compressor baseline commands, Perceiver connector ablation commands, and the required reporting template. True LLaVA-Pretrain image staging now works through `/checkpoints/llava_pretrain/images.zip`, read directly from the zip to avoid the existing Modal volume inode/device limit.
 
 The completed 2026-04-28 full baseline is recorded in
-`V2_FULL_TRAINING_ARTIFACT_20260428.md`. Do not treat V2 learned-compressor
+`docs/history/V2_FULL_TRAINING_ARTIFACT_20260428.md`. Do not treat V2 learned-compressor
 results as canary-only anymore: Stage 1 ran 2500 true LLaVA-Pretrain steps and
 Stage 2 ran 3000 `balanced_mix` steps from that exact checkpoint.
 
-Long-run monitoring policy lives in `TRAINING_RUN_BABYSITTING_PLAYBOOK.md`.
+Long-run monitoring policy lives in `docs/TRAINING_RUN_BABYSITTING_PLAYBOOK.md`.
 Future agents should use it when supervising Modal training: prioritize correct
 run identity, checkpoint recoverability, validation trend, and persistent
 gradient behavior over noisy single-batch train loss.
@@ -109,7 +114,7 @@ gradient behavior over noisy single-batch train loss.
 - Final checkpoint: `/checkpoints/pretrain-output/v2-stage1-learned-2500-20260428/checkpoint-2500`
 - Final eval loss: `2.5290`
 - W&B: `https://wandb.ai/babakdam/anymal-pretrain/runs/x77vo36v`
-- Durable record: `V2_FULL_TRAINING_ARTIFACT_20260428.md`
+- Durable record: `docs/history/V2_FULL_TRAINING_ARTIFACT_20260428.md`
 
 **V2 learned Stage 2 full run (3000 steps, 1x A100, 2026-04-28)**:
 - Loaded the exact Stage 1 checkpoint above; data was `balanced_mix`.
@@ -117,7 +122,7 @@ gradient behavior over noisy single-batch train loss.
 - Final eval loss: `1.1203`
 - Final VQA: `6.47%` on 500 samples
 - W&B: `https://wandb.ai/babakdam/anymal-finetune/runs/3gyl1apj`
-- Durable record: `V2_FULL_TRAINING_ARTIFACT_20260428.md`
+- Durable record: `docs/history/V2_FULL_TRAINING_ARTIFACT_20260428.md`
 
 **Stage 1 full run (2500 steps, 4x A100-80GB)**:
 - Loss: ~12 -> ~1.5 (plateaus around step 500, expected with frozen LLM)
@@ -258,48 +263,53 @@ modal run modal_inference.py --num-examples 20
 
 ```
 anymal/
-├── modal_train.py              # Modal cloud training (Stage 1 + Stage 2)
+├── modal_train.py              # Modal cloud training (Stage 1 + Stage 2, all V1-V4)
 ├── modal_inference.py          # Modal inference + prediction viewer JSON
+├── modal_viewer.py             # FastAPI ASGI viewer for prediction JSONs
+├── model_metadata.py           # Architecture-aware checkpoint metadata helpers
+├── arch_sxs_inference.py       # V1/V2/V3/V4 side-by-side inference
+├── compare_inference.py        # Two-checkpoint compare driver
+├── three_way_inference.py      # Three-model compare driver
+├── v1_v2_compare_inference.py  # V1/V2 side-by-side (used as helper by other eval scripts)
+├── v2_compare_inference.py     # V2 Stage 1/Stage 2 compare driver
+├── v2_quality_diagnostics.py   # V2 audit/probe diagnostics
+├── vqa_checkpoint_eval.py      # Modal VQAv2 fast-screen evaluator (continuity benchmark)
+├── pope_checkpoint_eval.py     # POPE hallucination eval
+├── gqa_checkpoint_eval.py      # GQA eval
+├── analyze_v2_compare.py / analyze_v2_probe.py  # Local analyzers for V2 JSONs
 ├── prediction_viewer.html      # Browser-based prediction comparison viewer
-├── MODAL_SETUP.md              # Modal setup instructions
-├── configs/
-│   ├── base.yaml               # Shared settings (lora_alpha=16)
-│   ├── pretrain_image.yaml     # Stage 1 config
-│   └── finetune.yaml           # Stage 2 config (lora_alpha=16)
-├── data/
-│   ├── data_utils.py           # Transforms, collators, TextProcessor
-│   ├── dataset_splitter.py     # Deterministic train/val split (5% val, seed=42)
-│   ├── laion_dataset.py        # LAION loader (Stage 1, local)
-│   └── instruction_dataset.py  # Instruction loader (Stage 2)
-├── models/
-│   ├── anymal.py               # Main model class + save/load_pretrained
-│   ├── encoders/
-│   │   └── image_encoder.py    # CLIP ViT-L wrapper
-│   ├── projectors/
-│   │   ├── perceiver_resampler.py  # Cross-attention projector
-│   │   └── linear_projector.py     # Simple baseline
-│   └── llm/
-│       └── llama_wrapper.py    # LLaMA + QLoRA
-├── training/
-│   ├── trainer.py              # Base trainer (DDP, AMP, warmup, clipped eval)
-│   ├── health_monitor.py       # Loss/gradient anomaly detection
-│   ├── throughput_tracker.py   # Tokens/sec, samples/sec tracking
-│   ├── pretrain.py             # Stage 1 trainer
-│   ├── finetune.py             # Stage 2 trainer (loads pretrain checkpoint)
-│   └── distributed.py          # Multi-GPU utilities (DDP setup/cleanup)
-├── evaluation/
-│   ├── vqa_eval.py             # VQAv2 evaluation
-│   ├── eval_runner.py          # In-training eval wrapper (graceful errors)
-│   └── captioning_eval.py      # COCO captioning
-├── scripts/
-│   ├── train_finetune.py       # Local Stage 2 entry point
-│   ├── train_pretrain.py       # Local Stage 1 entry point
-│   └── download_checkpoints.py # Download LLaMA/CLIP
-└── tests/
-    ├── test_model.py           # Model unit tests
-    ├── test_training.py        # Training pipeline tests
-    └── test_health_monitor.py  # Health monitor tests
+├── docs/                       # Active design docs and runbooks
+│   ├── MODAL_SETUP.md
+│   ├── TRAINING_RUN_BABYSITTING_PLAYBOOK.md
+│   ├── V4_ARCHITECTURE_PLAN.md
+│   ├── V5_RESEARCH_PLAN_20260509.md
+│   ├── V6_CAUSAL_FALSIFICATION_PLAN.md
+│   ├── V6_PLANNER_NEXT_STEPS.md
+│   └── history/                # Frozen plans/reports kept for the record
+│       ├── V2_DEBUG_REPORT_20260429.md
+│       ├── V2_FULL_TRAINING_ARTIFACT_20260428.md
+│       ├── V2_QUALITY_PLAN.md
+│       ├── V2_TRAINING_RUNBOOK.md
+│       ├── V3_ARCHITECTURE_PLAN.md
+│       ├── V4_RESEARCH_RECIPE_20260508.md
+│       ├── V4_V5_ABLATION_AGENT_BRIEF.md
+│       ├── codex.md
+│       └── v5_progress.md
+├── results/                    # Tracked eval JSON artifacts (vqa_eval_*.json etc.)
+├── configs/                    # finetune_v{1..5}*.yaml, pretrain_v{2..4}*.yaml, etc.
+├── data/                       # Loaders, splitter, collators, dataset transforms
+├── models/                     # anymal_v{1..4}.py, encoders/, projectors/, llm/
+├── training/                   # trainer.py, pretrain.py, finetune.py, health_monitor.py, distributed.py
+├── evaluation/                 # vqa_eval.py, captioning_eval.py, eval_runner.py
+├── scripts/                    # Local entry points, promotion checkers, downloads, w&b inspector
+├── notebooks/                  # 01_understanding_architecture.ipynb
+└── tests/                      # test_model.py, test_training.py, test_evaluation.py, test_health_monitor.py
 ```
+
+`results/` is gitignored at the root for `vqa_eval_*.json`, `vqa_sample_*.json`,
+`vqa_checkpoint_eval_*.json`, `v1_v2_compare_*.json`, `v2_compare_*.json`,
+`v2_probe_*.json`, `v2_quality_*.json` so new runs that drop JSONs at the repo
+root are silently ignored — write eval outputs to `results/` instead.
 
 ### Running Tests
 
@@ -423,14 +433,18 @@ In-training eval is clipped to `max_eval_batches=200` (both stages) to avoid blo
 
 ### TODO
 
-- [x] Run full Stage 1 alignment (2500 steps, loss 12 -> 1.5, checkpoint-2500)
-- [ ] Run Stage 2 finetune with pretrained perceiver and verify multimodal output
-- [ ] Fix eval loss logging (currently shows 0.0000 in pretrain)
-- [ ] Add flash-attn to Modal image (use pre-built wheel)
-- [ ] Fix VQA eval to filter to available images only
+V1-V3 work is complete and recorded in `EXPERIMENTS.md`. The active priorities
+are V4 (and any V5/V6 follow-ups). New work should be tracked in
+`docs/V4_ARCHITECTURE_PLAN.md` and `docs/V6_PLANNER_NEXT_STEPS.md` rather than
+in this list.
+
+Carryover items still relevant across versions:
+- [ ] Fix eval loss logging in Stage 1 pretrain (still shows `0.0000` in stdout)
+- [ ] Add flash-attn to the Modal image (pre-built wheel)
+- [ ] Filter VQA eval to questions whose COCO images are present locally
 - [ ] Support multi-image input
 - [ ] Download COCO train images for full-scale training
-- [ ] Add more eval benchmarks (captioning, etc.)
+- [ ] Split `modal_train.py` (currently 4,300+ lines) into per-stage modules
 
 ---
 

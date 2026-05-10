@@ -203,7 +203,7 @@ modal run --detach modal_train.py \
   --max-steps 3000
 ```
 
-For a fuller walkthrough, see [MODAL_SETUP.md](MODAL_SETUP.md).
+For a fuller walkthrough, see [docs/MODAL_SETUP.md](docs/MODAL_SETUP.md).
 
 ## Evaluation
 
@@ -215,8 +215,11 @@ modal run vqa_checkpoint_eval.py \
   --candidate-checkpoint /checkpoints/finetune-output/run-0001/checkpoint-100 \
   --candidate-architecture v4 \
   --max-samples 1000 \
-  --output vqa_checkpoint_eval.json
+  --output results/vqa_checkpoint_eval.json
 ```
+
+Eval JSON artifacts live under `results/`. New runs should write there too so
+the repo root stays clean (root is gitignored for these patterns).
 
 There are also local analysis helpers under `scripts/` for inspecting prediction
 JSON files and promotion criteria.
