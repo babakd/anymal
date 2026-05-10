@@ -251,7 +251,7 @@ held-out scoreboard.
 - The old `/checkpoints/pretrain-output/checkpoint-2500` checkpoint is V1/legacy. V2 must train or load a V2 checkpoint with metadata.
 - V2 Stage 2 can run without a V2 pretrain checkpoint for smoke testing, but real experiments should start from a V2 Stage 1 checkpoint.
 - VQA metrics are now V2-path compatible, but image coverage is still partial, so use them as smoke/relative signals until the VQA cache is expanded.
-- The forward-looking V2 quality roadmap lives in `V2_QUALITY_PLAN.md`; use it as the execution plan for V2.1 experiments.
+- The forward-looking V2 quality roadmap lives in `docs/history/V2_QUALITY_PLAN.md`; use it as the execution plan for V2.1 experiments.
 
 ---
 
@@ -391,7 +391,7 @@ generalization claim across seeds.
 ### V4 handoff
 
 The architecture/recipe lessons from V1, V2, and V3 have been consolidated in
-`V4_ARCHITECTURE_PLAN.md`. Future V4 work should use that file as the planning
+`docs/V4_ARCHITECTURE_PLAN.md`. Future V4 work should use that file as the planning
 entry point. The intended direction is a new `anymal_v4` label that keeps V3's
 compact 128-token discipline while testing modern VLM-style spatial selection:
 global/local visual latents, 2D position features, optional high-resolution or
@@ -405,7 +405,7 @@ expansion; those were the V2 and early Stage 2 failure modes.
 
 **Goal:** modernize the stack beyond V3 while preserving the corrected VQA
 promotion discipline. The design and rationale live in
-`V4_RESEARCH_RECIPE_20260508.md`.
+`docs/history/V4_RESEARCH_RECIPE_20260508.md`.
 
 ### Architecture selected
 

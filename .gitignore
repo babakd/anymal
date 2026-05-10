@@ -62,8 +62,16 @@ data/*.json
 data/*.jsonl
 
 # Inference / experiment artifacts (regeneratable)
+# Tracked artifacts live under results/; these patterns prevent root re-pollution.
 *_predictions.json
 predictions_*.json
+/vqa_eval_*.json
+/vqa_sample_*.json
+/vqa_checkpoint_eval_*.json
+/v1_v2_compare_*.json
+/v2_compare_*.json
+/v2_probe_*.json
+/v2_quality_*.json
 *.tar
 *.tar.gz
 *.zip
