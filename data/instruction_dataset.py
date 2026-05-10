@@ -98,6 +98,8 @@ class InstructionDataset(Dataset):
         split: str = "train",
         system_prompt: Optional[str] = None,
         filter_to_available_images: bool = False,
+        use_augmentation: bool = False,
+        image_augmentation_mode: str = "none",
     ):
         super().__init__()
 
@@ -147,7 +149,8 @@ class InstructionDataset(Dataset):
             vision_model_name=vision_model_name,
             image_size=image_size,
             is_train=(split == "train"),
-            use_augmentation=False,  # Less augmentation for instruction tuning
+            use_augmentation=use_augmentation,
+            image_augmentation_mode=image_augmentation_mode,
         )
 
         # Text processor
@@ -822,6 +825,8 @@ def build_instruction_mixture_dataset(
             "vision_model_name",
             "system_prompt",
             "filter_to_available_images",
+            "use_augmentation",
+            "image_augmentation_mode",
         ):
             if key in entry:
                 entry_kwargs[key] = entry[key]

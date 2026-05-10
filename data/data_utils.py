@@ -69,11 +69,17 @@ def get_siglip_image_transform(
     image_size: Optional[int] = None,
     is_train: bool = True,
     use_augmentation: bool = True,
+    image_augmentation_mode: str = "none",
 ) -> transforms.Compose:
     """Get preprocessing for SigLIP/SigLIP2 vision towers."""
     mean = SIGLIP_MEAN
     std = SIGLIP_STD
     resolved_size = image_size
+    image_augmentation_mode = str(image_augmentation_mode or "none").lower()
+    if image_augmentation_mode not in {"none", "standard", "vqa_light"}:
+        raise ValueError(
+            "image_augmentation_mode must be one of: none, standard, vqa_light"
+        )
 
     try:
         from transformers import AutoImageProcessor
@@ -89,6 +95,22 @@ def get_siglip_image_transform(
 
     if resolved_size is None:
         resolved_size = 384
+
+    if is_train and use_augmentation and image_augmentation_mode == "vqa_light":
+        return transforms.Compose([
+            transforms.RandomApply(
+                [transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0))],
+                p=0.15,
+            ),
+            transforms.RandomResizedCrop(
+                resolved_size,
+                scale=(0.95, 1.0),
+                ratio=(0.95, 1.05),
+                interpolation=transforms.InterpolationMode.BICUBIC,
+            ),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean, std=std),
+        ])
 
     if is_train and use_augmentation:
         return transforms.Compose([
@@ -119,6 +141,7 @@ def get_vision_transform(
     image_size: Optional[int] = 224,
     is_train: bool = True,
     use_augmentation: bool = True,
+    image_augmentation_mode: str = "none",
 ) -> transforms.Compose:
     """Route image preprocessing by vision tower family."""
     encoder = str(vision_encoder_type or "clip").lower()
@@ -128,6 +151,7 @@ def get_vision_transform(
             image_size=image_size,
             is_train=is_train,
             use_augmentation=use_augmentation,
+            image_augmentation_mode=image_augmentation_mode,
         )
     return get_image_transform(
         image_size=image_size or 224,

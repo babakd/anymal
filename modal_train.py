@@ -795,6 +795,7 @@ class Trainer:
         projector_warmup_steps: int = None,
         freeze_connector: bool = False,
         finetune_loss_scale: float = 1.0,
+        finetune_gradient_accumulation_steps: int = 8,
         connector_warmup_steps: int = 0,
         pretrain_loss_scale: float = 1.0,
         pretrain_loss_normalization: str = "mean",
@@ -857,6 +858,8 @@ class Trainer:
             "v3_yesno_calibrated",
             "v4_direct_calibration",
             "v4_semantic_calibration",
+            "v5_semantic_calibration",
+            "v5_semantic_calibration_robust",
         }:
             freeze_connector = True
         if pretrain_image_tokens is None and (stage == "pretrain" or arch_key != "anymal_v4"):
@@ -906,6 +909,7 @@ class Trainer:
                 projector_warmup_steps=projector_warmup_steps,
                 train_adapter=not freeze_connector,
                 finetune_loss_scale=finetune_loss_scale,
+                finetune_gradient_accumulation_steps=finetune_gradient_accumulation_steps,
                 pretrain_image_tokens=pretrain_image_tokens,
                 v4_global_image_tokens=v4_global_tokens,
                 v4_local_image_tokens=v4_local_tokens,
@@ -1182,6 +1186,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                   lora_learning_rate=None, dataset="instruct_150k",
                   run_name=None, projector_warmup_steps=None, train_adapter=True,
                   finetune_loss_scale=1.0,
+                  finetune_gradient_accumulation_steps=8,
                   pretrain_image_tokens=None,
                   v4_global_image_tokens=None, v4_local_image_tokens=None,
                   v4_connector_layers=None, v4_connector_heads=None,
@@ -1487,7 +1492,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
 
     config = FinetuneConfig(
         max_steps=max_steps,
-        gradient_accumulation_steps=8,
+        gradient_accumulation_steps=int(finetune_gradient_accumulation_steps or 8),
         learning_rate=learning_rate,
         lora_learning_rate=lora_learning_rate,
         warmup_steps=min(100, max_steps // 10),
@@ -1880,6 +1885,8 @@ def run_pretrain(
         "v4_answer_type_focus",
         "v4_direct_calibration",
         "v4_semantic_calibration",
+        "v5_semantic_calibration",
+        "v5_semantic_calibration_robust",
     }:
         grounding_dataset_name = dataset
         dataset = load_finetune_dataset(
@@ -1995,6 +2002,7 @@ def load_finetune_dataset(
     max_length: int = 1024,
     vision_encoder_type: str = "clip",
     vision_model_name: str = None,
+    image_augmentation_mode: str = "none",
 ):
     """
     Load finetune dataset using cached JSON from volume.
@@ -2038,6 +2046,8 @@ def load_finetune_dataset(
             max_image_tokens=max_image_tokens,
             vision_encoder_type=vision_encoder_type,
             vision_model_name=vision_model_name,
+            use_augmentation=(str(image_augmentation_mode or "none").lower() != "none"),
+            image_augmentation_mode=image_augmentation_mode,
             filter_to_available_images=True,
         )
 
@@ -2841,8 +2851,25 @@ def load_finetune_dataset(
         "v4_answer_type_focus",
         "v4_direct_calibration",
         "v4_semantic_calibration",
+        "v5_semantic_calibration",
+        "v5_semantic_calibration_robust",
     }:
-        if dataset == "v4_semantic_calibration":
+        if dataset in {"v5_semantic_calibration", "v5_semantic_calibration_robust"}:
+            direct_weights = {
+                "yes_no": 0.40,
+                "number": 0.20,
+                "coco": 0.15,
+                "other": 0.20,
+                "short": 0.05,
+            }
+            calibration_prompt = (
+                "Answer with only the final answer. Do not include role labels, "
+                "explanations, or the word assistant. End after the answer."
+            )
+            calibration_image_augmentation_mode = (
+                "vqa_light" if dataset == "v5_semantic_calibration_robust" else image_augmentation_mode
+            )
+        elif dataset == "v4_semantic_calibration":
             direct_weights = {
                 "yes_no": 0.40,
                 "number": 0.20,
@@ -2853,6 +2880,7 @@ def load_finetune_dataset(
             calibration_prompt = (
                 "Answer the image question directly and briefly. End after the answer."
             )
+            calibration_image_augmentation_mode = image_augmentation_mode
         elif dataset in {"v3_direct_calibration", "v3_yesno_calibrated", "v4_direct_calibration"}:
             direct_weights = {
                 "yes_no": 0.45,
@@ -2864,6 +2892,7 @@ def load_finetune_dataset(
             calibration_prompt = (
                 "Answer the image question directly and briefly. End after the answer."
             )
+            calibration_image_augmentation_mode = image_augmentation_mode
         else:
             # Historical answer-type recipe from the 2026-05-05 fast screen.
             direct_weights = {
@@ -2874,8 +2903,9 @@ def load_finetune_dataset(
                 "short": 0.05,
             }
             calibration_prompt = training_system_prompt
+            calibration_image_augmentation_mode = image_augmentation_mode
 
-        if dataset == "v4_semantic_calibration":
+        if dataset in {"v4_semantic_calibration", "v5_semantic_calibration", "v5_semantic_calibration_robust"}:
             vqa_yes_no_path, vqa_image_dir = _vqa_train_balanced_yes_no_path(
                 max_per_label=40000,
             )
@@ -2945,6 +2975,8 @@ def load_finetune_dataset(
             max_image_tokens=max_image_tokens,
             vision_encoder_type=vision_encoder_type,
             vision_model_name=vision_model_name,
+            use_augmentation=(str(calibration_image_augmentation_mode or "none").lower() != "none"),
+            image_augmentation_mode=calibration_image_augmentation_mode,
             filter_to_available_images=True,
         )
         print(f"Loaded {len(ds)} {dataset} instruction samples")
@@ -4052,6 +4084,7 @@ def main(
     projector_warmup_steps: int = None,
     freeze_connector: bool = False,
     finetune_loss_scale: float = 1.0,
+    finetune_gradient_accumulation_steps: int = 8,
     connector_warmup_steps: int = 0,
     pretrain_loss_scale: float = 1.0,
     pretrain_loss_normalization: str = "mean",
@@ -4099,6 +4132,8 @@ def main(
         "v3_yesno_calibrated",
         "v4_direct_calibration",
         "v4_semantic_calibration",
+        "v5_semantic_calibration",
+        "v5_semantic_calibration_robust",
     }:
         freeze_connector = True
     resolved_v4_connector_type = v4_connector_type or V4_DEFAULT_CONNECTOR_TYPE
@@ -4211,8 +4246,10 @@ def main(
         )
     if stage == "finetune":
         print(f"  Freeze connector: {freeze_connector}")
-        if finetune_loss_scale != 1.0:
-            print(f"  Stage 2 loss scale: {finetune_loss_scale}")
+    if finetune_loss_scale != 1.0:
+        print(f"  Stage 2 loss scale: {finetune_loss_scale}")
+    if stage == "finetune":
+        print(f"  Stage 2 gradient accumulation: {finetune_gradient_accumulation_steps}")
     if learning_rate:
         print(f"  Learning rate: {learning_rate}")
     if lora_learning_rate:
@@ -4293,6 +4330,7 @@ def main(
             projector_warmup_steps=projector_warmup_steps,
             freeze_connector=freeze_connector,
             finetune_loss_scale=finetune_loss_scale,
+            finetune_gradient_accumulation_steps=finetune_gradient_accumulation_steps,
             v4_global_image_tokens=v4_global_tokens,
             v4_local_image_tokens=v4_local_tokens,
             v4_connector_layers=v4_connector_layers,

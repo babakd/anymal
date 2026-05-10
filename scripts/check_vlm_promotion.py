@@ -14,11 +14,13 @@ from pathlib import Path
 
 METRIC_KEYS = (
     "accuracy",
+    "strict_accuracy",
     "accuracy_number",
     "accuracy_other",
     "accuracy_yes_no",
     "eos_rate",
     "hit_max_new_tokens_rate",
+    "assistant_role_prefix_rate",
     "avg_generated_tokens",
 )
 
