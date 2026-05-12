@@ -15,7 +15,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_ROOT_PREFIXES = ("V", "v")
 FORBIDDEN_ROOT_NAMES = {"EXPERIMENTS.md"}
-FORBIDDEN_TEXT = "/Users/babakd/anymal"
+FORBIDDEN_PATH_PARTS = ("Users", "babakd", "anymal")
+FORBIDDEN_TEXT = "/" + "/".join(FORBIDDEN_PATH_PARTS)
 
 
 def _tracked_files() -> list[Path]:
@@ -76,4 +77,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
