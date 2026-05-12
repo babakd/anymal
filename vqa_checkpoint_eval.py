@@ -546,6 +546,7 @@ def evaluate_vqa(
     train_sources=None,
     eval_schema_version="v6",
     llm_backbone=CURRENT_LLAMA3_BACKBONE,
+    connector_output_scale_override=None,
 ):
     import gc
     import sys
@@ -594,6 +595,11 @@ def evaluate_vqa(
             model = _load_v2_model(run["checkpoint"], run_llm_path, device)
         elif run["architecture"] == "v3":
             meta = run_model_meta
+            connector_output_scale = (
+                float(connector_output_scale_override)
+                if connector_output_scale_override is not None
+                else float(meta.get("connector_output_scale", 1.0))
+            )
             model = AnyMALv3.from_pretrained(
                 run["checkpoint"],
                 llm_model_name=run_llm_path,
@@ -604,7 +610,9 @@ def evaluate_vqa(
                 connector_layers=int(meta.get("connector_layers", 6)),
                 connector_heads=int(meta.get("connector_heads", 16)),
                 connector_ff_mult=int(meta.get("connector_ff_mult", 4)),
-                connector_output_scale=float(meta.get("connector_output_scale", 1.0)),
+                connector_output_scale=connector_output_scale,
+                allow_connector_output_scale_override=connector_output_scale_override is not None,
+                allow_missing_model_metadata=not bool(meta),
                 connector_output_gate_init=(
                     float(meta["connector_output_gate_init"])
                     if meta.get("connector_output_gate_init") is not None
@@ -625,6 +633,11 @@ def evaluate_vqa(
             model.projector.to(device)
         elif run["architecture"] == "v4":
             meta = run_model_meta
+            connector_output_scale = (
+                float(connector_output_scale_override)
+                if connector_output_scale_override is not None
+                else float(meta.get("connector_output_scale", 1.0))
+            )
             connector_type = meta.get("connector_type", "spatial_perceiver_resampler")
             deepstack_layers = (
                 meta.get("deepstack_hidden_state_indices")
@@ -657,7 +670,7 @@ def evaluate_vqa(
                     if meta.get("connector_hidden_dim") is not None
                     else None
                 ),
-                connector_output_scale=float(meta.get("connector_output_scale", 1.0)),
+                connector_output_scale=connector_output_scale,
                 connector_output_gate_init=(
                     float(meta["connector_output_gate_init"])
                     if meta.get("connector_output_gate_init") is not None
@@ -720,6 +733,10 @@ def evaluate_vqa(
             for key, value in run_model_meta.items()
             if key in connector_meta_keys
         }
+        if connector_output_scale_override is not None and run["architecture"] in {"v3", "v4"}:
+            connector_meta["eval_connector_output_scale_override"] = float(
+                connector_output_scale_override
+            )
         result_entry = {
             **run,
             "candidate_checkpoint": run["checkpoint"],
@@ -762,6 +779,11 @@ def evaluate_vqa(
             "train_sources": parsed_train_sources,
             "leakage_audit_required": True,
         },
+        "connector_output_scale_override": (
+            None
+            if connector_output_scale_override is None
+            else float(connector_output_scale_override)
+        ),
         "runs": results,
     }
     if remote_output_path:
@@ -797,6 +819,7 @@ def main(
     train_sources: str = "",
     eval_schema_version: str = "v6",
     llm_backbone: str = CURRENT_LLAMA3_BACKBONE,
+    connector_output_scale_override: float = None,
     background: bool = False,
 ):
     function_call = evaluate_vqa.spawn(
@@ -820,6 +843,7 @@ def main(
         train_sources=train_sources,
         eval_schema_version=eval_schema_version,
         llm_backbone=llm_backbone,
+        connector_output_scale_override=connector_output_scale_override,
     )
     if background:
         print(f"Spawned background VQA eval: {function_call}")

@@ -123,6 +123,7 @@ class LlamaWrapper(nn.Module):
         self.use_qlora = use_qlora
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
+        self.lora_dropout = lora_dropout
         self.use_lora = use_lora
         self.added_special_tokens = []
         self.lora_target_modules = []
@@ -291,6 +292,9 @@ class LlamaWrapper(nn.Module):
             "added_special_tokens": list(self.added_special_tokens),
             "padding_side_for_generation": "left",
             "generation_path": self.generation_path,
+            "stage2_lora_rank": self.lora_r,
+            "stage2_lora_alpha": self.lora_alpha,
+            "stage2_lora_dropout": self.lora_dropout,
             "stage2_lora_target_modules": list(self.lora_target_modules),
         }
 

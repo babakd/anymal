@@ -76,6 +76,7 @@ def build_generation_prompt_text(
     system_prompt: Optional[str] = None,
     image_sentinel: Optional[str] = IMAGE_SENTINEL,
     chat_template_family: Optional[str] = None,
+    image_placement: str = "before_question",
 ) -> str:
     """Build the single-turn prompt used by VQA-style evals."""
     spec = resolve_chat_template_spec(
@@ -85,7 +86,13 @@ def build_generation_prompt_text(
     )
     user_text = str(question or "").strip()
     if image_sentinel:
-        user_text = f"{image_sentinel}\n{user_text}"
+        placement = str(image_placement or "before_question").strip().lower()
+        if placement == "after_question":
+            user_text = f"{user_text}\n{image_sentinel}"
+        elif placement == "visual_delimiters":
+            user_text = f"<image>\n{image_sentinel}\n</image>\n{user_text}"
+        else:
+            user_text = f"{image_sentinel}\n{user_text}"
     return (
         f"{spec.system_header}{system_prompt or TRAINING_SYSTEM_PROMPT}{spec.end_turn}"
         f"{spec.user_header}{user_text}{spec.end_turn}"

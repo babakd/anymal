@@ -240,7 +240,7 @@ def _compute_pope_metrics(predictions: list[dict]) -> dict:
     }
 
 
-def _load_model(run: dict, device, llm_backbone=None):
+def _load_model(run: dict, device, llm_backbone=None, connector_output_scale_override=None):
     import sys
 
     import torch
@@ -263,6 +263,11 @@ def _load_model(run: dict, device, llm_backbone=None):
     elif run["architecture"] == "v2":
         model = _load_v2_model(run["checkpoint"], llm_path, device)
     elif run["architecture"] == "v3":
+        connector_output_scale = (
+            float(connector_output_scale_override)
+            if connector_output_scale_override is not None
+            else float(meta.get("connector_output_scale", 1.0))
+        )
         model = AnyMALv3.from_pretrained(
             run["checkpoint"],
             llm_model_name=llm_path,
@@ -273,7 +278,9 @@ def _load_model(run: dict, device, llm_backbone=None):
             connector_layers=int(meta.get("connector_layers", 6)),
             connector_heads=int(meta.get("connector_heads", 16)),
             connector_ff_mult=int(meta.get("connector_ff_mult", 4)),
-            connector_output_scale=float(meta.get("connector_output_scale", 1.0)),
+            connector_output_scale=connector_output_scale,
+            allow_connector_output_scale_override=connector_output_scale_override is not None,
+            allow_missing_model_metadata=not bool(meta),
             connector_output_gate_init=(
                 float(meta["connector_output_gate_init"])
                 if meta.get("connector_output_gate_init") is not None
@@ -293,6 +300,11 @@ def _load_model(run: dict, device, llm_backbone=None):
         model.image_encoder.to(device)
         model.projector.to(device)
     elif run["architecture"] == "v4":
+        connector_output_scale = (
+            float(connector_output_scale_override)
+            if connector_output_scale_override is not None
+            else float(meta.get("connector_output_scale", 1.0))
+        )
         connector_type = meta.get("connector_type", "spatial_perceiver_resampler")
         deepstack_layers = meta.get("deepstack_hidden_state_indices") or meta.get("vision_feature_layers")
         deepstack_kwargs = {}
@@ -318,7 +330,7 @@ def _load_model(run: dict, device, llm_backbone=None):
             connector_hidden_dim=(
                 int(meta["connector_hidden_dim"]) if meta.get("connector_hidden_dim") is not None else None
             ),
-            connector_output_scale=float(meta.get("connector_output_scale", 1.0)),
+            connector_output_scale=connector_output_scale,
             connector_output_gate_init=(
                 float(meta["connector_output_gate_init"])
                 if meta.get("connector_output_gate_init") is not None
@@ -367,6 +379,7 @@ def evaluate_pope(
     train_sources=None,
     eval_schema_version="v6",
     llm_backbone=CURRENT_LLAMA3_BACKBONE,
+    connector_output_scale_override=None,
 ):
     import sys
 
@@ -397,7 +410,12 @@ def evaluate_pope(
         include_baselines=False,
     ):
         print(f"Evaluating POPE {pope_split}: {run['label']} from {run['checkpoint']}")
-        model, run_model_meta = _load_model(run, device, llm_backbone=llm_backbone)
+        model, run_model_meta = _load_model(
+            run,
+            device,
+            llm_backbone=llm_backbone,
+            connector_output_scale_override=connector_output_scale_override,
+        )
         dataloader, dataset_meta, image_transform_meta = _build_vqa_dataloader(
             model=model,
             architecture=run["architecture"],
@@ -451,6 +469,10 @@ def evaluate_pope(
             "image_transform_meta": image_transform_meta,
             "metrics": metrics,
         }
+        if connector_output_scale_override is not None and run["architecture"] in {"v3", "v4"}:
+            result_entry["connector_meta"]["eval_connector_output_scale_override"] = float(
+                connector_output_scale_override
+            )
         if int(prediction_samples or 0) > 0:
             result_entry["prediction_samples"] = predictions[: int(prediction_samples)]
         results.append(result_entry)
@@ -473,6 +495,11 @@ def evaluate_pope(
         "image_dir": image_dir,
         "prompt_style": str(prompt_style),
         "system_prompt": system_prompt,
+        "connector_output_scale_override": (
+            None
+            if connector_output_scale_override is None
+            else float(connector_output_scale_override)
+        ),
         "runs": results,
     }
     if remote_output_path:
@@ -502,6 +529,7 @@ def main(
     train_sources: str = "",
     eval_schema_version: str = "v6",
     llm_backbone: str = CURRENT_LLAMA3_BACKBONE,
+    connector_output_scale_override: float = None,
     background: bool = False,
 ):
     call = evaluate_pope.spawn(
@@ -520,6 +548,7 @@ def main(
         train_sources=train_sources,
         eval_schema_version=eval_schema_version,
         llm_backbone=llm_backbone,
+        connector_output_scale_override=connector_output_scale_override,
     )
     if background:
         print(f"Spawned background POPE eval: {call}")

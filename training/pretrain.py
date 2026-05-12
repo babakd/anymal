@@ -62,6 +62,9 @@ class PretrainConfig(TrainerConfig):
     loss_normalization_min_multiplier: float = 0.05
     loss_normalization_max_multiplier: float = 4.0
     connector_warmup_steps: int = 0
+    connector_rms_regularizer_alpha: float = 0.0
+    connector_rms_regularizer_eps: float = 1e-6
+    connector_rms_regularizer_target: str = "batch_text"
     connector_warmup_trainable_prefixes: Tuple[str, ...] = (
         "projector.output_proj",
         "projector.output_gate_logit",
@@ -118,6 +121,41 @@ class PretrainTrainer(Trainer):
         self._loss_normalization_max_multiplier = float(config.loss_normalization_max_multiplier)
         if self._loss_normalization in {"none", "raw"}:
             self._loss_normalization = "mean"
+        self._connector_rms_regularizer_alpha = float(
+            config.connector_rms_regularizer_alpha or 0.0
+        )
+        if self._connector_rms_regularizer_alpha < 0:
+            raise ValueError(
+                "connector_rms_regularizer_alpha must be >= 0, "
+                f"got {config.connector_rms_regularizer_alpha}"
+            )
+        self._connector_rms_regularizer_eps = float(
+            config.connector_rms_regularizer_eps or 1e-6
+        )
+        if self._connector_rms_regularizer_eps <= 0:
+            raise ValueError(
+                "connector_rms_regularizer_eps must be > 0, "
+                f"got {config.connector_rms_regularizer_eps}"
+            )
+        self._connector_rms_regularizer_target = str(
+            config.connector_rms_regularizer_target or "batch_text"
+        ).strip().lower()
+        if self._connector_rms_regularizer_target not in {
+            "batch_text",
+            "prompt_text",
+            "supervised_text",
+        }:
+            raise ValueError(
+                "connector_rms_regularizer_target must be one of "
+                "batch_text, prompt_text, supervised_text; got "
+                f"{config.connector_rms_regularizer_target!r}"
+            )
+        if self._connector_rms_regularizer_alpha > 0:
+            print_rank_0(
+                "Stage 1 connector RMS regularizer enabled: "
+                f"alpha={self._connector_rms_regularizer_alpha:g}, "
+                f"target={self._connector_rms_regularizer_target}"
+            )
         if self._loss_normalization not in {"mean", "supervised_token_target"}:
             raise ValueError(
                 "loss_normalization must be 'mean' or 'supervised_token_target', "
@@ -278,6 +316,15 @@ class PretrainTrainer(Trainer):
             )
             raw_loss = outputs.loss
             objective_loss, objective_metrics = self._normalize_stage1_loss(raw_loss, labels)
+            rms_loss, rms_metrics = self._connector_rms_regularizer_loss(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+                reference_loss=objective_loss,
+            )
+            if rms_loss is not None:
+                objective_loss = objective_loss + rms_loss
+                objective_metrics.update(rms_metrics)
             backward_loss = objective_loss * self._loss_scale
             batch_metrics = {}
             batch_metrics.update(contract_metrics)
@@ -307,6 +354,50 @@ class PretrainTrainer(Trainer):
         # Return the unscaled objective loss for logging and health monitoring.
         # Raw HF token-mean loss is logged separately as train/raw_loss.
         return objective_loss.item()
+
+    def _connector_rms_regularizer_loss(
+        self,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.Tensor,
+        labels: torch.LongTensor,
+        reference_loss: torch.Tensor,
+    ) -> Tuple[Optional[torch.Tensor], Dict[str, float]]:
+        if self._connector_rms_regularizer_alpha <= 0:
+            return None, {}
+
+        connector_rms = getattr(
+            self.unwrapped_model,
+            "_last_connector_output_rms_tensor",
+            None,
+        )
+        if connector_rms is None:
+            return None, {
+                "train/connector_rms_regularizer_missing": 1.0,
+            }
+
+        target_rms = self._stage1_embedding_rms_target_tensor(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+        )
+        if target_rms is None:
+            return None, {
+                "train/connector_rms_regularizer_missing_target": 1.0,
+            }
+
+        eps = reference_loss.new_tensor(self._connector_rms_regularizer_eps)
+        connector = connector_rms.to(device=reference_loss.device, dtype=torch.float32)
+        target = target_rms.to(device=reference_loss.device, dtype=torch.float32)
+        log_ratio = torch.log((connector + eps) / (target + eps))
+        rms_loss = reference_loss.new_tensor(
+            self._connector_rms_regularizer_alpha
+        ) * log_ratio.pow(2)
+        return rms_loss.to(dtype=reference_loss.dtype), {
+            "train/connector_rms_regularizer_loss": float(rms_loss.detach().item()),
+            "train/connector_rms_regularizer_alpha": self._connector_rms_regularizer_alpha,
+            "train/connector_rms_regularizer_target": float(target.detach().item()),
+            "train/connector_rms_regularizer_log_ratio": float(log_ratio.detach().item()),
+        }
 
     def _validate_stage1_batch_contract(
         self,
@@ -404,6 +495,33 @@ class PretrainTrainer(Trainer):
                 selected = token_embeds[mask]
                 metrics[name] = float(selected.detach().float().pow(2).mean().sqrt().item())
         return metrics
+
+    @torch.no_grad()
+    def _stage1_embedding_rms_target_tensor(
+        self,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.Tensor,
+        labels: torch.LongTensor,
+    ) -> Optional[torch.Tensor]:
+        embedding_layer = self.unwrapped_model.llm.get_input_embeddings()
+        token_embeds = embedding_layer(input_ids)
+        attention_bool = attention_mask.bool()
+        placeholder_id = getattr(self.unwrapped_model, "image_placeholder_token_id", None)
+        non_placeholder = (
+            input_ids != placeholder_id
+            if placeholder_id is not None
+            else torch.ones_like(attention_bool)
+        )
+        active_text = attention_bool & non_placeholder
+        if self._connector_rms_regularizer_target == "prompt_text":
+            mask = active_text & (labels == -100)
+        elif self._connector_rms_regularizer_target == "supervised_text":
+            mask = active_text & (labels != -100)
+        else:
+            mask = active_text
+        if not mask.any():
+            return None
+        return token_embeds[mask].detach().float().pow(2).mean().sqrt()
 
     def _get_connector_diagnostics(self) -> Dict[str, float]:
         diagnostics = getattr(self.unwrapped_model, "_last_connector_diagnostics", None)

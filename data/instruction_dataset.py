@@ -219,9 +219,14 @@ class InstructionDataset(Dataset):
 
         # Filter samples
         original_count = len(self.samples)
+        def _all_image_refs_available(sample):
+            image_refs = [sample.get("image")]
+            image_refs.extend(sample.get("negative_images") or [])
+            return all(ref in available_images for ref in image_refs if ref)
+
         filtered = [
             s for s in self.samples
-            if s.get("image") in available_images
+            if _all_image_refs_available(s)
         ]
 
         print(
@@ -266,13 +271,22 @@ class InstructionDataset(Dataset):
             num_image_tokens=num_image_tokens,
         )
 
-        return {
+        result = {
             "image": image_tensor,
             "input_ids": encoding["input_ids"],
             "attention_mask": encoding["attention_mask"],
             "labels": encoding["labels"],
             "num_image_tokens": torch.tensor(num_image_tokens, dtype=torch.long),
         }
+        negative_images = sample.get("negative_images") or []
+        if negative_images:
+            result["negative_images"] = torch.stack(
+                [
+                    self._load_image({**sample, "image": negative_image})
+                    for negative_image in negative_images
+                ]
+            )
+        return result
 
     def _sample_num_image_tokens(self) -> int:
         """Sample per-sample image placeholder length from policy."""
