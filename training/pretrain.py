@@ -251,6 +251,16 @@ class PretrainTrainer(Trainer):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         labels = batch["labels"]
+        contract_metrics = self._validate_stage1_batch_contract(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+        )
+        embedding_metrics = self._compute_stage1_embedding_metrics(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+        )
 
         # Forward pass with mixed precision
         # Use generic autocast that works on both CPU and CUDA
@@ -269,7 +279,13 @@ class PretrainTrainer(Trainer):
             raw_loss = outputs.loss
             objective_loss, objective_metrics = self._normalize_stage1_loss(raw_loss, labels)
             backward_loss = objective_loss * self._loss_scale
-            self._last_batch_metrics = objective_metrics
+            batch_metrics = {}
+            batch_metrics.update(contract_metrics)
+            batch_metrics.update(embedding_metrics)
+            batch_metrics.update(self._get_connector_diagnostics())
+            batch_metrics.update(objective_metrics)
+            self._add_connector_embedding_ratios(batch_metrics)
+            self._last_batch_metrics = batch_metrics
             self._last_batch_metrics["train/raw_loss"] = raw_loss.detach().item()
             self._last_batch_metrics["train/objective_loss"] = objective_loss.detach().item()
             self._last_batch_metrics["train/backward_loss"] = backward_loss.detach().item()
@@ -291,6 +307,127 @@ class PretrainTrainer(Trainer):
         # Return the unscaled objective loss for logging and health monitoring.
         # Raw HF token-mean loss is logged separately as train/raw_loss.
         return objective_loss.item()
+
+    def _validate_stage1_batch_contract(
+        self,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.Tensor,
+        labels: torch.LongTensor,
+    ) -> Dict[str, float]:
+        attention_bool = attention_mask.bool()
+        supervised_mask = labels != -100
+        supervised_tokens = int(supervised_mask.sum().item())
+        active_tokens = int(attention_bool.sum().item())
+        if supervised_tokens <= 0:
+            raise ValueError("Stage 1 batch has zero supervised tokens.")
+        if (supervised_mask & ~attention_bool).any():
+            raise ValueError("Stage 1 batch has supervised labels on masked attention tokens.")
+
+        placeholder_id = getattr(self.unwrapped_model, "image_placeholder_token_id", None)
+        expected_count = getattr(self.unwrapped_model, "num_image_tokens", None)
+        if expected_count is None:
+            expected_count = getattr(self.unwrapped_model, "max_image_tokens", None)
+        base_metrics = {
+            "train/active_tokens": float(active_tokens),
+            "train/supervised_token_rate": supervised_tokens / max(active_tokens, 1),
+            "train/supervised_token_ratio": supervised_tokens / max(active_tokens, 1),
+        }
+        if placeholder_id is None or expected_count is None:
+            base_metrics["train/placeholder_contract_checked"] = 0.0
+            return base_metrics
+
+        placeholder_counts = []
+        placeholder_label_violations = 0
+        for batch_idx in range(input_ids.shape[0]):
+            ids = input_ids[batch_idx]
+            active = attention_bool[batch_idx]
+            placeholder_mask = (ids == placeholder_id) & active
+            indices = placeholder_mask.nonzero(as_tuple=True)[0]
+            count = int(indices.numel())
+            placeholder_counts.append(count)
+            if count != int(expected_count):
+                raise ValueError(
+                    "Stage 1 batch placeholder count mismatch: "
+                    f"sample={batch_idx}, expected={expected_count}, got={count}."
+                )
+            if count:
+                if (indices[-1] - indices[0] + 1) != count:
+                    raise ValueError(
+                        "Stage 1 batch placeholders are not contiguous: "
+                        f"sample={batch_idx}, count={count}."
+                    )
+                placeholder_labels = labels[batch_idx][placeholder_mask]
+                placeholder_label_violations += int((placeholder_labels != -100).sum().item())
+
+        if placeholder_label_violations:
+            raise ValueError(
+                "Stage 1 batch has supervised labels on image placeholder tokens: "
+                f"{placeholder_label_violations} violations."
+            )
+
+        total_placeholders = int(sum(placeholder_counts))
+        base_metrics.update(
+            {
+                "train/image_placeholder_tokens": float(total_placeholders),
+                "train/image_placeholder_count_per_sample": float(
+                    total_placeholders / max(len(placeholder_counts), 1)
+                ),
+                "train/placeholder_contract_checked": 1.0,
+                "train/placeholder_contract_valid": 1.0,
+            }
+        )
+        return base_metrics
+
+    @torch.no_grad()
+    def _compute_stage1_embedding_metrics(
+        self,
+        input_ids: torch.LongTensor,
+        attention_mask: torch.Tensor,
+        labels: torch.LongTensor,
+    ) -> Dict[str, float]:
+        embedding_layer = self.unwrapped_model.llm.get_input_embeddings()
+        token_embeds = embedding_layer(input_ids)
+        attention_bool = attention_mask.bool()
+        placeholder_id = getattr(self.unwrapped_model, "image_placeholder_token_id", None)
+        non_placeholder = input_ids != placeholder_id if placeholder_id is not None else torch.ones_like(attention_bool)
+        active_text = attention_bool & non_placeholder
+        prompt_text = active_text & (labels == -100)
+        supervised_text = active_text & (labels != -100)
+
+        metrics = {}
+        for name, mask in (
+            ("train/qwen_batch_token_embedding_rms", active_text),
+            ("train/qwen_prompt_embedding_rms", prompt_text),
+            ("train/qwen_supervised_embedding_rms", supervised_text),
+        ):
+            if mask.any():
+                selected = token_embeds[mask]
+                metrics[name] = float(selected.detach().float().pow(2).mean().sqrt().item())
+        return metrics
+
+    def _get_connector_diagnostics(self) -> Dict[str, float]:
+        diagnostics = getattr(self.unwrapped_model, "_last_connector_diagnostics", None)
+        if not diagnostics:
+            return {}
+        return {
+            key: float(value)
+            for key, value in diagnostics.items()
+            if isinstance(value, (int, float))
+        }
+
+    @staticmethod
+    def _add_connector_embedding_ratios(metrics: Dict[str, float]) -> None:
+        connector_rms = metrics.get("train/connector_output_rms")
+        if connector_rms is None:
+            return
+        for denom_key, ratio_key in (
+            ("train/qwen_batch_token_embedding_rms", "train/connector_to_qwen_token_rms_ratio"),
+            ("train/qwen_prompt_embedding_rms", "train/connector_to_qwen_prompt_rms_ratio"),
+            ("train/qwen_supervised_embedding_rms", "train/connector_to_qwen_supervised_rms_ratio"),
+        ):
+            denom = metrics.get(denom_key)
+            if denom and denom > 0:
+                metrics[ratio_key] = connector_rms / denom
 
     def _normalize_stage1_loss(
         self,
