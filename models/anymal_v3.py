@@ -184,12 +184,19 @@ class AnyMALv3(AnyMALv2):
             vision_features = vision_features.to(projector_dtype)
 
         if self.connector_type == "question_conditioned_perceiver_resampler":
+            self._last_connector_diagnostics = self._compute_connector_diagnostics(
+                vision_features
+            )
             image_tokens = self.projector(
                 vision_features,
                 question_summary=question_summary,
             )
         else:
+            self._last_connector_diagnostics = self._compute_connector_diagnostics(
+                vision_features
+            )
             image_tokens = self.projector(vision_features)
+        self._record_connector_output_diagnostics(image_tokens)
         token_mask = torch.ones(
             image_tokens.shape[:2],
             dtype=torch.bool,
@@ -202,6 +209,55 @@ class AnyMALv3(AnyMALv2):
             device=image_tokens.device,
         )
         return image_tokens, token_mask, token_counts
+
+    @staticmethod
+    def _tensor_rms(value: torch.Tensor) -> float:
+        return float(value.detach().float().pow(2).mean().sqrt().item())
+
+    @torch.no_grad()
+    def _compute_connector_diagnostics(self, vision_features: torch.Tensor) -> Dict[str, float]:
+        metrics = {
+            "train/vision_feature_rms": self._tensor_rms(vision_features),
+            "train/vision_feature_mean": float(vision_features.detach().float().mean().item()),
+            "train/vision_feature_std": float(vision_features.detach().float().std().item()),
+        }
+        input_proj = getattr(self.projector, "input_proj", None)
+        if input_proj is not None:
+            projected = input_proj(vision_features)
+            metrics.update(
+                {
+                    "train/connector_input_proj_rms": self._tensor_rms(projected),
+                    "train/connector_input_proj_mean": float(projected.detach().float().mean().item()),
+                    "train/connector_input_proj_std": float(projected.detach().float().std().item()),
+                }
+            )
+        return metrics
+
+    @torch.no_grad()
+    def _record_connector_output_diagnostics(self, image_tokens: torch.Tensor) -> None:
+        metrics = dict(getattr(self, "_last_connector_diagnostics", {}) or {})
+        output_multiplier = getattr(self.projector, "_output_multiplier", None)
+        if output_multiplier is not None:
+            multiplier = output_multiplier()
+            metrics["train/connector_output_multiplier"] = float(
+                multiplier.detach().float().item()
+                if isinstance(multiplier, torch.Tensor)
+                else multiplier
+            )
+        gate_logit = getattr(self.projector, "output_gate_logit", None)
+        if gate_logit is not None:
+            metrics["train/connector_output_gate"] = float(
+                torch.sigmoid(gate_logit.detach().float()).item()
+            )
+        metrics.update(
+            {
+                "train/connector_output_rms": self._tensor_rms(image_tokens),
+                "train/connector_output_mean": float(image_tokens.detach().float().mean().item()),
+                "train/connector_output_std": float(image_tokens.detach().float().std().item()),
+                "train/connector_output_tokens": float(image_tokens.shape[1]),
+            }
+        )
+        self._last_connector_diagnostics = metrics
 
     def _build_question_summary(
         self,

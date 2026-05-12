@@ -158,6 +158,25 @@ def inspect_wandb_run_remote(
             "eval_loss": _last_number(rows, "eval/loss"),
             "samples_per_second": _last_number(rows, "perf/samples_per_second"),
             "tokens_per_second": _last_number(rows, "perf/tokens_per_second"),
+            "connector_output_rms": _last_number(rows, "train/connector_output_rms"),
+            "connector_output_multiplier": _last_number(
+                rows,
+                "train/connector_output_multiplier",
+            ),
+            "connector_output_gate": _last_number(rows, "train/connector_output_gate"),
+            "qwen_batch_token_embedding_rms": _last_number(
+                rows,
+                "train/qwen_batch_token_embedding_rms",
+            ),
+            "connector_to_qwen_token_rms_ratio": _last_number(
+                rows,
+                "train/connector_to_qwen_token_rms_ratio",
+            ),
+            "placeholder_contract_valid": _last_number(
+                rows,
+                "train/placeholder_contract_valid",
+            ),
+            "supervised_token_rate": _last_number(rows, "train/supervised_token_rate"),
         },
         "recent_window": {
             "n": len(recent_losses),
