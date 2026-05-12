@@ -51,6 +51,8 @@ class AnyMALv3(AnyMALv2):
         connector_heads: int = 16,
         connector_ff_mult: int = 4,
         project_directly_to_llm_dim: bool = True,
+        connector_output_scale: float = 1.0,
+        connector_output_gate_init: Optional[float] = None,
         freeze_vision: bool = True,
         freeze_llm: bool = True,
         use_qlora: bool = True,
@@ -98,6 +100,10 @@ class AnyMALv3(AnyMALv2):
         self.connector_heads = connector_heads
         self.connector_ff_mult = connector_ff_mult
         self.project_directly_to_llm_dim = project_directly_to_llm_dim
+        self.connector_output_scale = float(connector_output_scale)
+        self.connector_output_gate_init = (
+            None if connector_output_gate_init is None else float(connector_output_gate_init)
+        )
 
         self.image_encoder = SigLIP2Encoder(
             model_name=vision_model_name,
@@ -137,6 +143,8 @@ class AnyMALv3(AnyMALv2):
             num_layers=connector_layers,
             num_heads=connector_heads,
             ff_mult=connector_ff_mult,
+            output_scale=self.connector_output_scale,
+            output_gate_init=self.connector_output_gate_init,
             **projector_kwargs,
         )
 
@@ -454,6 +462,8 @@ class AnyMALv3(AnyMALv2):
                 "connector_layers": self.connector_layers,
                 "connector_heads": self.connector_heads,
                 "connector_ff_mult": self.connector_ff_mult,
+                "connector_output_scale": self.connector_output_scale,
+                "connector_output_gate_init": self.connector_output_gate_init,
                 "project_directly_to_llm_dim": self.project_directly_to_llm_dim,
                 **(
                     self.llm.get_model_metadata()
@@ -488,8 +498,13 @@ class AnyMALv3(AnyMALv2):
 
         validate_checkpoint_architecture(save_path, expected_architecture=cls.architecture)
 
-        model = cls(llm_model_name=llm_model_name, **kwargs)
         meta = read_model_metadata(save_path) or {}
+        if "connector_output_scale" not in kwargs and meta.get("connector_output_scale") is not None:
+            kwargs["connector_output_scale"] = float(meta["connector_output_scale"])
+        if "connector_output_gate_init" not in kwargs and meta.get("connector_output_gate_init") is not None:
+            kwargs["connector_output_gate_init"] = float(meta["connector_output_gate_init"])
+
+        model = cls(llm_model_name=llm_model_name, **kwargs)
         expected_values = {
             "vision_encoder_type": getattr(model, "vision_encoder_type", None),
             "connector_type": getattr(model, "connector_type", None),
@@ -501,6 +516,10 @@ class AnyMALv3(AnyMALv2):
             "connector_ff_mult": getattr(model, "connector_ff_mult", None),
             "project_directly_to_llm_dim": getattr(model, "project_directly_to_llm_dim", None),
         }
+        if "connector_output_scale" in meta:
+            expected_values["connector_output_scale"] = getattr(model, "connector_output_scale", None)
+        if "connector_output_gate_init" in meta:
+            expected_values["connector_output_gate_init"] = getattr(model, "connector_output_gate_init", None)
         if "llm_backbone" in meta or getattr(model, "llm_backbone", None) != CURRENT_LLAMA3_BACKBONE:
             expected_values["llm_backbone"] = getattr(model, "llm_backbone", None)
 

@@ -544,6 +544,12 @@ def _load_model(run: dict, device, llm_backbone=None):
             connector_layers=int(meta.get("connector_layers", 6)),
             connector_heads=int(meta.get("connector_heads", 16)),
             connector_ff_mult=int(meta.get("connector_ff_mult", 4)),
+            connector_output_scale=float(meta.get("connector_output_scale", 1.0)),
+            connector_output_gate_init=(
+                float(meta["connector_output_gate_init"])
+                if meta.get("connector_output_gate_init") is not None
+                else None
+            ),
             project_directly_to_llm_dim=bool(meta.get("project_directly_to_llm_dim", True)),
             use_qlora=True,
             use_lora=False,

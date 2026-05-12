@@ -299,16 +299,22 @@ def _resolve_run_output_dir(
     """
     Resolve output directory for a training run.
 
-    - Resumed runs: write checkpoints into the run directory containing resume_checkpoint.
     - Explicit run_name: use {base_dir}/{run_name} directly (race-free — caller
       already generated a unique name, typically via _generate_unique_run_name()
       in the local entrypoint).
+    - Unnamed resumed runs: write checkpoints into the run directory containing
+      resume_checkpoint.
     - Fallback (run_name is None): create a numbered dir via _create_versioned_run_dir.
       NOTE: this fallback races across parallel containers on Modal Volumes because
       volumes are eventually consistent — os.mkdir appears atomic per container but
       multiple containers can each "succeed" on the same path and then clobber each
       other when the volume syncs. Prefer passing run_name.
     """
+    if run_name:
+        run_dir = os.path.join(base_dir, run_name)
+        os.makedirs(run_dir, exist_ok=True)
+        return run_dir
+
     if resume_checkpoint:
         ckpt_dir = os.path.abspath(str(resume_checkpoint))
         if os.path.basename(ckpt_dir).startswith("checkpoint-"):
@@ -317,11 +323,6 @@ def _resolve_run_output_dir(
             return resumed_output_dir
         os.makedirs(ckpt_dir, exist_ok=True)
         return ckpt_dir
-
-    if run_name:
-        run_dir = os.path.join(base_dir, run_name)
-        os.makedirs(run_dir, exist_ok=True)
-        return run_dir
 
     return _create_versioned_run_dir(base_dir, prefix=prefix)
 
@@ -394,7 +395,19 @@ def _checkpoint_save_interval(max_steps: int, max_interval: int = 250) -> int:
     """Pick a checkpoint cadence that also protects short canaries."""
     if max_steps <= 0:
         return max_interval
-    return min(max_interval, max(50, max_steps // 4), max_steps)
+    return min(max_interval, max(10, max_steps // 4), max_steps)
+
+
+def _parse_checkpoint_step_list(value):
+    """Parse a comma/space separated checkpoint milestone list."""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        return tuple(sorted({int(step) for step in value}))
+    text = str(value).replace(",", " ").strip()
+    if not text:
+        return None
+    return tuple(sorted({int(part) for part in text.split()}))
 
 
 def _checkpoint_matches_run_config(
@@ -403,6 +416,8 @@ def _checkpoint_matches_run_config(
     expected_llm_backbone: str = None,
     token_compressor_type: str = None,
     v3_connector_type: str = None,
+    v3_connector_output_scale: float = None,
+    v3_connector_output_gate_init: float = None,
     v4_connector_type: str = None,
     v4_global_image_tokens: int = None,
     v4_local_image_tokens: int = None,
@@ -455,6 +470,20 @@ def _checkpoint_matches_run_config(
                 f"{checkpoint_connector!r}, requested={v3_connector_type!r}"
             )
             return False
+        expected_values = {
+            "connector_output_scale": v3_connector_output_scale,
+            "connector_output_gate_init": v3_connector_output_gate_init,
+        }
+        for key, expected in expected_values.items():
+            if expected is None:
+                continue
+            checkpoint_value = meta.get(key)
+            if checkpoint_value != expected:
+                print(
+                    f"Skipping checkpoint {checkpoint_dir}: {key}="
+                    f"{checkpoint_value!r}, requested={expected!r}"
+                )
+                return False
 
     if expected_architecture == "anymal_v4":
         parsed_layers = _parse_v4_hidden_state_indices(v4_deepstack_hidden_state_indices)
@@ -492,6 +521,8 @@ def _auto_discover_pretrain_checkpoint(
     llm_backbone: str = None,
     token_compressor_type: str = None,
     v3_connector_type: str = None,
+    v3_connector_output_scale: float = None,
+    v3_connector_output_gate_init: float = None,
     v4_connector_type: str = None,
     v4_global_image_tokens: int = None,
     v4_local_image_tokens: int = None,
@@ -514,6 +545,8 @@ def _auto_discover_pretrain_checkpoint(
             expected_llm_backbone=llm_backbone,
             token_compressor_type=token_compressor_type,
             v3_connector_type=v3_connector_type,
+            v3_connector_output_scale=v3_connector_output_scale,
+            v3_connector_output_gate_init=v3_connector_output_gate_init,
             v4_connector_type=v4_connector_type,
             v4_global_image_tokens=v4_global_image_tokens,
             v4_local_image_tokens=v4_local_image_tokens,
@@ -882,12 +915,15 @@ class Trainer:
         freeze_connector: bool = False,
         finetune_loss_scale: float = 1.0,
         finetune_gradient_accumulation_steps: int = 8,
+        finetune_preserve_checkpoint_steps: str = None,
         connector_warmup_steps: int = 0,
         pretrain_loss_scale: float = 1.0,
         pretrain_loss_normalization: str = "mean",
         pretrain_loss_normalization_target_tokens: float = 8.0,
         pretrain_gradient_accumulation_steps: int = 8,
         v3_connector_type: str = V3_DEFAULT_CONNECTOR_TYPE,
+        v3_connector_output_scale: float = None,
+        v3_connector_output_gate_init: float = None,
         v4_global_image_tokens: int = None,
         v4_local_image_tokens: int = None,
         v4_connector_layers: int = None,
@@ -921,6 +957,7 @@ class Trainer:
             dataset: Dataset to use for finetune ("instruct_150k" or "mix_665k")
             projector_warmup_steps: Zero connector gradients for this many Stage 2 steps
             freeze_connector: Freeze the multimodal connector during Stage 2 and train LoRA only
+            finetune_preserve_checkpoint_steps: Comma-separated Stage 2 checkpoint milestones to protect from cleanup
         """
         import sys
         sys.path.insert(0, "/root/anymal")
@@ -1004,8 +1041,11 @@ class Trainer:
                 train_adapter=not freeze_connector,
                 finetune_loss_scale=finetune_loss_scale,
                 finetune_gradient_accumulation_steps=finetune_gradient_accumulation_steps,
+                finetune_preserve_checkpoint_steps=finetune_preserve_checkpoint_steps,
                 pretrain_image_tokens=pretrain_image_tokens,
                 v3_connector_type=v3_connector_type,
+                v3_connector_output_scale=v3_connector_output_scale,
+                v3_connector_output_gate_init=v3_connector_output_gate_init,
                 v4_global_image_tokens=v4_global_tokens,
                 v4_local_image_tokens=v4_local_tokens,
                 v4_connector_layers=v4_connector_layers,
@@ -1048,6 +1088,8 @@ class Trainer:
                 pretrain_image_tokens=effective_pretrain_image_tokens,
                 dataset=dataset,
                 v3_connector_type=v3_connector_type,
+                v3_connector_output_scale=v3_connector_output_scale,
+                v3_connector_output_gate_init=v3_connector_output_gate_init,
                 connector_warmup_steps=connector_warmup_steps,
                 pretrain_loss_scale=pretrain_loss_scale,
                 pretrain_loss_normalization=pretrain_loss_normalization,
@@ -1291,9 +1333,12 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                   run_name=None, projector_warmup_steps=None, train_adapter=True,
                   finetune_loss_scale=1.0,
                   finetune_gradient_accumulation_steps=8,
+                  finetune_preserve_checkpoint_steps=None,
                   pretrain_image_tokens=None,
                   llm_backbone=None,
                   v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
+                  v3_connector_output_scale=None,
+                  v3_connector_output_gate_init=None,
                   v4_global_image_tokens=None, v4_local_image_tokens=None,
                   v4_connector_layers=None, v4_connector_heads=None,
                   v4_connector_ff_mult=None, v4_connector_hidden_dim=None,
@@ -1332,6 +1377,8 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
             ),
             token_compressor_type=token_compressor_type,
             v3_connector_type=v3_connector_type or V3_DEFAULT_CONNECTOR_TYPE,
+            v3_connector_output_scale=v3_connector_output_scale,
+            v3_connector_output_gate_init=v3_connector_output_gate_init,
             v4_global_image_tokens=v4_global_image_tokens,
             v4_local_image_tokens=v4_local_image_tokens,
             v4_connector_layers=v4_connector_layers,
@@ -1351,6 +1398,15 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         )
         if pretrain_checkpoint:
             print(f"Auto-discovered pretrain checkpoint: {pretrain_checkpoint}")
+    v3_metadata_checkpoint = finetune_checkpoint or pretrain_checkpoint
+    if arch_key == "anymal_v3" and v3_metadata_checkpoint:
+        from model_metadata import read_model_metadata
+
+        meta = read_model_metadata(v3_metadata_checkpoint) or {}
+        if v3_connector_output_scale is None:
+            v3_connector_output_scale = meta.get("connector_output_scale")
+        if v3_connector_output_gate_init is None:
+            v3_connector_output_gate_init = meta.get("connector_output_gate_init")
     if arch_key == "anymal_v4" and pretrain_checkpoint:
         from model_metadata import read_model_metadata
 
@@ -1447,6 +1503,16 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                 "connector_layers": 6,
                 "connector_heads": 16,
                 "connector_ff_mult": 4,
+                "connector_output_scale": (
+                    float(v3_connector_output_scale)
+                    if v3_connector_output_scale is not None
+                    else 1.0
+                ),
+                "connector_output_gate_init": (
+                    float(v3_connector_output_gate_init)
+                    if v3_connector_output_gate_init is not None
+                    else None
+                ),
                 "project_directly_to_llm_dim": True,
             }
         )
@@ -1604,8 +1670,11 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
     default_projector_warmup_steps = 0 if arch_key in {"anymal_v2", "anymal_v3", "anymal_v4"} else 200
     if projector_warmup_steps is None:
         projector_warmup_steps = default_projector_warmup_steps
+    preserve_checkpoint_steps = _parse_checkpoint_step_list(
+        finetune_preserve_checkpoint_steps
+    )
 
-    config = FinetuneConfig(
+    config_kwargs = dict(
         max_steps=max_steps,
         gradient_accumulation_steps=int(finetune_gradient_accumulation_steps or 8),
         learning_rate=learning_rate,
@@ -1632,6 +1701,10 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         train_adapter=bool(train_adapter),
         loss_scale=float(finetune_loss_scale or 1.0),
     )
+    if preserve_checkpoint_steps is not None:
+        config_kwargs["preserve_checkpoint_steps"] = preserve_checkpoint_steps
+        print(f"Preserving Stage 2 checkpoint steps: {preserve_checkpoint_steps}")
+    config = FinetuneConfig(**config_kwargs)
 
     # Train
     trainer = FinetuneTrainer(
@@ -1709,6 +1782,8 @@ def run_pretrain(
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
     v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
+    v3_connector_output_scale=None,
+    v3_connector_output_gate_init=None,
     v4_global_image_tokens=None,
     v4_local_image_tokens=None,
     v4_connector_layers=None,
@@ -1746,6 +1821,14 @@ def run_pretrain(
     device_map = None if distributed else "auto"
     arch_key = _normalize_architecture_key(architecture)
     expected_llm_backbone = _metadata_llm_backbone(llm_backbone or llama_path)
+    if arch_key == "anymal_v3" and (pretrain_checkpoint or resume_checkpoint):
+        from model_metadata import read_model_metadata
+
+        meta = read_model_metadata(pretrain_checkpoint or resume_checkpoint) or {}
+        if v3_connector_output_scale is None:
+            v3_connector_output_scale = meta.get("connector_output_scale")
+        if v3_connector_output_gate_init is None:
+            v3_connector_output_gate_init = meta.get("connector_output_gate_init")
     if arch_key == "anymal_v4" and (pretrain_checkpoint or resume_checkpoint):
         from model_metadata import read_model_metadata
 
@@ -1841,6 +1924,16 @@ def run_pretrain(
                 "connector_layers": 6,
                 "connector_heads": 16,
                 "connector_ff_mult": 4,
+                "connector_output_scale": (
+                    float(v3_connector_output_scale)
+                    if v3_connector_output_scale is not None
+                    else 1.0
+                ),
+                "connector_output_gate_init": (
+                    float(v3_connector_output_gate_init)
+                    if v3_connector_output_gate_init is not None
+                    else None
+                ),
                 "project_directly_to_llm_dim": True,
             }
         )
@@ -1939,6 +2032,19 @@ def run_pretrain(
                 "connector_heads": getattr(model, "connector_heads", None),
                 "connector_ff_mult": getattr(model, "connector_ff_mult", None),
             }
+            if arch_key == "anymal_v3":
+                if v3_connector_output_scale is not None:
+                    expected_values["connector_output_scale"] = getattr(
+                        model,
+                        "connector_output_scale",
+                        None,
+                    )
+                if v3_connector_output_gate_init is not None:
+                    expected_values["connector_output_gate_init"] = getattr(
+                        model,
+                        "connector_output_gate_init",
+                        None,
+                    )
             if expected_llm_backbone != CURRENT_LLAMA3_BACKBONE:
                 expected_values["llm_backbone"] = expected_llm_backbone
             if arch_key == "anymal_v4":
@@ -4031,6 +4137,8 @@ def _pretrain_worker(local_rank, world_size, config):
             pretrain_gradient_accumulation_steps=config.get("pretrain_gradient_accumulation_steps", 8),
             pretrain_save_steps=config.get("pretrain_save_steps"),
             v3_connector_type=config.get("v3_connector_type", V3_DEFAULT_CONNECTOR_TYPE),
+            v3_connector_output_scale=config.get("v3_connector_output_scale"),
+            v3_connector_output_gate_init=config.get("v3_connector_output_gate_init"),
             v4_global_image_tokens=config.get("v4_global_image_tokens"),
             v4_local_image_tokens=config.get("v4_local_image_tokens"),
             v4_connector_layers=config.get("v4_connector_layers"),
@@ -4068,6 +4176,8 @@ def _run_pretrain_distributed(
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
     v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
+    v3_connector_output_scale=None,
+    v3_connector_output_gate_init=None,
     v4_global_image_tokens=None,
     v4_local_image_tokens=None,
     v4_connector_layers=None,
@@ -4134,6 +4244,8 @@ def _run_pretrain_distributed(
         "pretrain_gradient_accumulation_steps": pretrain_gradient_accumulation_steps,
         "pretrain_save_steps": pretrain_save_steps,
         "v3_connector_type": v3_connector_type,
+        "v3_connector_output_scale": v3_connector_output_scale,
+        "v3_connector_output_gate_init": v3_connector_output_gate_init,
         "v4_global_image_tokens": v4_global_image_tokens,
         "v4_local_image_tokens": v4_local_image_tokens,
         "v4_connector_layers": v4_connector_layers,
@@ -4184,6 +4296,8 @@ def pretrain_distributed(
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
     v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
+    v3_connector_output_scale=None,
+    v3_connector_output_gate_init=None,
     v4_global_image_tokens=None,
     v4_local_image_tokens=None,
     v4_connector_layers=None,
@@ -4219,6 +4333,8 @@ def pretrain_distributed(
         pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
         pretrain_save_steps=pretrain_save_steps,
         v3_connector_type=v3_connector_type,
+        v3_connector_output_scale=v3_connector_output_scale,
+        v3_connector_output_gate_init=v3_connector_output_gate_init,
         v4_global_image_tokens=v4_global_image_tokens,
         v4_local_image_tokens=v4_local_image_tokens,
         v4_connector_layers=v4_connector_layers,
@@ -4265,6 +4381,8 @@ def pretrain_distributed_h100(
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
     v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
+    v3_connector_output_scale=None,
+    v3_connector_output_gate_init=None,
     v4_global_image_tokens=None,
     v4_local_image_tokens=None,
     v4_connector_layers=None,
@@ -4300,6 +4418,8 @@ def pretrain_distributed_h100(
         pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
         pretrain_save_steps=pretrain_save_steps,
         v3_connector_type=v3_connector_type,
+        v3_connector_output_scale=v3_connector_output_scale,
+        v3_connector_output_gate_init=v3_connector_output_gate_init,
         v4_global_image_tokens=v4_global_image_tokens,
         v4_local_image_tokens=v4_local_image_tokens,
         v4_connector_layers=v4_connector_layers,
@@ -4474,6 +4594,7 @@ def main(
     freeze_connector: bool = False,
     finetune_loss_scale: float = 1.0,
     finetune_gradient_accumulation_steps: int = 8,
+    finetune_preserve_checkpoint_steps: str = None,
     connector_warmup_steps: int = 0,
     pretrain_loss_scale: float = 1.0,
     pretrain_loss_normalization: str = "mean",
@@ -4481,6 +4602,8 @@ def main(
     pretrain_gradient_accumulation_steps: int = 8,
     pretrain_save_steps: int = None,
     v3_connector_type: str = V3_DEFAULT_CONNECTOR_TYPE,
+    v3_connector_output_scale: float = None,
+    v3_connector_output_gate_init: float = None,
     v4_global_image_tokens: int = None,
     v4_local_image_tokens: int = None,
     v4_connector_layers: int = None,
@@ -4545,12 +4668,11 @@ def main(
             "--token-compressor-type must be one of: learned, perceiver, perceiver2, avg"
         )
 
-    # Generate unique run name locally BEFORE any .remote() call. All containers
-    # receive the same name and write to the same directory — avoids a race
-    # where parallel invocations each try to claim e.g. run-0010 on a Modal
-    # Volume (which has eventual consistency, so mkdir atomicity doesn't hold
-    # across containers).
-    if run_name is None:
+    # Generate unique run name locally BEFORE any .remote() call for fresh runs.
+    # All containers receive the same name and write to the same directory,
+    # avoiding races on Modal Volumes. For unnamed resumes, keep run_name unset
+    # so the checkpoint's original run directory remains the output directory.
+    if run_name is None and resume_checkpoint is None:
         run_name = _generate_unique_run_name(prefix="run")
 
     print(f"Starting AnyMAL training on Modal...")
@@ -4561,6 +4683,8 @@ def main(
     print(f"  Token compressor: {token_compressor_type}")
     if arch_key == "anymal_v3":
         print(f"  V3 connector type: {v3_connector_type or V3_DEFAULT_CONNECTOR_TYPE}")
+        print(f"  V3 connector output scale: {v3_connector_output_scale if v3_connector_output_scale is not None else 1.0}")
+        print(f"  V3 connector output gate init: {v3_connector_output_gate_init}")
     print(f"  GPU type: {gpu_type}")
     print(f"  Modal GPU resource: {selected_gpu}")
     print(
@@ -4643,6 +4767,8 @@ def main(
         )
     if stage == "finetune":
         print(f"  Freeze connector: {freeze_connector}")
+    if stage == "finetune" and finetune_preserve_checkpoint_steps:
+        print(f"  Preserve Stage 2 checkpoints: {finetune_preserve_checkpoint_steps}")
     if finetune_loss_scale != 1.0:
         print(f"  Stage 2 loss scale: {finetune_loss_scale}")
     if stage == "finetune":
@@ -4687,6 +4813,8 @@ def main(
             pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
             pretrain_save_steps=pretrain_save_steps,
             v3_connector_type=v3_connector_type,
+            v3_connector_output_scale=v3_connector_output_scale,
+            v3_connector_output_gate_init=v3_connector_output_gate_init,
             v4_global_image_tokens=v4_global_tokens,
             v4_local_image_tokens=v4_local_tokens,
             v4_connector_layers=v4_connector_layers,
@@ -4730,7 +4858,10 @@ def main(
             freeze_connector=freeze_connector,
             finetune_loss_scale=finetune_loss_scale,
             finetune_gradient_accumulation_steps=finetune_gradient_accumulation_steps,
+            finetune_preserve_checkpoint_steps=finetune_preserve_checkpoint_steps,
             v3_connector_type=v3_connector_type,
+            v3_connector_output_scale=v3_connector_output_scale,
+            v3_connector_output_gate_init=v3_connector_output_gate_init,
             v4_global_image_tokens=v4_global_tokens,
             v4_local_image_tokens=v4_local_tokens,
             v4_connector_layers=v4_connector_layers,
