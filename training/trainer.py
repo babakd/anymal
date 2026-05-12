@@ -545,11 +545,14 @@ class Trainer:
                     self.model.train()
 
                 # Checkpointing
-                if self.global_step % self.config.save_steps == 0:
+                reached_max_steps = bool(
+                    self.config.max_steps and self.global_step >= self.config.max_steps
+                )
+                if self.global_step % self.config.save_steps == 0 or reached_max_steps:
                     self._save_checkpoint()
 
                 # Check max steps
-                if self.config.max_steps and self.global_step >= self.config.max_steps:
+                if reached_max_steps:
                     break
 
             epoch_loss += loss
@@ -626,6 +629,13 @@ class Trainer:
         # Return unscaled loss for logging
         return loss.item() * self.config.gradient_accumulation_steps
 
+    def _prepare_eval_batch_for_model(
+        self,
+        batch: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Hook for subclasses that carry trainer-only fields in a batch."""
+        return batch
+
     @torch.no_grad()
     def evaluate(self) -> float:
         """Evaluate the model."""
@@ -650,7 +660,7 @@ class Trainer:
                 dtype=self.amp_dtype if torch.cuda.is_available() else torch.float32,
                 enabled=self.config.use_amp and torch.cuda.is_available(),
             ):
-                outputs = self.model(**batch)
+                outputs = self.model(**self._prepare_eval_batch_for_model(batch))
                 loss = outputs.loss if hasattr(outputs, "loss") else outputs
 
             total_loss += loss.item()
@@ -921,6 +931,17 @@ class Trainer:
         print_rank_0(f"  Health monitoring: {self.config.enable_health_monitoring}")
         print_rank_0(f"  Per-layer grad norms: {self.config.track_per_layer_grad_norms}")
         print_rank_0(f"  Optimizer: {type(self.optimizer).__name__}")
+        if hasattr(self.config, "lora_r"):
+            print_rank_0(f"  LoRA rank: {getattr(self.config, 'lora_r')}")
+            print_rank_0(f"  LoRA alpha: {getattr(self.config, 'lora_alpha', None)}")
+            print_rank_0(f"  LoRA dropout: {getattr(self.config, 'lora_dropout', None)}")
+            print_rank_0(
+                f"  LoRA target modules: {getattr(self.config, 'lora_target_modules', None)}"
+            )
+        if getattr(self.config, "contrastive_answer_suppression", False):
+            print_rank_0("  Contrastive answer suppression: enabled")
+            print_rank_0(f"  Contrastive lambda: {getattr(self.config, 'contrastive_lambda', None)}")
+            print_rank_0(f"  Contrastive margin: {getattr(self.config, 'contrastive_margin', None)}")
         print_rank_0(f"  Num param groups: {len(self.optimizer.param_groups)}")
         # Log per-group LRs
         for i, group in enumerate(self.optimizer.param_groups):

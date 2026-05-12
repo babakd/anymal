@@ -204,6 +204,9 @@ class AnyMALv3(AnyMALv2):
                 vision_features
             )
             image_tokens = self.projector(vision_features)
+        self._last_connector_output_rms_tensor = (
+            image_tokens.float().pow(2).mean().sqrt()
+        )
         self._record_connector_output_diagnostics(image_tokens)
         token_mask = torch.ones(
             image_tokens.shape[:2],
@@ -552,9 +555,20 @@ class AnyMALv3(AnyMALv2):
         import os
         from peft import PeftModel
 
-        validate_checkpoint_architecture(save_path, expected_architecture=cls.architecture)
-
+        allow_connector_output_scale_override = bool(
+            kwargs.pop("allow_connector_output_scale_override", False)
+        )
+        allow_missing_model_metadata = bool(
+            kwargs.pop("allow_missing_model_metadata", False)
+        )
         meta = read_model_metadata(save_path) or {}
+        if meta or not allow_missing_model_metadata:
+            validate_checkpoint_architecture(save_path, expected_architecture=cls.architecture)
+        elif allow_missing_model_metadata:
+            print(
+                "WARNING: loading AnyMALv3 checkpoint without model_meta.json "
+                f"because allow_missing_model_metadata=True: {save_path}"
+            )
         if "connector_output_scale" not in kwargs and meta.get("connector_output_scale") is not None:
             kwargs["connector_output_scale"] = float(meta["connector_output_scale"])
         if "connector_output_gate_init" not in kwargs and meta.get("connector_output_gate_init") is not None:
@@ -572,18 +586,19 @@ class AnyMALv3(AnyMALv2):
             "connector_ff_mult": getattr(model, "connector_ff_mult", None),
             "project_directly_to_llm_dim": getattr(model, "project_directly_to_llm_dim", None),
         }
-        if "connector_output_scale" in meta:
+        if "connector_output_scale" in meta and not allow_connector_output_scale_override:
             expected_values["connector_output_scale"] = getattr(model, "connector_output_scale", None)
         if "connector_output_gate_init" in meta:
             expected_values["connector_output_gate_init"] = getattr(model, "connector_output_gate_init", None)
         if "llm_backbone" in meta or getattr(model, "llm_backbone", None) != CURRENT_LLAMA3_BACKBONE:
             expected_values["llm_backbone"] = getattr(model, "llm_backbone", None)
 
-        validate_checkpoint_metadata_values(
-            save_path,
-            expected_architecture=cls.architecture,
-            expected_values=expected_values,
-        )
+        if meta or not allow_missing_model_metadata:
+            validate_checkpoint_metadata_values(
+                save_path,
+                expected_architecture=cls.architecture,
+                expected_values=expected_values,
+            )
         projector_path = os.path.join(save_path, "projector.pt")
         if os.path.exists(projector_path):
             model.projector.load_state_dict(torch.load(projector_path, map_location="cpu"))

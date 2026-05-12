@@ -58,6 +58,8 @@ class FinetuneConfig(TrainerConfig):
     # LoRA settings (should match model initialization)
     lora_r: int = 64
     lora_alpha: int = 16
+    lora_dropout: float = 0.05
+    lora_target_modules: Optional[tuple] = None
 
     # Continue from Stage 1 checkpoint
     pretrain_checkpoint: Optional[str] = None
@@ -75,6 +77,12 @@ class FinetuneConfig(TrainerConfig):
     # Multiplies the backward loss only. The unscaled model loss remains the
     # train/loss value used for learning curves and health checks.
     loss_scale: float = 1.0
+
+    # Optional V9 answer-suppression objective. When enabled, batches must
+    # include negative_images shaped [B, K, 3, H, W].
+    contrastive_answer_suppression: bool = False
+    contrastive_lambda: float = 0.1
+    contrastive_margin: float = 0.5
 
 
 class FinetuneTrainer(Trainer):
@@ -145,6 +153,15 @@ class FinetuneTrainer(Trainer):
         if self._loss_scale != 1.0:
             print_rank_0(f"Stage 2 loss scale: multiplying backward loss by {self._loss_scale:g}")
 
+        self._contrastive_answer_suppression = bool(config.contrastive_answer_suppression)
+        self._contrastive_lambda = float(config.contrastive_lambda)
+        self._contrastive_margin = float(config.contrastive_margin)
+        if self._contrastive_answer_suppression:
+            print_rank_0(
+                "Contrastive answer suppression enabled: "
+                f"lambda={self._contrastive_lambda:g}, margin={self._contrastive_margin:g}"
+            )
+
         # Verify trainable params
         if is_main_process():
             self._verify_trainable_params(model)
@@ -155,6 +172,16 @@ class FinetuneTrainer(Trainer):
             train_dataloader=train_dataloader,
             eval_dataloader=eval_dataloader,
         )
+
+    @staticmethod
+    def _answer_logp_from_logits(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        shift_logits = logits[:, :-1, :]
+        shift_labels = labels[:, 1:]
+        mask = shift_labels != -100
+        safe_labels = shift_labels.masked_fill(~mask, 0)
+        token_logp = torch.log_softmax(shift_logits, dim=-1)
+        answer_logp = token_logp.gather(-1, safe_labels.unsqueeze(-1)).squeeze(-1)
+        return (answer_logp * mask).sum(dim=1)
 
     def _load_pretrain_checkpoint(self, model, checkpoint_path: str):
         """Load pretrained projector weights from Stage 1."""
@@ -408,7 +435,48 @@ class FinetuneTrainer(Trainer):
                 attention_mask=attention_mask,
                 labels=labels,
             )
-            raw_loss = outputs.loss
+            ce_loss = outputs.loss
+            raw_loss = ce_loss
+            if self._contrastive_answer_suppression:
+                negative_images = batch.get("negative_images")
+                if negative_images is None:
+                    raise ValueError(
+                        "contrastive_answer_suppression=True requires "
+                        "negative_images in every batch"
+                    )
+                if negative_images.ndim != 5:
+                    raise ValueError(
+                        "negative_images must have shape [B, K, 3, H, W], "
+                        f"got {list(negative_images.shape)}"
+                    )
+                logp_pos = self._answer_logp_from_logits(outputs.logits, labels)
+                num_variants = int(negative_images.shape[1])
+                contrastive_loss = torch.zeros((), device=labels.device, dtype=ce_loss.dtype)
+                contrastive_active_rate = 0.0
+                for variant_idx in range(num_variants):
+                    neg_outputs = self.model(
+                        images=negative_images[:, variant_idx],
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=None,
+                    )
+                    logp_neg = self._answer_logp_from_logits(neg_outputs.logits, labels)
+                    hinge = torch.relu(
+                        self._contrastive_margin - logp_pos + logp_neg
+                    )
+                    contrastive_loss = contrastive_loss + hinge.mean() / max(num_variants, 1)
+                    contrastive_active_rate += (
+                        float((hinge.detach() > 0).float().mean().item())
+                        / max(num_variants, 1)
+                    )
+                raw_loss = ce_loss + self._contrastive_lambda * contrastive_loss
+                self._last_batch_metrics["train/ce_loss"] = ce_loss.detach().item()
+                self._last_batch_metrics["train/contrastive_loss"] = (
+                    contrastive_loss.detach().item()
+                )
+                self._last_batch_metrics["train/contrastive_active_rate"] = (
+                    contrastive_active_rate
+                )
             backward_loss = raw_loss * self._loss_scale
 
             # NaN/Inf check
@@ -432,6 +500,14 @@ class FinetuneTrainer(Trainer):
 
         # Return the unscaled model loss for logging and health monitoring.
         return raw_loss.item()
+
+    def _prepare_eval_batch_for_model(
+        self,
+        batch: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not self._contrastive_answer_suppression or "negative_images" not in batch:
+            return batch
+        return {key: value for key, value in batch.items() if key != "negative_images"}
 
     @staticmethod
     def _is_adapter_param_name(name: str) -> bool:

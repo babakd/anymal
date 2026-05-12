@@ -461,6 +461,7 @@ def collate_fn(
 
     # Separate different data types
     images = []
+    negative_images = []
     input_ids = []
     attention_masks = []
     labels = []
@@ -468,6 +469,8 @@ def collate_fn(
     for sample in batch:
         if "image" in sample:
             images.append(sample["image"])
+        if "negative_images" in sample:
+            negative_images.append(sample["negative_images"])
         input_ids.append(sample["input_ids"])
         attention_masks.append(sample["attention_mask"])
         if "labels" in sample:
@@ -477,6 +480,12 @@ def collate_fn(
     result = {}
     if images:
         result["images"] = torch.stack(images)
+    if negative_images:
+        if len(negative_images) != len(batch):
+            raise ValueError(
+                "Batches cannot mix contrastive samples with samples that lack negative_images"
+            )
+        result["negative_images"] = torch.stack(negative_images)
 
     # Pad sequences to same length
     max_len = max(len(ids) for ids in input_ids)

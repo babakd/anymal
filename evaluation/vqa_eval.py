@@ -99,16 +99,15 @@ def _build_chat_prompt_ids(
     max_length: int,
     system_prompt: str = TRAINING_SYSTEM_PROMPT,
     chat_template_family: Optional[str] = None,
+    image_placement: str = "before_question",
 ) -> Dict[str, torch.Tensor]:
-    user_text = question.strip()
-    if image_placeholder_token_id is not None and num_image_tokens > 0:
-        user_text = f"{IMAGE_SENTINEL}\n{user_text}"
     text = build_generation_prompt_text(
         tokenizer=tokenizer,
         question=question,
         system_prompt=system_prompt,
         image_sentinel=IMAGE_SENTINEL if image_placeholder_token_id is not None and num_image_tokens > 0 else None,
         chat_template_family=chat_template_family,
+        image_placement=image_placement,
     )
     encoding = tokenizer(
         text,
@@ -242,7 +241,12 @@ class VQADataset(Dataset):
         question = q["question"]
         question_id = q["question_id"]
 
-        if self.prompt_style == "training_chat":
+        chat_image_placement = {
+            "training_chat": "before_question",
+            "training_chat_image_after_question": "after_question",
+            "training_chat_visual_delimiters": "visual_delimiters",
+        }.get(self.prompt_style)
+        if chat_image_placement is not None:
             encoded = _build_chat_prompt_ids(
                 tokenizer=self.tokenizer,
                 question=question,
@@ -251,6 +255,7 @@ class VQADataset(Dataset):
                 max_length=768,
                 system_prompt=self.system_prompt,
                 chat_template_family=self.chat_template_family,
+                image_placement=chat_image_placement,
             )
             input_ids = encoded["input_ids"]
             attention_mask = encoded["attention_mask"]

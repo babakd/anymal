@@ -410,6 +410,21 @@ def _parse_checkpoint_step_list(value):
     return tuple(sorted({int(part) for part in text.split()}))
 
 
+def _parse_lora_target_modules(value):
+    """Parse Modal-friendly comma/space separated LoRA target module suffixes."""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        targets = [str(part).strip() for part in value]
+    else:
+        text = str(value).replace(",", " ").strip()
+        if not text:
+            return None
+        targets = [part.strip() for part in text.split()]
+    parsed = [target for target in targets if target]
+    return parsed or None
+
+
 def _checkpoint_matches_run_config(
     checkpoint_dir: str,
     expected_architecture: str,
@@ -916,10 +931,19 @@ class Trainer:
         finetune_loss_scale: float = 1.0,
         finetune_gradient_accumulation_steps: int = 8,
         finetune_preserve_checkpoint_steps: str = None,
+        lora_rank: int = 64,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.05,
+        lora_target_modules: str = None,
+        contrastive_answer_suppression: bool = False,
+        contrastive_lambda: float = 0.1,
+        contrastive_margin: float = 0.5,
         connector_warmup_steps: int = 0,
         pretrain_loss_scale: float = 1.0,
         pretrain_loss_normalization: str = "mean",
         pretrain_loss_normalization_target_tokens: float = 8.0,
+        pretrain_connector_rms_regularizer_alpha: float = 0.0,
+        pretrain_connector_rms_regularizer_target: str = "batch_text",
         pretrain_gradient_accumulation_steps: int = 8,
         v3_connector_type: str = V3_DEFAULT_CONNECTOR_TYPE,
         v3_connector_output_scale: float = None,
@@ -958,6 +982,8 @@ class Trainer:
             projector_warmup_steps: Zero connector gradients for this many Stage 2 steps
             freeze_connector: Freeze the multimodal connector during Stage 2 and train LoRA only
             finetune_preserve_checkpoint_steps: Comma-separated Stage 2 checkpoint milestones to protect from cleanup
+            lora_rank: LoRA rank for Stage 2 adapters
+            lora_target_modules: Comma/space-separated Stage 2 LoRA module suffixes
         """
         import sys
         sys.path.insert(0, "/root/anymal")
@@ -989,6 +1015,9 @@ class Trainer:
             "v5_semantic_calibration",
             "v5_semantic_calibration_robust",
             "v7_semantic_calibration_counterfactual",
+            "v9_qwen_controlaware_stage2",
+            "v9_qwen_gqa_preserving_stage2",
+            "v9_qwen_contrastive_answer_suppression_stage2",
         }:
             freeze_connector = True
         if pretrain_image_tokens is None and (stage == "pretrain" or arch_key != "anymal_v4"):
@@ -1042,6 +1071,13 @@ class Trainer:
                 finetune_loss_scale=finetune_loss_scale,
                 finetune_gradient_accumulation_steps=finetune_gradient_accumulation_steps,
                 finetune_preserve_checkpoint_steps=finetune_preserve_checkpoint_steps,
+                lora_rank=lora_rank,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                lora_target_modules=lora_target_modules,
+                contrastive_answer_suppression=contrastive_answer_suppression,
+                contrastive_lambda=contrastive_lambda,
+                contrastive_margin=contrastive_margin,
                 pretrain_image_tokens=pretrain_image_tokens,
                 v3_connector_type=v3_connector_type,
                 v3_connector_output_scale=v3_connector_output_scale,
@@ -1094,6 +1130,8 @@ class Trainer:
                 pretrain_loss_scale=pretrain_loss_scale,
                 pretrain_loss_normalization=pretrain_loss_normalization,
                 pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
+                pretrain_connector_rms_regularizer_alpha=pretrain_connector_rms_regularizer_alpha,
+                pretrain_connector_rms_regularizer_target=pretrain_connector_rms_regularizer_target,
                 pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
                 v4_global_image_tokens=v4_global_tokens,
                 v4_local_image_tokens=v4_local_tokens,
@@ -1334,6 +1372,13 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                   finetune_loss_scale=1.0,
                   finetune_gradient_accumulation_steps=8,
                   finetune_preserve_checkpoint_steps=None,
+                  lora_rank=64,
+                  lora_alpha=16,
+                  lora_dropout=0.05,
+                  lora_target_modules=None,
+                  contrastive_answer_suppression=False,
+                  contrastive_lambda=0.1,
+                  contrastive_margin=0.5,
                   pretrain_image_tokens=None,
                   llm_backbone=None,
                   v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
@@ -1360,10 +1405,14 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         print("WARNING: --use-dummy-data was passed but all training must use real images.")
         print("Ignoring --use-dummy-data flag and loading real COCO images.")
 
+    if dataset == "v9_qwen_contrastive_answer_suppression_stage2":
+        contrastive_answer_suppression = True
+
     # Initialize model
     print("Initializing model...")
     arch_key = _normalize_architecture_key(architecture)
     expected_llm_backbone = _metadata_llm_backbone(llm_backbone or llama_path)
+    parsed_lora_target_modules = _parse_lora_target_modules(lora_target_modules)
     if finetune_checkpoint:
         pretrain_checkpoint = None
         print("Skipping Stage 1 checkpoint load because full Stage 2 checkpoint is loaded.")
@@ -1449,8 +1498,10 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
             "llm_backbone": llm_backbone or llama_path,
             "cache_dir": "/checkpoints/hf_cache",
             "use_qlora": True,
-            "lora_r": 64,
-            "lora_alpha": 16,
+            "lora_r": int(lora_rank or 64),
+            "lora_alpha": int(lora_alpha or 16),
+            "lora_dropout": float(lora_dropout),
+            "lora_target_modules": parsed_lora_target_modules,
             "use_lora": False if finetune_checkpoint else None,
             "gradient_checkpointing": True,
             "use_flash_attention": False,  # Skip flash-attn, use SDPA instead
@@ -1700,6 +1751,17 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         projector_warmup_steps=projector_warmup_steps,
         train_adapter=bool(train_adapter),
         loss_scale=float(finetune_loss_scale or 1.0),
+        lora_r=int(lora_rank or 64),
+        lora_alpha=int(lora_alpha or 16),
+        lora_dropout=float(lora_dropout),
+        lora_target_modules=(
+            tuple(parsed_lora_target_modules)
+            if parsed_lora_target_modules is not None
+            else None
+        ),
+        contrastive_answer_suppression=bool(contrastive_answer_suppression),
+        contrastive_lambda=float(contrastive_lambda),
+        contrastive_margin=float(contrastive_margin),
     )
     if preserve_checkpoint_steps is not None:
         config_kwargs["preserve_checkpoint_steps"] = preserve_checkpoint_steps
@@ -1779,6 +1841,8 @@ def run_pretrain(
     pretrain_loss_scale=1.0,
     pretrain_loss_normalization="mean",
     pretrain_loss_normalization_target_tokens=8.0,
+    pretrain_connector_rms_regularizer_alpha=0.0,
+    pretrain_connector_rms_regularizer_target="batch_text",
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
     v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
@@ -2115,6 +2179,8 @@ def run_pretrain(
         "v4_semantic_calibration",
         "v5_semantic_calibration",
         "v5_semantic_calibration_robust",
+        "v9_qwen_controlaware_stage1b",
+        "v9_qwen_gqa_stage1b",
     }:
         grounding_dataset_name = dataset
         dataset = load_finetune_dataset(
@@ -2203,6 +2269,12 @@ def run_pretrain(
         loss_normalization=pretrain_loss_normalization or "mean",
         loss_normalization_target_tokens=float(
             pretrain_loss_normalization_target_tokens or 8.0
+        ),
+        connector_rms_regularizer_alpha=float(
+            pretrain_connector_rms_regularizer_alpha or 0.0
+        ),
+        connector_rms_regularizer_target=(
+            pretrain_connector_rms_regularizer_target or "batch_text"
         ),
         connector_warmup_steps=int(connector_warmup_steps or 0),
     )
@@ -3058,6 +3130,396 @@ def load_finetune_dataset(
         volume.commit()
         return output_path, vqa_image_dir
 
+    def _vqa_control_counterfactual_path(
+        control_type,
+        max_samples=20000,
+        target_answer="cannot determine",
+    ):
+        """Build V9 VQAv2 control data matching eval image-control policies."""
+        control_type = str(control_type).strip().lower()
+        if control_type not in {"shuffled_image", "wrong_image_same_answer_type", "blank_image"}:
+            raise ValueError(f"Unsupported VQA control type: {control_type}")
+        output_path = (
+            f"/checkpoints/vqa_data/"
+            f"v9_qwen_{control_type}_{int(max_samples)}.json"
+        )
+        questions_path, annotations_path = _ensure_vqa_train_files()
+        vqa_image_dir = _ensure_vqa_train_images(questions_path)
+        blank_filename = "anymal_blank_gray_384.jpg"
+        blank_path = os.path.join(vqa_image_dir, blank_filename)
+        if not os.path.exists(blank_path):
+            from PIL import Image
+
+            Image.new("RGB", (384, 384), color=(128, 128, 128)).save(blank_path)
+            volume.commit()
+
+        if os.path.exists(output_path):
+            return output_path, vqa_image_dir
+
+        available_images = {
+            f for f in os.listdir(vqa_image_dir)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        }
+        with open(questions_path) as f:
+            questions = {
+                int(q["question_id"]): q
+                for q in _json.load(f)["questions"]
+            }
+        with open(annotations_path) as f:
+            annotations = _json.load(f)["annotations"]
+
+        rows = []
+        by_answer_type = {"yes/no": [], "number": [], "other": []}
+        skipped_missing_image = 0
+        skipped_reserved_markers = 0
+        for ann in annotations:
+            answer_type = str(ann.get("answer_type", "")).lower()
+            if answer_type not in by_answer_type:
+                continue
+            question_id = int(ann["question_id"])
+            question = questions.get(question_id)
+            if question is None:
+                continue
+            filename = f"COCO_train2014_{int(question['image_id']):012d}.jpg"
+            if filename not in available_images:
+                skipped_missing_image += 1
+                continue
+            prompt = " ".join(str(question["question"]).split())
+            if not prompt:
+                continue
+            if _has_reserved_chat_markers(prompt):
+                skipped_reserved_markers += 1
+                continue
+            row = {
+                "question_id": question_id,
+                "image_id": int(question["image_id"]),
+                "image": filename,
+                "prompt": prompt,
+                "answer_type": answer_type,
+            }
+            rows.append(row)
+            by_answer_type[answer_type].append(row)
+
+        rng = random.Random(9401 + sum(ord(c) for c in control_type))
+        rng.shuffle(rows)
+
+        def _select_control_row(pool, source_image_id, offset_seed):
+            if not pool:
+                return None
+            candidate = pool[offset_seed % len(pool)]
+            if candidate["image_id"] != source_image_id:
+                return candidate
+            if len(pool) == 1:
+                return None
+            for step in range(1, min(len(pool), 16)):
+                candidate = pool[(offset_seed + step) % len(pool)]
+                if candidate["image_id"] != source_image_id:
+                    return candidate
+            return None
+
+        samples = []
+        for i, row in enumerate(rows):
+            if control_type == "blank_image":
+                control_image = blank_filename
+            else:
+                pool = (
+                    by_answer_type[row["answer_type"]]
+                    if control_type == "wrong_image_same_answer_type"
+                    else rows
+                )
+                control_row = _select_control_row(
+                    pool,
+                    row["image_id"],
+                    offset_seed=i * 7919 + row["question_id"],
+                )
+                if control_row is None and control_type == "wrong_image_same_answer_type":
+                    control_row = _select_control_row(
+                        rows,
+                        row["image_id"],
+                        offset_seed=i * 7919 + row["question_id"],
+                    )
+                if control_row is None:
+                    continue
+                control_image = control_row["image"]
+            samples.append(
+                {
+                    "id": f"v9_qwen_{control_type}_{row['answer_type'].replace('/', '_')}_{row['question_id']}",
+                    "image": control_image,
+                    "source_question_id": row["question_id"],
+                    "source_image": row["image"],
+                    "control_image": control_image,
+                    "counterfactual_type": control_type,
+                    "answer_type": row["answer_type"],
+                    "conversations": [
+                        {"from": "human", "value": f"<image>\n{row['prompt']}"},
+                        {"from": "gpt", "value": target_answer},
+                    ],
+                }
+            )
+            if len(samples) >= int(max_samples):
+                break
+
+        if not samples:
+            raise RuntimeError(f"V9 {control_type} generation produced no samples.")
+
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(
+            f"Built {len(samples)} V9 {control_type} samples at {output_path}; "
+            f"skipped_missing_image={skipped_missing_image}; "
+            f"skipped_reserved_markers={skipped_reserved_markers}"
+        )
+        volume.commit()
+        return output_path, vqa_image_dir
+
+    def _vqa_contrastive_answer_suppression_path(max_samples=40000):
+        """Build clean VQA samples paired with shuffled/wrong/blank negative images."""
+        output_path = (
+            "/checkpoints/vqa_data/"
+            f"v9_qwen_contrastive_answer_suppression_{int(max_samples)}.json"
+        )
+        questions_path, annotations_path = _ensure_vqa_train_files()
+        vqa_image_dir = _ensure_vqa_train_images(questions_path)
+        blank_filename = "anymal_blank_gray_384.jpg"
+        blank_path = os.path.join(vqa_image_dir, blank_filename)
+        if not os.path.exists(blank_path):
+            from PIL import Image
+
+            Image.new("RGB", (384, 384), color=(128, 128, 128)).save(blank_path)
+            volume.commit()
+
+        if os.path.exists(output_path):
+            return output_path, vqa_image_dir
+
+        available_images = {
+            f for f in os.listdir(vqa_image_dir)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        }
+        with open(questions_path) as f:
+            questions = {
+                int(q["question_id"]): q
+                for q in _json.load(f)["questions"]
+            }
+        with open(annotations_path) as f:
+            annotations = _json.load(f)["annotations"]
+
+        rows = []
+        by_answer_type = {"yes/no": [], "number": [], "other": []}
+        skipped_missing_image = 0
+        skipped_reserved_markers = 0
+        for ann in annotations:
+            answer_type = str(ann.get("answer_type", "")).lower()
+            if answer_type not in by_answer_type:
+                continue
+            question_id = int(ann["question_id"])
+            question = questions.get(question_id)
+            if question is None:
+                continue
+            filename = f"COCO_train2014_{int(question['image_id']):012d}.jpg"
+            if filename not in available_images:
+                skipped_missing_image += 1
+                continue
+            prompt = " ".join(str(question["question"]).split())
+            answer = " ".join(str(ann.get("multiple_choice_answer", "")).split())
+            if not prompt or not answer:
+                continue
+            if _has_reserved_chat_markers(prompt) or _has_reserved_chat_markers(answer):
+                skipped_reserved_markers += 1
+                continue
+            row = {
+                "question_id": question_id,
+                "image_id": int(question["image_id"]),
+                "image": filename,
+                "prompt": prompt,
+                "answer": answer,
+                "answer_type": answer_type,
+            }
+            rows.append(row)
+            by_answer_type[answer_type].append(row)
+
+        rng = random.Random(9409)
+        rng.shuffle(rows)
+
+        def _select_control_row(pool, source_image_id, offset_seed):
+            if not pool:
+                return None
+            candidate = pool[offset_seed % len(pool)]
+            if candidate["image_id"] != source_image_id:
+                return candidate
+            if len(pool) == 1:
+                return None
+            for step in range(1, min(len(pool), 16)):
+                candidate = pool[(offset_seed + step) % len(pool)]
+                if candidate["image_id"] != source_image_id:
+                    return candidate
+            return None
+
+        samples = []
+        for i, row in enumerate(rows):
+            shuffled = _select_control_row(
+                rows,
+                row["image_id"],
+                offset_seed=i * 7919 + row["question_id"],
+            )
+            wrong = _select_control_row(
+                by_answer_type[row["answer_type"]],
+                row["image_id"],
+                offset_seed=i * 104729 + row["question_id"],
+            )
+            if wrong is None:
+                wrong = _select_control_row(
+                    rows,
+                    row["image_id"],
+                    offset_seed=i * 104729 + row["question_id"],
+                )
+            if shuffled is None or wrong is None:
+                continue
+            samples.append(
+                {
+                    "id": f"v9_qwen_contrastive_{row['answer_type'].replace('/', '_')}_{row['question_id']}",
+                    "image": row["image"],
+                    "negative_images": [
+                        shuffled["image"],
+                        wrong["image"],
+                        blank_filename,
+                    ],
+                    "negative_image_types": [
+                        "shuffled_image",
+                        "wrong_image_same_answer_type",
+                        "blank_image",
+                    ],
+                    "source_question_id": row["question_id"],
+                    "source_image_id": row["image_id"],
+                    "answer_type": row["answer_type"],
+                    "conversations": [
+                        {"from": "human", "value": f"<image>\n{row['prompt']}"},
+                        {"from": "gpt", "value": row["answer"]},
+                    ],
+                }
+            )
+            if len(samples) >= int(max_samples):
+                break
+
+        if not samples:
+            raise RuntimeError("V9 contrastive answer-suppression generation produced no samples.")
+
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(
+            f"Built {len(samples)} V9 contrastive answer-suppression samples at {output_path}; "
+            f"skipped_missing_image={skipped_missing_image}; "
+            f"skipped_reserved_markers={skipped_reserved_markers}"
+        )
+        volume.commit()
+        return output_path, vqa_image_dir
+
+    def _gqa_direct_answer_path(split="train_balanced", max_samples=10000):
+        """Build GQA direct-answer instruction data for V9 compositional grounding."""
+        from io import BytesIO
+
+        from datasets import load_dataset
+        from PIL import Image
+
+        gqa_dir = "/checkpoints/gqa_data"
+        gqa_image_dir = "/checkpoints/gqa_images_hf"
+        os.makedirs(gqa_dir, exist_ok=True)
+        os.makedirs(gqa_image_dir, exist_ok=True)
+        safe_split = str(split).replace("/", "_")
+        output_path = (
+            f"/checkpoints/gqa_data/"
+            f"v9_qwen_gqa_{safe_split}_{int(max_samples)}.json"
+        )
+        if os.path.exists(output_path):
+            return output_path, gqa_image_dir
+
+        dataset_id = "Mineru/GQA"
+        split_name = str(split)
+        dataset = load_dataset(
+            dataset_id,
+            split=split_name,
+            cache_dir="/checkpoints/hf_datasets",
+            streaming=True,
+        )
+        rows = dataset.shuffle(
+            buffer_size=max(1000, min(int(max_samples) * 2, 20000)),
+            seed=9417,
+        )
+
+        def _safe_image_filename(image_id):
+            safe = "".join(
+                ch if ch.isalnum() or ch in {"_", "-"} else "_"
+                for ch in str(image_id)
+            )
+            return f"{safe}.jpg"
+
+        def _row_image_to_rgb(image_value):
+            if hasattr(image_value, "convert"):
+                return image_value.convert("RGB")
+            if isinstance(image_value, dict):
+                if image_value.get("bytes"):
+                    return Image.open(BytesIO(image_value["bytes"])).convert("RGB")
+                if image_value.get("path"):
+                    return Image.open(image_value["path"]).convert("RGB")
+            raise RuntimeError(
+                f"Unsupported GQA image payload type: {type(image_value).__name__}"
+            )
+
+        samples = []
+        cached = 0
+        written = 0
+        skipped_missing_fields = 0
+        for source_idx, row in enumerate(rows):
+            if len(samples) >= int(max_samples):
+                break
+            if not row.get("question") or not row.get("answer") or not row.get("question_id") or not row.get("image"):
+                skipped_missing_fields += 1
+                continue
+            image_id = str(row["question_id"])
+            filename = _safe_image_filename(image_id)
+            image_path = os.path.join(gqa_image_dir, filename)
+            if os.path.exists(image_path):
+                cached += 1
+            else:
+                _row_image_to_rgb(row["image"]).save(image_path, format="JPEG")
+                written += 1
+                if written % 1000 == 0:
+                    print(
+                        f"GQA direct-answer cache progress: samples={len(samples)} "
+                        f"images_written={written}; images_cached={cached}"
+                    )
+                    volume.commit()
+            question = " ".join(str(row["question"]).split())
+            answer = " ".join(str(row["answer"]).split())
+            if _has_reserved_chat_markers(question) or _has_reserved_chat_markers(answer):
+                continue
+            samples.append(
+                {
+                    "id": f"gqa_{split_name}_{source_idx}_{image_id}",
+                    "image": filename,
+                    "source_dataset": dataset_id,
+                    "source_split": split_name,
+                    "source_index": int(source_idx),
+                    "gqa_question_id": image_id,
+                    "conversations": [
+                        {"from": "human", "value": f"<image>\n{question}"},
+                        {"from": "gpt", "value": answer},
+                    ],
+                }
+            )
+
+        if not samples:
+            raise RuntimeError("GQA direct-answer generation produced no samples.")
+
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(
+            f"Built {len(samples)} GQA direct-answer samples from {dataset_id}/{split_name} "
+            f"at {output_path}; images_written={written}; images_cached={cached}; "
+            f"skipped_missing_fields={skipped_missing_fields}"
+        )
+        volume.commit()
+        return output_path, gqa_image_dir
+
     def _coco_absence_pope_style_path(max_samples=10000):
         """Build POPE-style object absence probes from COCO train2017 instances."""
         output_path = (
@@ -3130,6 +3592,77 @@ def load_finetune_dataset(
         with open(output_path, "w") as f:
             _json.dump(samples, f)
         print(f"Built {len(samples)} COCO POPE-style absence samples at {output_path}")
+        volume.commit()
+        return output_path
+
+    def _coco_presence_pope_style_path(max_samples=10000):
+        """Build POPE-style object presence probes from COCO train2017 instances."""
+        output_path = (
+            f"/checkpoints/llava_data/"
+            f"coco_pope_style_presence_train2017_{int(max_samples)}.json"
+        )
+        if os.path.exists(output_path):
+            return output_path
+
+        instances_path = _ensure_coco_instance_annotations()
+        with open(instances_path, "r") as f:
+            instances = _json.load(f)
+
+        available_images = {
+            f for f in os.listdir(image_dir)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        }
+        images = {
+            image["id"]: image
+            for image in instances.get("images", [])
+            if image.get("file_name") in available_images
+        }
+        categories = {
+            category["id"]: category["name"]
+            for category in instances.get("categories", [])
+        }
+        present_by_image = {image_id: set() for image_id in images}
+        for ann in instances.get("annotations", []):
+            if ann.get("iscrowd"):
+                continue
+            image_id = ann.get("image_id")
+            if image_id not in present_by_image:
+                continue
+            category_name = categories.get(ann.get("category_id"))
+            if category_name:
+                present_by_image[image_id].add(category_name)
+
+        rng = random.Random(7421)
+        image_ids = list(images.keys())
+        rng.shuffle(image_ids)
+        samples = []
+        for image_id in image_ids:
+            present = sorted(present_by_image.get(image_id, set()))
+            if not present:
+                continue
+            category = present[(image_id * 1543) % len(present)]
+            article = "an" if category[:1].lower() in {"a", "e", "i", "o", "u"} else "a"
+            samples.append(
+                {
+                    "id": f"coco_presence_{image_id}_{category.replace(' ', '_')}",
+                    "image": images[image_id]["file_name"],
+                    "counterfactual_type": "pope_style_object_presence",
+                    "present_category": category,
+                    "conversations": [
+                        {"from": "human", "value": f"<image>\nIs there {article} {category} in the image?"},
+                        {"from": "gpt", "value": "yes"},
+                    ],
+                }
+            )
+            if len(samples) >= int(max_samples):
+                break
+
+        if not samples:
+            raise RuntimeError("COCO POPE-style presence generation produced no samples.")
+
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(f"Built {len(samples)} COCO POPE-style presence samples at {output_path}")
         volume.commit()
         return output_path
 
@@ -3285,6 +3818,283 @@ def load_finetune_dataset(
             filter_to_available_images=True,
         )
         print(f"Loaded {len(ds)} V3 weighted grounded instruction samples")
+        return ds
+
+    if dataset == "v9_qwen_contrastive_answer_suppression_stage2":
+        calibration_prompt = (
+            "Answer with only the final answer. Do not include role labels, "
+            "explanations, or the word assistant. End after the answer."
+        )
+        contrastive_path, vqa_image_dir = _vqa_contrastive_answer_suppression_path(
+            max_samples=40000,
+        )
+        ds = create_instruction_dataset(
+            data_path=contrastive_path,
+            image_dir=vqa_image_dir,
+            tokenizer=tokenizer,
+            image_size=image_size,
+            max_length=max_length,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+            system_prompt=calibration_prompt,
+            use_augmentation=False,
+            image_augmentation_mode="none",
+            filter_to_available_images=True,
+        )
+        print(f"Loaded {len(ds)} {dataset} instruction samples")
+        return ds
+
+    if dataset in {
+        "v9_qwen_controlaware_stage2",
+        "v9_qwen_gqa_preserving_stage2",
+        "v9_qwen_controlaware_stage1b",
+        "v9_qwen_gqa_stage1b",
+    }:
+        calibration_prompt = (
+            "Answer with only the final answer. Do not include role labels, "
+            "explanations, or the word assistant. End after the answer."
+        )
+        control_prompt = (
+            "The image may be blank, corrupted, or mismatched. If the image does "
+            "not contain enough reliable visual evidence, answer: cannot determine."
+        )
+        pope_prompt = "Answer yes or no."
+
+        vqa_yes_no_path, vqa_image_dir = _vqa_train_balanced_yes_no_path(
+            max_per_label=40000,
+        )
+        vqa_number_path, _ = _vqa_train_direct_answer_path_by_type(
+            "number",
+            max_samples=50000,
+        )
+        vqa_other_path, _ = _vqa_train_direct_answer_path_by_type(
+            "other",
+            max_samples=80000,
+        )
+        vqa_direct_path, _ = _vqa_train_direct_answer_path(max_samples=150000)
+        coco_direct_path = _coco_object_direct_answer_path()
+        short_direct_path = _filtered_direct_answer_path()
+        shuffled_path, shuffled_image_dir = _vqa_control_counterfactual_path(
+            "shuffled_image",
+            max_samples=20000,
+        )
+        wrong_path, wrong_image_dir = _vqa_control_counterfactual_path(
+            "wrong_image_same_answer_type",
+            max_samples=20000,
+        )
+        blank_path, blank_image_dir = _vqa_control_counterfactual_path(
+            "blank_image",
+            max_samples=10000,
+        )
+        gqa_path, gqa_image_dir = _gqa_direct_answer_path(
+            split="train_balanced",
+            max_samples=10000,
+        )
+        pope_presence_path = None
+        pope_absence_path = None
+
+        def _get_pope_presence_path():
+            nonlocal pope_presence_path
+            if pope_presence_path is None:
+                pope_presence_path = _coco_presence_pope_style_path(max_samples=10000)
+            return pope_presence_path
+
+        def _get_pope_absence_path():
+            nonlocal pope_absence_path
+            if pope_absence_path is None:
+                pope_absence_path = _coco_absence_pope_style_path(max_samples=10000)
+            return pope_absence_path
+
+        def _v5_clean_sources(scale):
+            clean_sources = [
+                {
+                    "name": "vqa_train_yes_no",
+                    "weight": 0.40 * scale,
+                    "data_path": vqa_yes_no_path,
+                    "image_dir": vqa_image_dir,
+                    "system_prompt": calibration_prompt,
+                },
+                {
+                    "name": "vqa_train_number",
+                    "weight": 0.20 * scale,
+                    "data_path": vqa_number_path,
+                    "image_dir": vqa_image_dir,
+                    "system_prompt": calibration_prompt,
+                },
+                {
+                    "name": "coco_object_count_color_direct",
+                    "weight": 0.15 * scale,
+                    "data_path": coco_direct_path,
+                    "system_prompt": calibration_prompt,
+                },
+                {
+                    "name": "vqa_train_other",
+                    "weight": 0.20 * scale,
+                    "data_path": vqa_other_path,
+                    "image_dir": vqa_image_dir,
+                    "system_prompt": calibration_prompt,
+                },
+                {
+                    "name": "short_llava_mix",
+                    "weight": 0.05 * scale,
+                    "data_path": short_direct_path,
+                    "system_prompt": calibration_prompt,
+                },
+            ]
+            for source in clean_sources:
+                source["use_augmentation"] = True
+                source["image_augmentation_mode"] = "vqa_light"
+            return clean_sources
+
+        def _v3_grounding_sources(scale):
+            return [
+                {
+                    "name": "vqa_train_direct",
+                    "weight": 0.50 * scale,
+                    "data_path": vqa_direct_path,
+                    "image_dir": vqa_image_dir,
+                    "system_prompt": training_system_prompt,
+                },
+                {
+                    "name": "coco_object_count_color_direct",
+                    "weight": 0.30 * scale,
+                    "data_path": coco_direct_path,
+                    "system_prompt": training_system_prompt,
+                },
+                {
+                    "name": "short_llava_mix",
+                    "weight": 0.20 * scale,
+                    "data_path": short_direct_path,
+                    "system_prompt": training_system_prompt,
+                },
+            ]
+
+        def _control_source(name, weight, path, source_image_dir):
+            return {
+                "name": name,
+                "weight": weight,
+                "data_path": path,
+                "image_dir": source_image_dir,
+                "system_prompt": control_prompt,
+                "use_augmentation": False,
+            }
+
+        if dataset == "v9_qwen_controlaware_stage2":
+            mixture_sources = _v5_clean_sources(0.70)
+            mixture_sources.extend(
+                [
+                    _control_source("vqa_shuffled_counterfactual", 0.10, shuffled_path, shuffled_image_dir),
+                    _control_source("vqa_wrong_same_answer_type_counterfactual", 0.10, wrong_path, wrong_image_dir),
+                    _control_source("vqa_blank_counterfactual", 0.05, blank_path, blank_image_dir),
+                    {
+                        "name": "gqa_direct_answer",
+                        "weight": 0.05,
+                        "data_path": gqa_path,
+                        "image_dir": gqa_image_dir,
+                        "system_prompt": calibration_prompt,
+                        "use_augmentation": False,
+                    },
+                ]
+            )
+        elif dataset == "v9_qwen_gqa_preserving_stage2":
+            mixture_sources = _v5_clean_sources(0.60)
+            mixture_sources.extend(
+                [
+                    {
+                        "name": "gqa_direct_answer",
+                        "weight": 0.20,
+                        "data_path": gqa_path,
+                        "image_dir": gqa_image_dir,
+                        "system_prompt": calibration_prompt,
+                        "use_augmentation": False,
+                    },
+                    _control_source("vqa_shuffled_counterfactual", 0.04, shuffled_path, shuffled_image_dir),
+                    _control_source("vqa_wrong_same_answer_type_counterfactual", 0.04, wrong_path, wrong_image_dir),
+                    _control_source("vqa_blank_counterfactual", 0.02, blank_path, blank_image_dir),
+                    {
+                        "name": "coco_pope_style_presence",
+                        "weight": 0.05,
+                        "data_path": _get_pope_presence_path(),
+                        "system_prompt": pope_prompt,
+                        "use_augmentation": False,
+                    },
+                    {
+                        "name": "coco_pope_style_absence",
+                        "weight": 0.05,
+                        "data_path": _get_pope_absence_path(),
+                        "system_prompt": pope_prompt,
+                        "use_augmentation": False,
+                    },
+                ]
+            )
+        elif dataset == "v9_qwen_controlaware_stage1b":
+            mixture_sources = _v3_grounding_sources(0.70)
+            mixture_sources.extend(
+                [
+                    _control_source("vqa_shuffled_counterfactual", 0.10, shuffled_path, shuffled_image_dir),
+                    _control_source("vqa_wrong_same_answer_type_counterfactual", 0.10, wrong_path, wrong_image_dir),
+                    {
+                        "name": "gqa_direct_answer",
+                        "weight": 0.05,
+                        "data_path": gqa_path,
+                        "image_dir": gqa_image_dir,
+                        "system_prompt": training_system_prompt,
+                        "use_augmentation": False,
+                    },
+                    {
+                        "name": "coco_pope_style_presence",
+                        "weight": 0.025,
+                        "data_path": _get_pope_presence_path(),
+                        "system_prompt": pope_prompt,
+                        "use_augmentation": False,
+                    },
+                    {
+                        "name": "coco_pope_style_absence",
+                        "weight": 0.025,
+                        "data_path": _get_pope_absence_path(),
+                        "system_prompt": pope_prompt,
+                        "use_augmentation": False,
+                    },
+                ]
+            )
+        else:
+            mixture_sources = _v3_grounding_sources(0.80)
+            mixture_sources.append(
+                {
+                    "name": "gqa_direct_answer",
+                    "weight": 0.20,
+                    "data_path": gqa_path,
+                    "image_dir": gqa_image_dir,
+                    "system_prompt": training_system_prompt,
+                    "use_augmentation": False,
+                }
+            )
+
+        ds = create_instruction_dataset(
+            data_path=None,
+            image_dir=image_dir,
+            tokenizer=tokenizer,
+            mixture_config={
+                "strategy": "weighted",
+                "datasets": mixture_sources,
+            },
+            image_size=image_size,
+            max_length=max_length,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+            use_augmentation=False,
+            image_augmentation_mode="none",
+            filter_to_available_images=True,
+        )
+        print(f"Loaded {len(ds)} {dataset} instruction samples")
         return ds
 
     if dataset in {
@@ -4134,6 +4944,14 @@ def _pretrain_worker(local_rank, world_size, config):
                 "pretrain_loss_normalization_target_tokens",
                 8.0,
             ),
+            pretrain_connector_rms_regularizer_alpha=config.get(
+                "pretrain_connector_rms_regularizer_alpha",
+                0.0,
+            ),
+            pretrain_connector_rms_regularizer_target=config.get(
+                "pretrain_connector_rms_regularizer_target",
+                "batch_text",
+            ),
             pretrain_gradient_accumulation_steps=config.get("pretrain_gradient_accumulation_steps", 8),
             pretrain_save_steps=config.get("pretrain_save_steps"),
             v3_connector_type=config.get("v3_connector_type", V3_DEFAULT_CONNECTOR_TYPE),
@@ -4173,6 +4991,8 @@ def _run_pretrain_distributed(
     pretrain_loss_scale=1.0,
     pretrain_loss_normalization="mean",
     pretrain_loss_normalization_target_tokens=8.0,
+    pretrain_connector_rms_regularizer_alpha=0.0,
+    pretrain_connector_rms_regularizer_target="batch_text",
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
     v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
@@ -4241,6 +5061,8 @@ def _run_pretrain_distributed(
         "pretrain_loss_scale": pretrain_loss_scale,
         "pretrain_loss_normalization": pretrain_loss_normalization,
         "pretrain_loss_normalization_target_tokens": pretrain_loss_normalization_target_tokens,
+        "pretrain_connector_rms_regularizer_alpha": pretrain_connector_rms_regularizer_alpha,
+        "pretrain_connector_rms_regularizer_target": pretrain_connector_rms_regularizer_target,
         "pretrain_gradient_accumulation_steps": pretrain_gradient_accumulation_steps,
         "pretrain_save_steps": pretrain_save_steps,
         "v3_connector_type": v3_connector_type,
@@ -4293,6 +5115,8 @@ def pretrain_distributed(
     pretrain_loss_scale=1.0,
     pretrain_loss_normalization="mean",
     pretrain_loss_normalization_target_tokens=8.0,
+    pretrain_connector_rms_regularizer_alpha=0.0,
+    pretrain_connector_rms_regularizer_target="batch_text",
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
     v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
@@ -4330,6 +5154,8 @@ def pretrain_distributed(
         pretrain_loss_scale=pretrain_loss_scale,
         pretrain_loss_normalization=pretrain_loss_normalization,
         pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
+        pretrain_connector_rms_regularizer_alpha=pretrain_connector_rms_regularizer_alpha,
+        pretrain_connector_rms_regularizer_target=pretrain_connector_rms_regularizer_target,
         pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
         pretrain_save_steps=pretrain_save_steps,
         v3_connector_type=v3_connector_type,
@@ -4378,6 +5204,8 @@ def pretrain_distributed_h100(
     pretrain_loss_scale=1.0,
     pretrain_loss_normalization="mean",
     pretrain_loss_normalization_target_tokens=8.0,
+    pretrain_connector_rms_regularizer_alpha=0.0,
+    pretrain_connector_rms_regularizer_target="batch_text",
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
     v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
@@ -4415,6 +5243,8 @@ def pretrain_distributed_h100(
         pretrain_loss_scale=pretrain_loss_scale,
         pretrain_loss_normalization=pretrain_loss_normalization,
         pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
+        pretrain_connector_rms_regularizer_alpha=pretrain_connector_rms_regularizer_alpha,
+        pretrain_connector_rms_regularizer_target=pretrain_connector_rms_regularizer_target,
         pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
         pretrain_save_steps=pretrain_save_steps,
         v3_connector_type=v3_connector_type,
@@ -4595,10 +5425,19 @@ def main(
     finetune_loss_scale: float = 1.0,
     finetune_gradient_accumulation_steps: int = 8,
     finetune_preserve_checkpoint_steps: str = None,
+    lora_rank: int = 64,
+    lora_alpha: int = 16,
+    lora_dropout: float = 0.05,
+    lora_target_modules: str = None,
+    contrastive_answer_suppression: bool = False,
+    contrastive_lambda: float = 0.1,
+    contrastive_margin: float = 0.5,
     connector_warmup_steps: int = 0,
     pretrain_loss_scale: float = 1.0,
     pretrain_loss_normalization: str = "mean",
     pretrain_loss_normalization_target_tokens: float = 8.0,
+    pretrain_connector_rms_regularizer_alpha: float = 0.0,
+    pretrain_connector_rms_regularizer_target: str = "batch_text",
     pretrain_gradient_accumulation_steps: int = 8,
     pretrain_save_steps: int = None,
     v3_connector_type: str = V3_DEFAULT_CONNECTOR_TYPE,
@@ -4651,6 +5490,9 @@ def main(
         "v5_semantic_calibration",
         "v5_semantic_calibration_robust",
         "v7_semantic_calibration_counterfactual",
+        "v9_qwen_controlaware_stage2",
+        "v9_qwen_gqa_preserving_stage2",
+        "v9_qwen_contrastive_answer_suppression_stage2",
     }:
         freeze_connector = True
     resolved_v4_connector_type = v4_connector_type or V4_DEFAULT_CONNECTOR_TYPE
@@ -4753,6 +5595,12 @@ def main(
         print(f"  Stage 1 connector warmup steps: {connector_warmup_steps}")
     if stage == "pretrain" and pretrain_loss_scale != 1.0:
         print(f"  Stage 1 loss scale: {pretrain_loss_scale}")
+    if stage == "pretrain" and pretrain_connector_rms_regularizer_alpha:
+        print(
+            "  Stage 1 connector RMS regularizer: "
+            f"alpha={pretrain_connector_rms_regularizer_alpha}, "
+            f"target={pretrain_connector_rms_regularizer_target}"
+        )
     if stage == "pretrain" and pretrain_loss_normalization != "mean":
         print(f"  Stage 1 loss normalization: {pretrain_loss_normalization}")
         print(
@@ -4773,6 +5621,17 @@ def main(
         print(f"  Stage 2 loss scale: {finetune_loss_scale}")
     if stage == "finetune":
         print(f"  Stage 2 gradient accumulation: {finetune_gradient_accumulation_steps}")
+        print(f"  LoRA rank: {lora_rank}")
+        print(f"  LoRA alpha: {lora_alpha}")
+        print(f"  LoRA dropout: {lora_dropout}")
+        print(
+            "  LoRA target modules: "
+            f"{_parse_lora_target_modules(lora_target_modules) or 'default'}"
+        )
+        if contrastive_answer_suppression or dataset == "v9_qwen_contrastive_answer_suppression_stage2":
+            print("  Contrastive answer suppression: enabled")
+            print(f"  Contrastive lambda: {contrastive_lambda}")
+            print(f"  Contrastive margin: {contrastive_margin}")
     if learning_rate:
         print(f"  Learning rate: {learning_rate}")
     if lora_learning_rate:
@@ -4810,6 +5669,8 @@ def main(
             pretrain_loss_scale=pretrain_loss_scale,
             pretrain_loss_normalization=pretrain_loss_normalization,
             pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
+            pretrain_connector_rms_regularizer_alpha=pretrain_connector_rms_regularizer_alpha,
+            pretrain_connector_rms_regularizer_target=pretrain_connector_rms_regularizer_target,
             pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
             pretrain_save_steps=pretrain_save_steps,
             v3_connector_type=v3_connector_type,
@@ -4859,6 +5720,13 @@ def main(
             finetune_loss_scale=finetune_loss_scale,
             finetune_gradient_accumulation_steps=finetune_gradient_accumulation_steps,
             finetune_preserve_checkpoint_steps=finetune_preserve_checkpoint_steps,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            lora_target_modules=lora_target_modules,
+            contrastive_answer_suppression=contrastive_answer_suppression,
+            contrastive_lambda=contrastive_lambda,
+            contrastive_margin=contrastive_margin,
             v3_connector_type=v3_connector_type,
             v3_connector_output_scale=v3_connector_output_scale,
             v3_connector_output_gate_init=v3_connector_output_gate_init,
