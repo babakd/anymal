@@ -5,7 +5,7 @@ Compares the final Stage 1 and Stage 2 V2 learned-compressor checkpoints on the
 same deterministic LLaVA validation examples.
 
 Usage:
-    modal run v2_compare_inference.py --num-examples 8
+    modal run scripts/inference/v2_compare_inference.py --num-examples 8
 """
 
 import json
@@ -17,7 +17,7 @@ import modal
 
 app = modal.App("anymal-v2-compare")
 volume = modal.Volume.from_name("anymal-checkpoints", create_if_missing=True)
-PROJECT_DIR = Path(__file__).parent
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 image = (
     modal.Image.debian_slim(python_version="3.10")

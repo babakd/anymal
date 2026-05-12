@@ -2,8 +2,8 @@
 Modal diagnostics for the completed AnyMAL V2 learned-compressor run.
 
 Usage:
-    modal run v2_quality_diagnostics.py --mode audit
-    modal run v2_quality_diagnostics.py --mode probe --max-new-tokens 32,64,128,192
+    modal run scripts/analysis/v2_quality_diagnostics.py --mode audit
+    modal run scripts/analysis/v2_quality_diagnostics.py --mode probe --max-new-tokens 32,64,128,192
 """
 
 import json
@@ -16,7 +16,7 @@ import modal
 
 app = modal.App("anymal-v2-quality-diagnostics")
 volume = modal.Volume.from_name("anymal-checkpoints", create_if_missing=True)
-PROJECT_DIR = Path(__file__).parent
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 image = (
     modal.Image.debian_slim(python_version="3.10")

@@ -1,7 +1,7 @@
 """Run side-by-side inference for AnyMAL architecture candidates V1 through V4.
 
 Usage:
-    modal run arch_sxs_inference.py --num-examples 12
+    modal run scripts/inference/arch_sxs_inference.py --num-examples 12
 
 Writes a local JSON file and, by default, updates the Modal volume artifact used
 by ``modal_viewer.py``:
@@ -21,7 +21,7 @@ import modal
 
 app = modal.App("anymal-arch-sxs-inference")
 volume = modal.Volume.from_name("anymal-checkpoints", create_if_missing=True)
-PROJECT_DIR = Path(__file__).parent
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 image = (
     modal.Image.debian_slim(python_version="3.10")

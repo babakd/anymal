@@ -18,6 +18,16 @@ The canonical current state lives in [docs/STATUS.md](docs/STATUS.md). As of
 `anymal_v3` 128-token connector interface with a materialized connector output
 scale of `1.05`.
 
+For the latest experiment index, read
+[experiments/LATEST.md](experiments/LATEST.md). The short version:
+
+| Campaign | Status |
+| --- | --- |
+| V9 Qwen scale-1.05 | Current viable replacement candidate; all recorded gates passed |
+| V8 Qwen decoder swap | Historical integration and compute-matched Qwen groundwork |
+| V7/V6 controls | Historical LLaMA-side controls and causal falsification context |
+| V4/V5 spatial/recipe work | Historical; useful provenance, not the current default |
+
 Implemented model variants:
 
 | Variant | Vision encoder | Connector | Notes |
@@ -258,6 +268,9 @@ scripts/       Local training, data download, and analysis entrypoints
 tests/         Unit tests for model, training, evaluation, and monitoring code
 training/      Trainers, distributed helpers, health/throughput monitoring
 ```
+
+Root-level Python files are intentionally limited to compatibility wrappers and
+small shared modules. Bulky script implementations live under `scripts/`.
 
 ## Requirements
 

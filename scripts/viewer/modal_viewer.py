@@ -1,7 +1,7 @@
 """Web viewer for AnyMAL side-by-side comparison predictions.
 
 Usage:
-    modal deploy modal_viewer.py
+    modal deploy scripts/viewer/modal_viewer.py
     # Visit the printed URL
 """
 

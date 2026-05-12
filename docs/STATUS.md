@@ -21,7 +21,9 @@ It uses:
 - Resume status: eval/inference checkpoint only, not an optimizer-resume
   checkpoint
 
-The full V9 result ledger lives at `experiments/v9_qwen/results.md`.
+The full V9 result ledger lives at `experiments/v9_qwen/results.md`. The latest
+experiment index lives at `experiments/LATEST.md`, and the confirmation plan
+lives at `experiments/v9_qwen/confirm.md`.
 
 ## Promotion Gates
 
@@ -55,4 +57,3 @@ candidate, then focus on:
 
 Do not rely on older V3/V4 handoff text as the current state. Those documents
 remain useful provenance, but they predate the V8/V9 Qwen campaigns.
-

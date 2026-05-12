@@ -26,6 +26,15 @@ ALLOWED_ROOT_REDIRECTS = {
 }
 FORBIDDEN_PATH_PARTS = ("Users", "babakd", "anymal")
 FORBIDDEN_TEXT = "/" + "/".join(FORBIDDEN_PATH_PARTS)
+ALLOWED_ROOT_PY = {
+    "gqa_checkpoint_eval.py",
+    "modal_train.py",
+    "modal_v8_llm_swap_smoke.py",
+    "model_metadata.py",
+    "pope_checkpoint_eval.py",
+    "vqa_checkpoint_eval.py",
+}
+MAX_ROOT_WRAPPER_LINES = 40
 
 
 def _tracked_files() -> list[Path]:
@@ -74,11 +83,30 @@ def _check_hardcoded_local_paths(files: list[Path]) -> list[str]:
     return errors
 
 
+def _check_root_python_files(files: list[Path]) -> list[str]:
+    errors: list[str] = []
+    for path in files:
+        rel = path.relative_to(REPO_ROOT)
+        if len(rel.parts) != 1 or path.suffix != ".py":
+            continue
+        if rel.name not in ALLOWED_ROOT_PY:
+            errors.append(f"unexpected root-level Python file: {rel}")
+            continue
+        if rel.name != "model_metadata.py":
+            line_count = len(path.read_text(encoding="utf-8", errors="ignore").splitlines())
+            if line_count > MAX_ROOT_WRAPPER_LINES:
+                errors.append(
+                    f"root compatibility wrapper is too large: {rel} has {line_count} lines"
+                )
+    return errors
+
+
 def main() -> int:
     files = _tracked_files()
     errors = []
     errors.extend(_check_root_experiment_docs(files))
     errors.extend(_check_hardcoded_local_paths(files))
+    errors.extend(_check_root_python_files(files))
 
     if errors:
         print("Repository health check failed:", file=sys.stderr)

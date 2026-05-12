@@ -14,7 +14,7 @@ import modal
 
 app = modal.App("anymal-v1-v2-compare")
 volume = modal.Volume.from_name("anymal-checkpoints", create_if_missing=True)
-PROJECT_DIR = Path(__file__).parent
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 image = (
     modal.Image.debian_slim(python_version="3.10")

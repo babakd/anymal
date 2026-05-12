@@ -2,7 +2,7 @@
 Minimal side-by-side inference script for comparing two finetune checkpoints.
 
 Usage:
-    modal run compare_inference.py --checkpoint-a /checkpoints/finetune-output/ablation-A/checkpoint-500 \\
+    modal run scripts/inference/compare_inference.py --checkpoint-a /checkpoints/finetune-output/ablation-A/checkpoint-500 \\
                                    --checkpoint-b /checkpoints/finetune-output/ablation-F/checkpoint-500 \\
                                    --num-examples 20
 
@@ -16,7 +16,7 @@ from pathlib import Path
 
 app = modal.App("anymal-compare")
 volume = modal.Volume.from_name("anymal-checkpoints", create_if_missing=True)
-PROJECT_DIR = Path(__file__).parent
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 image = (
     modal.Image.debian_slim(python_version="3.10")

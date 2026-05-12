@@ -5,7 +5,7 @@ Baseline = pretrained perceiver + frozen LLaMA-3-8B-Instruct, NO LoRA adapters.
 This tells us what the model produces *before* any instruction finetuning.
 
 Usage:
-    modal run three_way_inference.py --num-examples 20
+    modal run scripts/inference/three_way_inference.py --num-examples 20
 """
 
 import modal
@@ -15,7 +15,7 @@ from pathlib import Path
 
 app = modal.App("anymal-three-way")
 volume = modal.Volume.from_name("anymal-checkpoints", create_if_missing=True)
-PROJECT_DIR = Path(__file__).parent
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 image = (
     modal.Image.debian_slim(python_version="3.10")

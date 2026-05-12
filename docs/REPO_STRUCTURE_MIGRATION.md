@@ -43,6 +43,25 @@ Implementation files now live under:
 evaluation/checkpoint_eval/
 ```
 
+## Root Scripts
+
+Root-level Python files are now limited to compatibility wrappers and small
+shared modules. Bulky implementations moved here:
+
+| Old path | New path |
+| --- | --- |
+| `modal_train.py` | wrapper for `scripts/modal/train.py` |
+| `modal_v8_llm_swap_smoke.py` | wrapper for `scripts/modal/v8_llm_swap_smoke.py` |
+| `arch_sxs_inference.py` | `scripts/inference/arch_sxs_inference.py` |
+| `compare_inference.py` | `scripts/inference/compare_inference.py` |
+| `three_way_inference.py` | `scripts/inference/three_way_inference.py` |
+| `v1_v2_compare_inference.py` | `scripts/inference/v1_v2_compare_inference.py` |
+| `v2_compare_inference.py` | `scripts/inference/v2_compare_inference.py` |
+| `analyze_v2_compare.py` | `scripts/analysis/analyze_v2_compare.py` |
+| `analyze_v2_probe.py` | `scripts/analysis/analyze_v2_probe.py` |
+| `v2_quality_diagnostics.py` | `scripts/analysis/v2_quality_diagnostics.py` |
+| `modal_viewer.py` | `scripts/viewer/modal_viewer.py` |
+
 ## Smoke Checks
 
 Use these after structure changes:
@@ -52,4 +71,3 @@ python3 scripts/repo_health_check.py
 python3 -m pytest tests/test_health_monitor.py -q
 modal run scripts/modal_repo_smoke.py
 ```
-
