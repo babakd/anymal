@@ -84,6 +84,8 @@ class PerceiverResampler(nn.Module):
         num_heads: int = 16,
         ff_mult: int = 4,
         dropout: float = 0.0,
+        output_scale: float = 1.0,
+        output_gate_init: Optional[float] = None,
     ):
         super().__init__()
 
@@ -91,6 +93,20 @@ class PerceiverResampler(nn.Module):
         self.output_dim = output_dim
         self.num_latents = num_latents
         self.num_layers = num_layers
+        self.output_scale = float(output_scale)
+        if self.output_scale <= 0:
+            raise ValueError(f"output_scale must be > 0, got {output_scale}")
+        self.output_gate_init = None if output_gate_init is None else float(output_gate_init)
+        if self.output_gate_init is not None:
+            if not 0.0 < self.output_gate_init < 1.0:
+                raise ValueError(
+                    "output_gate_init must be between 0 and 1 when set, "
+                    f"got {output_gate_init}"
+                )
+            gate_logit = torch.logit(torch.tensor(self.output_gate_init, dtype=torch.float32))
+            self.output_gate_logit = nn.Parameter(gate_logit)
+        else:
+            self.output_gate_logit = None
 
         # Learnable latent queries
         # These are the "questions" we ask about the image
@@ -116,6 +132,12 @@ class PerceiverResampler(nn.Module):
 
         # Final layer norm for output stability
         self.norm = nn.LayerNorm(output_dim)
+
+    def _output_multiplier(self) -> torch.Tensor:
+        multiplier = self.output_scale
+        if self.output_gate_logit is not None:
+            multiplier = multiplier * torch.sigmoid(self.output_gate_logit)
+        return multiplier
 
     def forward(
         self,
@@ -153,7 +175,7 @@ class PerceiverResampler(nn.Module):
             latents = layer(latents, context, attention_mask)
 
         # Final normalization
-        return self.norm(latents)
+        return self.norm(latents) * self._output_multiplier()
 
     def get_num_params(self) -> int:
         """Return total number of trainable parameters."""
@@ -179,6 +201,8 @@ class QuestionConditionedPerceiverResampler(PerceiverResampler):
         num_heads: int = 16,
         ff_mult: int = 4,
         dropout: float = 0.0,
+        output_scale: float = 1.0,
+        output_gate_init: Optional[float] = None,
         condition_dim: Optional[int] = None,
         condition_scale_init: float = 0.02,
     ):
@@ -190,6 +214,8 @@ class QuestionConditionedPerceiverResampler(PerceiverResampler):
             num_heads=num_heads,
             ff_mult=ff_mult,
             dropout=dropout,
+            output_scale=output_scale,
+            output_gate_init=output_gate_init,
         )
         self.condition_dim = int(condition_dim or output_dim)
         self.condition_norm = nn.LayerNorm(self.condition_dim)
@@ -243,7 +269,7 @@ class QuestionConditionedPerceiverResampler(PerceiverResampler):
         for layer in self.layers:
             latents = layer(latents, context, attention_mask)
 
-        return self.norm(latents)
+        return self.norm(latents) * self._output_multiplier()
 
 
 class PerceiverResamplerBlock(nn.Module):
