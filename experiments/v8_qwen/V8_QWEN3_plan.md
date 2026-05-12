@@ -343,7 +343,7 @@ How to reconstruct the incumbent exposure:
 
 1. Inspect the incumbent checkpoint metadata and parent references.
 2. Inspect W&B run records if run IDs are available.
-3. Inspect `EXPERIMENTS.md`, `V6_CAUSAL_FALSIFICATION_PLAN.md`, prior run scripts, generated artifact metadata, and checkpoint `model_meta.json`, `training_args.json`, or equivalent files.
+3. Inspect `experiments/README.md`, `docs/V6_CAUSAL_FALSIFICATION_PLAN.md`, prior run scripts, generated artifact metadata, and checkpoint `model_meta.json`, `training_args.json`, or equivalent files.
 4. Search the checkpoint volume and working tree:
 
 ```bash

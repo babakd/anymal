@@ -6,7 +6,12 @@ Running log of what we've tried, what we found, and what's open. Newest entries 
 
 ## Reference: Stage 1 Pretrain
 
-See `CLAUDE.md` for the canonical Stage 1 run. Final artifact:
+This historical ledger was moved from the repo root. For the current source of
+truth, read `docs/STATUS.md`; for the archived long-form agent handoff, read
+`docs/history/CLAUDE_legacy.md`.
+
+See `docs/history/CLAUDE_legacy.md` for the canonical Stage 1 run. Final
+artifact:
 
 - **Checkpoint**: `/checkpoints/pretrain-output/checkpoint-2500/projector.pt`
 - Trained 2500 steps on 4× A100-80GB, loss 12 → 1.5, wall time ~1.5 hr, cost ~$22
@@ -261,7 +266,7 @@ held-out scoreboard.
 
 ### Code changes
 
-- Added `V2_QUALITY_PLAN.md` and linked it from `CLAUDE.md` and this experiment log.
+- Added `V2_QUALITY_PLAN.md` and linked it from the agent handoff and this experiment log.
 - Hardened captioning eval for AnyMALv2:
   - inserts contiguous V2 image placeholder blocks,
   - uses SigLIP2/V2 image preprocessing,

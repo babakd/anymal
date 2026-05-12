@@ -140,13 +140,13 @@ This section is the ledger for the V9 experiments executed in this run. The
 repo also has a pre-existing historical ledger:
 
 ```text
-/Users/babakd/anymal/EXPERIMENTS.md
+experiments/README.md
 ```
 
 The V9-specific ledger for this run is this file:
 
 ```text
-/Users/babakd/anymal/a.md
+experiments/v9_qwen/results.md
 ```
 
 ### Batch 0: pre-Stage2 evidence

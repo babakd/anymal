@@ -10,7 +10,9 @@ from unittest.mock import patch
 import pytest
 
 import sys
-sys.path.insert(0, "/Users/babakd/anymal")
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from training.health_monitor import HealthMonitorConfig, TrainingHealthMonitor
 from training.throughput_tracker import ThroughputTracker

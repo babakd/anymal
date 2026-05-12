@@ -5,13 +5,18 @@ An educational, research-oriented implementation inspired by the AnyMAL paper
 
 The paper covers any-modality inputs such as image, video, audio, and IMU. This
 repository currently focuses on the image path: turning vision encoder features
-into image tokens that a Llama 3 language model can consume.
+into image tokens that an 8B-class language model can consume.
 
 ## Current Status
 
 This is an experimental codebase, not a polished model release. It is useful for
 learning, reproducing pieces of the AnyMAL-style training pipeline, and running
-architecture ablations. Public pretrained checkpoints are not included.
+architecture/backbone ablations. Public pretrained checkpoints are not included.
+
+The canonical current state lives in [docs/STATUS.md](docs/STATUS.md). As of
+2026-05-12, the best candidate is the V9 Qwen/Qwen3-8B path using the
+`anymal_v3` 128-token connector interface with a materialized connector output
+scale of `1.05`.
 
 Implemented model variants:
 
@@ -19,27 +24,27 @@ Implemented model variants:
 | --- | --- | --- | --- |
 | `anymal_v1` | CLIP ViT-L/14 at 224 px | Perceiver resampler | Original baseline path |
 | `anymal_v2` | SigLIP2 at 384 px | MLP bottleneck plus token compressor | Adds stricter image-token handling |
-| `anymal_v3` | SigLIP2 at 384 px | Perceiver-style connector | Used for grounding/calibration experiments |
-| `anymal_v4` | SigLIP2 at 384 px | Spatial global/local Perceiver | Current main experimental path |
+| `anymal_v3` | SigLIP2 at 384 px | Perceiver-style connector | Current best interface for the Qwen candidate |
+| `anymal_v4` | SigLIP2 at 384 px | Spatial global/local Perceiver | Historical spatial-connector branch |
 
-The active research configs are mostly around `anymal_v4`. The older v1 configs
-remain useful as a simpler starting point.
+Older V1/V2/V4 configs remain in the repo for comparison and provenance. Check
+`docs/STATUS.md` before launching new expensive work.
 
 ## Architecture
 
 At a high level:
 
 ```text
-image -> frozen vision encoder -> trainable connector -> image placeholder tokens -> Llama 3 -> text
+image -> frozen vision encoder -> trainable connector -> image placeholder tokens -> decoder -> text
 ```
 
-The default v4 path uses:
+The current V9 candidate uses:
 
-- LLM: `Meta-Llama-3-8B-Instruct`
+- LLM: `Qwen/Qwen3-8B`
 - Vision encoder: `google/siglip2-so400m-patch14-384`
-- Connector: spatial Perceiver resampler with global and local image tokens
-- Training: Stage 1 connector alignment, then Stage 2 LoRA/QLoRA instruction or
-  calibration fine-tuning
+- Connector: V3 Perceiver-style connector with 128 image tokens
+- Training: Stage 1/1B connector alignment; the promoted V9 checkpoint is an
+  eval/inference checkpoint, not an optimizer-resume checkpoint
 
 ## Installation
 
@@ -82,8 +87,8 @@ The v1 CLIP path can pre-cache CLIP weights:
 python3 scripts/download_checkpoints.py --clip
 ```
 
-SigLIP2 weights used by v2-v4 are downloaded by Transformers/Hugging Face when
-the model initializes.
+SigLIP2 weights used by v2-v4 and the V9 Qwen candidate are downloaded by
+Transformers/Hugging Face when the model initializes.
 
 ## Data
 
@@ -147,7 +152,16 @@ python3 scripts/train_finetune.py \
   --debug
 ```
 
-### v4 Experimental Path
+### Current Qwen Candidate
+
+The promoted V9 checkpoint and full result ledger are documented in
+[experiments/v9_qwen/results.md](experiments/v9_qwen/results.md). The historical
+V8/Qwen setup work is under [experiments/v8_qwen/](experiments/v8_qwen/).
+
+For new long runs, start from [docs/STATUS.md](docs/STATUS.md) and verify the
+checkpoint/backbone metadata before spending GPU time.
+
+### v4 Historical Path
 
 Stage 1 caption alignment:
 
@@ -188,19 +202,22 @@ Example commands:
 modal run modal_train.py --use-dummy-data --max-steps 50
 modal run modal_train.py \
   --stage pretrain \
-  --architecture anymal_v4 \
+  --architecture anymal_v3 \
+  --llm-backbone Qwen/Qwen3-8B \
   --gpu-type h100 \
-  --max-steps 20000
+  --max-steps 20
 modal run modal_train.py \
   --stage finetune \
-  --architecture anymal_v4 \
-  --dataset v4_semantic_calibration \
+  --architecture anymal_v3 \
+  --llm-backbone Qwen/Qwen3-8B \
+  --dataset v9_qwen_controlaware_stage2 \
   --max-steps 100
 modal run --detach modal_train.py \
   --stage finetune \
-  --architecture anymal_v4 \
-  --dataset v4_semantic_calibration \
-  --max-steps 3000
+  --architecture anymal_v3 \
+  --llm-backbone Qwen/Qwen3-8B \
+  --dataset v9_qwen_controlaware_stage2 \
+  --max-steps 800
 ```
 
 For a fuller walkthrough, see [docs/MODAL_SETUP.md](docs/MODAL_SETUP.md).
@@ -218,8 +235,10 @@ modal run vqa_checkpoint_eval.py \
   --output results/vqa_checkpoint_eval.json
 ```
 
-Eval JSON artifacts live under `results/`. New runs should write there too so
-the repo root stays clean (root is gitignored for these patterns).
+Eval JSON artifacts live under `results/` only when they are curated and small
+enough to track. New large prediction/eval dumps should stay in Modal volumes,
+W&B, external storage, or ignored `outputs/`; do not put new artifacts in the
+repo root.
 
 There are also local analysis helpers under `scripts/` for inspecting prediction
 JSON files and promotion criteria.
@@ -229,9 +248,12 @@ JSON files and promotion criteria.
 ```text
 configs/       Training configs for v1-v4 experiments
 data/          Dataset loaders and collators
+docs/          Current status, runbooks, and historical handoffs
 evaluation/    Captioning and VQA evaluation code
-models/        AnyMAL model variants, encoders, connectors, Llama wrapper
+experiments/   Versioned experiment plans and result ledgers
+models/        AnyMAL model variants, encoders, connectors, LLM wrappers
 notebooks/     Educational architecture notebook
+results/       Small tracked eval artifacts
 scripts/       Local training, data download, and analysis entrypoints
 tests/         Unit tests for model, training, evaluation, and monitoring code
 training/      Trainers, distributed helpers, health/throughput monitoring
@@ -252,11 +274,15 @@ reducing batch size, sequence length, image tokens, or using Modal.
 
 ```bash
 python3 -m pytest tests -q
+python3 -m compileall -q models training evaluation data scripts
+python3 scripts/repo_health_check.py
+modal run scripts/modal_repo_smoke.py
 black .
 isort .
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution workflow details.
+See [AGENTS.md](AGENTS.md) for agent-oriented operating rules and
+[CONTRIBUTING.md](CONTRIBUTING.md) for contribution workflow details.
 
 ## References
 

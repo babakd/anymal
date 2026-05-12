@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anymal-experiments"
+version = "0.1.0"
+description = "Research-oriented AnyMAL-style multimodal LLM experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+dependencies = [
+  "torch>=2.0.0",
+  "torchvision>=0.15.0",
+  "torchaudio>=2.0.0",
+  "transformers>=4.53.0,<5.0.0",
+  "accelerate>=0.25.0",
+  "peft>=0.7.0",
+  "bitsandbytes>=0.41.0",
+  "open_clip_torch>=2.23.0",
+  "timm>=0.9.0",
+  "datasets>=2.14.0",
+  "webdataset>=0.2.0",
+  "huggingface_hub>=0.19.0",
+  "Pillow>=10.0.0",
+  "opencv-python>=4.8.0",
+  "wandb>=0.16.0",
+  "tensorboard>=2.14.0",
+  "pycocoevalcap>=1.2",
+  "nltk>=3.8.0",
+  "numpy>=1.24.0",
+  "scipy>=1.11.0",
+  "tqdm>=4.66.0",
+  "pyyaml>=6.0.0",
+  "omegaconf>=2.3.0",
+  "einops>=0.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4.0",
+  "black>=23.0.0",
+  "isort>=5.12.0",
+  "ruff>=0.4.0",
+]
+modal = [
+  "modal>=1.2.0",
+]
+
+[tool.setuptools]
+py-modules = ["model_metadata"]
+
+[tool.setuptools.packages.find]
+include = ["data*", "evaluation*", "models*", "training*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+  "gpu: requires a CUDA GPU",
+  "modal: requires Modal credentials and remote execution",
+  "slow: long-running or heavyweight test",
+  "requires_weights: downloads or loads model weights",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+

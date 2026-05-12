@@ -55,10 +55,10 @@ as a wired ablation only. The lean A1 bottleneck spatial connector remains the
 efficiency target, but it needs a repeat of the promoted recipe before replacing
 the Stage1B248 evidence-backed checkpoint.
 
-Artifacts to keep in view:
+Historical artifacts to keep in view:
 
-- `EXPERIMENTS.md`
-- `V3_ARCHITECTURE_PLAN.md`
+- `experiments/README.md`
+- `docs/history/V3_ARCHITECTURE_PLAN.md`
 - `configs/finetune_v3.yaml`
 - `scripts/check_v3_promotion.py`
 - `vqa_checkpoint_eval_baselines_1000_seed42_training_chat.json`
@@ -521,7 +521,7 @@ Use `TRAINING_RUN_BABYSITTING_PLAYBOOK.md`. In addition:
 - Treat active W&B health alerts as unresolved until W&B clears them; console
   logs alone cannot downgrade a spike or loss-window alert.
 - Keep Modal app IDs, W&B URLs, checkpoint paths, and external eval artifact
-  paths in `EXPERIMENTS.md` immediately after each run.
+  paths in the relevant `experiments/` ledger immediately after each run.
 - Never promote from a run whose checkpoint metadata does not explicitly say
   `anymal_v4`.
 
