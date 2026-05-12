@@ -3,7 +3,7 @@
 
 Artifacts are written to the shared Modal checkpoint volume. Fetch them with:
 
-    modal volume get anymal-checkpoints /v8_remote/<artifact>.json outputs/v8_remote --force
+    modal volume get anymal-checkpoints /v8_qwen3_final_remote/<artifact>.json outputs/v8_qwen3_final_remote --force
 """
 
 from __future__ import annotations
@@ -179,7 +179,7 @@ def main() -> None:
     parser.add_argument("--architecture", default="anymal_v3")
     parser.add_argument("--llm-backbone", default="Qwen/Qwen3-8B")
     parser.add_argument("--artifact-prefix", default="v8_qwen3_v3_robustcal_ckpt100")
-    parser.add_argument("--remote-dir", default="/checkpoints/v8_remote")
+    parser.add_argument("--remote-dir", default="/checkpoints/v8_qwen3_final_remote")
     parser.add_argument("--local-output-dir", default="/tmp")
     parser.add_argument("--vqa-batch-size", type=int, default=8)
     parser.add_argument("--pope-samples", type=int, default=1000)
