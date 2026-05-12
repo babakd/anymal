@@ -282,7 +282,9 @@ isort .
 ```
 
 See [AGENTS.md](AGENTS.md) for agent-oriented operating rules and
-[CONTRIBUTING.md](CONTRIBUTING.md) for contribution workflow details.
+[CONTRIBUTING.md](CONTRIBUTING.md) for contribution workflow details. If you
+remember the old root-heavy layout, see
+[docs/REPO_STRUCTURE_MIGRATION.md](docs/REPO_STRUCTURE_MIGRATION.md).
 
 ## References
 

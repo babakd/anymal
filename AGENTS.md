@@ -9,8 +9,10 @@ and generated artifacts. Read this file before changing code.
 1. Read `docs/STATUS.md` for the current model, checkpoint, gates, and active
    research direction.
 2. Read `README.md` for the user-facing overview and basic commands.
-3. Use `experiments/` for historical plans, ledgers, and campaign writeups.
-4. Treat `docs/history/` as frozen provenance unless a task explicitly asks to
+3. If an old root-level experiment doc is missing or looks tiny, read
+   `docs/REPO_STRUCTURE_MIGRATION.md`; old root docs are now redirect stubs.
+4. Use `experiments/` for historical plans, ledgers, and campaign writeups.
+5. Treat `docs/history/` as frozen provenance unless a task explicitly asks to
    correct a historical record.
 
 ## Current Operating Rules

@@ -15,6 +15,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_ROOT_PREFIXES = ("V", "v")
 FORBIDDEN_ROOT_NAMES = {"EXPERIMENTS.md"}
+ALLOWED_ROOT_REDIRECTS = {
+    "EXPERIMENTS.md",
+    "V8_CORE_LLM_SWAP_RESULTS.md",
+    "V8_QWEN3_plan.md",
+    "V8_experiment.md",
+    "v7_experiments.md",
+    "v9_qwen_experiment_results.md",
+    "v9_qwen_plan.md",
+}
 FORBIDDEN_PATH_PARTS = ("Users", "babakd", "anymal")
 FORBIDDEN_TEXT = "/" + "/".join(FORBIDDEN_PATH_PARTS)
 
@@ -36,14 +45,20 @@ def _check_root_experiment_docs(files: list[Path]) -> list[str]:
         rel = path.relative_to(REPO_ROOT)
         if len(rel.parts) != 1 or path.suffix != ".md":
             continue
-        if rel.name in FORBIDDEN_ROOT_NAMES:
-            errors.append(f"historical experiment doc still lives at repo root: {rel}")
-            continue
         if rel.name.startswith(FORBIDDEN_ROOT_PREFIXES) and rel.name not in {
             "README.md",
             "CONTRIBUTING.md",
+            *ALLOWED_ROOT_REDIRECTS,
         }:
             errors.append(f"versioned experiment doc still lives at repo root: {rel}")
+            continue
+        if rel.name in FORBIDDEN_ROOT_NAMES and rel.name not in ALLOWED_ROOT_REDIRECTS:
+            errors.append(f"historical experiment doc still lives at repo root: {rel}")
+            continue
+        if rel.name in ALLOWED_ROOT_REDIRECTS:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if "Moved:" not in text:
+                errors.append(f"root compatibility doc is not a redirect stub: {rel}")
     return errors
 
 
