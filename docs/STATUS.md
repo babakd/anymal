@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-05-12
+Last updated: 2026-05-13
 
 ## Current Best Candidate
 
@@ -24,6 +24,23 @@ It uses:
 The full V9 result ledger lives at `experiments/v9_qwen/results.md`. The latest
 experiment index lives at `experiments/LATEST.md`, and the confirmation plan
 lives at `experiments/v9_qwen/confirm.md`.
+
+## Latest V10 Ceiling Note
+
+The V10 Qwen3 ceiling search on 2026-05-13 did not produce a promotable
+successor. The C1 learned-2D-position branch reached GQA `44.5` but regressed
+corrupted-image controls, and the final E1 gated visual-cross-attention branch
+screened at GQA `43.4`. Treat the V9/Batch-A family as the active Qwen path;
+see `experiments/v10_qwen/ceiling_results.md`.
+
+## Latest Confirmation Note
+
+The materialized no-override confirmation bundle on 2026-05-12 reproduced the
+canonical gates, including GQA `44.000` on the established n=500 slice. A larger
+trusted GQA n=1000 diagnostic landed at `43.100` for Qwen scale-1.05 versus
+`43.700` for the V3 robust incumbent on the same slice. Treat promotion as on
+hold pending the GQA-slice decision; see
+`experiments/v9_qwen/confirmation_results.md`.
 
 ## Promotion Gates
 

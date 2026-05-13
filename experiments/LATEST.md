@@ -1,6 +1,6 @@
 # Latest Experiment Snapshot
 
-Last updated: 2026-05-12
+Last updated: 2026-05-13
 
 This is the quick index for agents who need the current story without reading
 every historical ledger.
@@ -22,7 +22,25 @@ Primary ledger:
 
 - `experiments/v9_qwen/results.md`
 - `experiments/v9_qwen/confirm.md`
+- `experiments/v9_qwen/confirmation_results.md`
+- `experiments/v10_qwen/plan.md`
+- `experiments/v10_qwen/ceiling_results.md`
 - `docs/STATUS.md`
+
+## Latest V10 Ceiling Note
+
+The 2026-05-13 V10 Qwen3 ceiling search did not produce a promotable
+successor. The best true GQA mover was learned 2D patch features at `44.5`,
+but that branch damaged corrupted-image controls. The final gated
+visual-cross-attention branch stayed at `43.4` GQA on early screens and was
+stopped at checkpoint-50. See `experiments/v10_qwen/ceiling_results.md`.
+
+## Latest Confirmation Note
+
+The 2026-05-12 materialized no-override bundle reproduced the canonical pass
+set, but a larger trusted GQA n=1000 diagnostic landed at `43.100` for Qwen
+scale-1.05 versus `43.700` for V3 robust on the same slice. Promotion is on hold
+pending the GQA-slice decision.
 
 ## Final V9 Gate Results
 
@@ -42,6 +60,7 @@ Primary ledger:
 
 | Campaign | Where to read | Current interpretation |
 | --- | --- | --- |
+| V10 Qwen ceiling search | `experiments/v10_qwen/` | No promotable successor; V9/Batch-A remains the active Qwen family. |
 | V9 Qwen Connection V2 | `experiments/v9_qwen/` | Current promoted candidate. |
 | V8 Qwen decoder swap | `experiments/v8_qwen/` | Integration and compute-matched Qwen groundwork. |
 | V7/V6 controls | `experiments/v7/`, `docs/V6_*` | LLaMA-side controls and causal falsification context. |
