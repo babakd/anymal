@@ -86,6 +86,19 @@ class PerceiverResampler(nn.Module):
         dropout: float = 0.0,
         output_scale: float = 1.0,
         output_gate_init: Optional[float] = None,
+        trainable_scale_mode: str = "none",
+        use_2d_patch_position_features: bool = False,
+        patch_position_feature_type: Optional[str] = None,
+        patch_position_grid_size: int = 32,
+        patch_position_mlp_hidden_dim: int = 128,
+        query_conditioned_visual_scale_mode: str = "none",
+        query_conditioned_visual_scale_min: float = 0.95,
+        query_conditioned_visual_scale_max: float = 1.15,
+        query_conditioned_visual_scale_init: Optional[float] = None,
+        query_conditioned_patch_selector_mode: str = "none",
+        query_conditioned_patch_selector_hidden_dim: int = 256,
+        query_conditioned_patch_selector_max_residual: float = 0.25,
+        query_conditioned_patch_selector_normalize_mean: bool = True,
     ):
         super().__init__()
 
@@ -93,9 +106,83 @@ class PerceiverResampler(nn.Module):
         self.output_dim = output_dim
         self.num_latents = num_latents
         self.num_layers = num_layers
+        self.patch_position_feature_type = self._normalize_patch_position_feature_type(
+            patch_position_feature_type,
+            use_2d_patch_position_features=use_2d_patch_position_features,
+        )
+        self.use_2d_patch_position_features = self.patch_position_feature_type != "none"
+        self.patch_position_grid_size = int(patch_position_grid_size)
+        if self.patch_position_grid_size <= 0:
+            raise ValueError(
+                "patch_position_grid_size must be > 0, "
+                f"got {patch_position_grid_size}"
+            )
+        self.patch_position_mlp_hidden_dim = int(patch_position_mlp_hidden_dim)
+        if self.patch_position_mlp_hidden_dim <= 0:
+            raise ValueError(
+                "patch_position_mlp_hidden_dim must be > 0, "
+                f"got {patch_position_mlp_hidden_dim}"
+            )
         self.output_scale = float(output_scale)
         if self.output_scale <= 0:
             raise ValueError(f"output_scale must be > 0, got {output_scale}")
+        self.query_conditioned_visual_scale_mode = (
+            str(query_conditioned_visual_scale_mode or "none").strip().lower()
+        )
+        if self.query_conditioned_visual_scale_mode in {"off", "false", "0"}:
+            self.query_conditioned_visual_scale_mode = "none"
+        if self.query_conditioned_visual_scale_mode not in {"none", "scalar", "per_token"}:
+            raise ValueError(
+                "query_conditioned_visual_scale_mode must be one of 'none', "
+                f"'scalar', or 'per_token', got {query_conditioned_visual_scale_mode!r}"
+            )
+        self.query_conditioned_patch_selector_mode = (
+            str(query_conditioned_patch_selector_mode or "none").strip().lower().replace("-", "_")
+        )
+        if self.query_conditioned_patch_selector_mode in {"off", "false", "0"}:
+            self.query_conditioned_patch_selector_mode = "none"
+        if self.query_conditioned_patch_selector_mode in {"on", "true", "1", "residual"}:
+            self.query_conditioned_patch_selector_mode = "residual_mlp"
+        if self.query_conditioned_patch_selector_mode not in {"none", "residual_mlp"}:
+            raise ValueError(
+                "query_conditioned_patch_selector_mode must be one of 'none' "
+                f"or 'residual_mlp', got {query_conditioned_patch_selector_mode!r}"
+            )
+        self.query_conditioned_patch_selector_hidden_dim = int(
+            query_conditioned_patch_selector_hidden_dim
+        )
+        if self.query_conditioned_patch_selector_hidden_dim <= 0:
+            raise ValueError(
+                "query_conditioned_patch_selector_hidden_dim must be > 0, "
+                f"got {query_conditioned_patch_selector_hidden_dim}"
+            )
+        self.query_conditioned_patch_selector_max_residual = float(
+            query_conditioned_patch_selector_max_residual
+        )
+        if not 0.0 < self.query_conditioned_patch_selector_max_residual < 1.0:
+            raise ValueError(
+                "query_conditioned_patch_selector_max_residual must be between "
+                f"0 and 1, got {query_conditioned_patch_selector_max_residual}"
+            )
+        self.query_conditioned_patch_selector_normalize_mean = bool(
+            query_conditioned_patch_selector_normalize_mean
+        )
+        self.trainable_scale_mode = str(trainable_scale_mode or "none").strip().lower()
+        if self.trainable_scale_mode in {"off", "false", "0"}:
+            self.trainable_scale_mode = "none"
+        if self.trainable_scale_mode not in {"none", "global", "per_token"}:
+            raise ValueError(
+                "trainable_scale_mode must be one of 'none', 'global', or "
+                f"'per_token', got {trainable_scale_mode!r}"
+            )
+        if self.trainable_scale_mode == "global":
+            self.trainable_output_log_scale = nn.Parameter(torch.zeros(()))
+        elif self.trainable_scale_mode == "per_token":
+            self.trainable_output_log_scale = nn.Parameter(
+                torch.zeros(num_latents, 1)
+            )
+        else:
+            self.register_parameter("trainable_output_log_scale", None)
         self.output_gate_init = None if output_gate_init is None else float(output_gate_init)
         if self.output_gate_init is not None:
             if not 0.0 < self.output_gate_init < 1.0:
@@ -107,6 +194,68 @@ class PerceiverResampler(nn.Module):
             self.output_gate_logit = nn.Parameter(gate_logit)
         else:
             self.output_gate_logit = None
+
+        if self.patch_position_feature_type == "learned_table":
+            self.patch_position_embedding = nn.Parameter(
+                torch.zeros(
+                    self.patch_position_grid_size,
+                    self.patch_position_grid_size,
+                    input_dim,
+                )
+            )
+        else:
+            self.register_parameter("patch_position_embedding", None)
+        if self.patch_position_feature_type == "coord_mlp":
+            self.patch_position_mlp = nn.Sequential(
+                nn.Linear(5, self.patch_position_mlp_hidden_dim),
+                nn.GELU(),
+                nn.Linear(self.patch_position_mlp_hidden_dim, input_dim),
+            )
+            nn.init.zeros_(self.patch_position_mlp[-1].weight)
+            nn.init.zeros_(self.patch_position_mlp[-1].bias)
+        else:
+            self.patch_position_mlp = None
+        if self.query_conditioned_visual_scale_mode != "none":
+            self.query_visual_scale = QueryConditionedVisualScale(
+                condition_dim=output_dim,
+                num_latents=num_latents,
+                mode=self.query_conditioned_visual_scale_mode,
+                min_scale=query_conditioned_visual_scale_min,
+                max_scale=query_conditioned_visual_scale_max,
+                init_scale=(
+                    self.output_scale
+                    if query_conditioned_visual_scale_init is None
+                    else float(query_conditioned_visual_scale_init)
+                ),
+            )
+        else:
+            self.query_visual_scale = None
+        self.query_conditioned_visual_scale_min = (
+            None
+            if self.query_visual_scale is None
+            else self.query_visual_scale.min_scale
+        )
+        self.query_conditioned_visual_scale_max = (
+            None
+            if self.query_visual_scale is None
+            else self.query_visual_scale.max_scale
+        )
+        self.query_conditioned_visual_scale_init = (
+            None
+            if self.query_visual_scale is None
+            else self.query_visual_scale.init_scale
+        )
+        self._last_query_visual_scale = None
+        if self.query_conditioned_patch_selector_mode != "none":
+            self.query_patch_selector = QueryConditionedPatchSelector(
+                condition_dim=output_dim,
+                input_dim=input_dim,
+                hidden_dim=self.query_conditioned_patch_selector_hidden_dim,
+                max_residual=self.query_conditioned_patch_selector_max_residual,
+                normalize_mean=self.query_conditioned_patch_selector_normalize_mean,
+            )
+        else:
+            self.query_patch_selector = None
 
         # Learnable latent queries
         # These are the "questions" we ask about the image
@@ -137,12 +286,228 @@ class PerceiverResampler(nn.Module):
         multiplier = self.output_scale
         if self.output_gate_logit is not None:
             multiplier = multiplier * torch.sigmoid(self.output_gate_logit)
+        if self.trainable_output_log_scale is not None:
+            multiplier = multiplier * torch.exp(self.trainable_output_log_scale)
         return multiplier
+
+    @staticmethod
+    def _normalize_patch_position_feature_type(
+        feature_type: Optional[str],
+        use_2d_patch_position_features: bool = False,
+    ) -> str:
+        if feature_type is None:
+            return "learned_table" if use_2d_patch_position_features else "none"
+        value = str(feature_type).strip().lower().replace("-", "_")
+        if value in {"", "auto"}:
+            return "learned_table" if use_2d_patch_position_features else "none"
+        if value in {"none", "off", "false", "0"}:
+            return "none"
+        if value in {"table", "learned", "learned_table", "embedding"}:
+            return "learned_table"
+        if value in {"coord", "coords", "coordinate", "coordinates", "coord_mlp", "coordinate_mlp"}:
+            return "coord_mlp"
+        raise ValueError(
+            "patch_position_feature_type must be one of 'none', "
+            "'learned_table', or 'coord_mlp', got "
+            f"{feature_type!r}"
+        )
+
+    @staticmethod
+    def _infer_square_grid(num_tokens: int) -> tuple[int, Optional[int], Optional[int]]:
+        """Return (prefix_tokens, height, width) for square ViT patch layouts."""
+        side = int(math.isqrt(num_tokens))
+        if side * side == num_tokens:
+            return 0, side, side
+
+        side = int(math.isqrt(max(num_tokens - 1, 0)))
+        if side * side == num_tokens - 1:
+            return 1, side, side
+
+        return 0, None, None
+
+    @staticmethod
+    def _coordinate_features_for_grid(
+        height: int,
+        width: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        y = torch.linspace(-1.0, 1.0, height, device=device, dtype=dtype)
+        x = torch.linspace(-1.0, 1.0, width, device=device, dtype=dtype)
+        yy, xx = torch.meshgrid(y, x, indexing="ij")
+        coords = torch.stack([xx, yy, xx.square(), yy.square(), xx * yy], dim=-1)
+        return coords.reshape(1, height * width, 5)
+
+    def _coordinate_features_for_tokens(
+        self,
+        num_tokens: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        prefix_tokens, height, width = self._infer_square_grid(num_tokens)
+        if height is not None and width is not None:
+            coords = self._coordinate_features_for_grid(height, width, device, dtype)
+            if prefix_tokens:
+                prefix = torch.zeros(
+                    1,
+                    prefix_tokens,
+                    5,
+                    device=device,
+                    dtype=dtype,
+                )
+                coords = torch.cat([prefix, coords], dim=1)
+            return coords
+
+        x = torch.linspace(-1.0, 1.0, num_tokens, device=device, dtype=dtype)
+        y = torch.zeros_like(x)
+        coords = torch.stack([x, y, x.square(), y.square(), x * y], dim=-1)
+        return coords.unsqueeze(0)
+
+    def _learned_patch_position_features(
+        self,
+        batch_size: int,
+        num_tokens: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        if self.patch_position_embedding is None:
+            raise RuntimeError(
+                "Patch position features requested without a position table"
+            )
+
+        table = self.patch_position_embedding.to(device=device)
+        prefix_tokens, height, width = self._infer_square_grid(num_tokens)
+        if height is not None and width is not None:
+            table_4d = table.permute(2, 0, 1).unsqueeze(0)
+            if (
+                height != self.patch_position_grid_size
+                or width != self.patch_position_grid_size
+            ):
+                table_4d = F.interpolate(
+                    table_4d,
+                    size=(height, width),
+                    mode="bilinear",
+                    align_corners=True,
+                )
+            positions = (
+                table_4d.squeeze(0)
+                .permute(1, 2, 0)
+                .reshape(1, height * width, self.input_dim)
+            )
+            if prefix_tokens:
+                prefix = torch.zeros(
+                    1,
+                    prefix_tokens,
+                    self.input_dim,
+                    device=device,
+                    dtype=positions.dtype,
+                )
+                positions = torch.cat([prefix, positions], dim=1)
+        else:
+            flat = table.reshape(-1, self.input_dim).transpose(0, 1).unsqueeze(0)
+            flat = F.interpolate(
+                flat,
+                size=num_tokens,
+                mode="linear",
+                align_corners=True,
+            )
+            positions = flat.squeeze(0).transpose(0, 1).unsqueeze(0)
+
+        return positions.to(device=device, dtype=dtype).expand(batch_size, -1, -1)
+
+    def _coord_mlp_patch_position_features(
+        self,
+        batch_size: int,
+        num_tokens: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        if self.patch_position_mlp is None:
+            raise RuntimeError(
+                "Coordinate patch position features requested without a position MLP"
+            )
+        coords = self._coordinate_features_for_tokens(
+            num_tokens=num_tokens,
+            device=device,
+            dtype=dtype,
+        )
+        mlp_dtype = self.patch_position_mlp[0].weight.dtype
+        features = self.patch_position_mlp(coords.to(dtype=mlp_dtype))
+        return features.to(device=device, dtype=dtype).expand(batch_size, -1, -1)
+
+    def _add_patch_position_features(self, x: torch.Tensor) -> torch.Tensor:
+        if self.patch_position_feature_type == "none":
+            return x
+        kwargs = {
+            "batch_size": x.shape[0],
+            "num_tokens": x.shape[1],
+            "device": x.device,
+            "dtype": x.dtype,
+        }
+        if self.patch_position_feature_type == "learned_table":
+            return x + self._learned_patch_position_features(**kwargs)
+        if self.patch_position_feature_type == "coord_mlp":
+            return x + self._coord_mlp_patch_position_features(**kwargs)
+        raise RuntimeError(
+            f"Unsupported patch_position_feature_type={self.patch_position_feature_type!r}"
+        )
+
+    def _apply_query_patch_selector(
+        self,
+        patches: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        question_summary: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if self.query_patch_selector is None:
+            return patches
+        return self.query_patch_selector(
+            patches,
+            question_summary=question_summary,
+            attention_mask=attention_mask,
+        )
+
+    def _apply_query_visual_scale(
+        self,
+        image_tokens: torch.Tensor,
+        question_summary: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        self._last_query_visual_scale = None
+        if self.query_visual_scale is None:
+            return image_tokens
+
+        scale = self.query_visual_scale(
+            question_summary,
+            batch_size=image_tokens.shape[0],
+            device=image_tokens.device,
+            dtype=image_tokens.dtype,
+        )
+        self._last_query_visual_scale = scale.detach()
+        return image_tokens * (scale / self.output_scale)
+
+    def get_query_visual_scale_diagnostics(self) -> dict[str, float]:
+        scale = self._last_query_visual_scale
+        if scale is None:
+            return {}
+        scale = scale.detach().float()
+        return {
+            "train/query_visual_scale_mean": float(scale.mean().item()),
+            "train/query_visual_scale_min": float(scale.min().item()),
+            "train/query_visual_scale_max": float(scale.max().item()),
+            "train/effective_connector_output_scale_mean": float(scale.mean().item()),
+            "train/effective_connector_output_scale_min": float(scale.min().item()),
+            "train/effective_connector_output_scale_max": float(scale.max().item()),
+        }
+
+    def get_query_patch_selector_diagnostics(self) -> dict[str, float]:
+        if self.query_patch_selector is None:
+            return {}
+        return self.query_patch_selector.get_diagnostics()
 
     def forward(
         self,
         x: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        question_summary: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Project vision features to LLM token space.
@@ -162,9 +527,11 @@ class PerceiverResampler(nn.Module):
         """
         batch_size = x.shape[0]
 
+        x = self._apply_query_patch_selector(x, attention_mask, question_summary)
+
         # Project input features to output dimension
         # [B, num_patches, input_dim] -> [B, num_patches, output_dim]
-        context = self.input_proj(x)
+        context = self.input_proj(self._add_patch_position_features(x))
 
         # Expand learnable latents for the batch
         # [num_latents, output_dim] -> [B, num_latents, output_dim]
@@ -175,7 +542,8 @@ class PerceiverResampler(nn.Module):
             latents = layer(latents, context, attention_mask)
 
         # Final normalization
-        return self.norm(latents) * self._output_multiplier()
+        image_tokens = self.norm(latents) * self._output_multiplier()
+        return self._apply_query_visual_scale(image_tokens, question_summary)
 
     def get_num_params(self) -> int:
         """Return total number of trainable parameters."""
@@ -203,6 +571,19 @@ class QuestionConditionedPerceiverResampler(PerceiverResampler):
         dropout: float = 0.0,
         output_scale: float = 1.0,
         output_gate_init: Optional[float] = None,
+        trainable_scale_mode: str = "none",
+        use_2d_patch_position_features: bool = False,
+        patch_position_feature_type: Optional[str] = None,
+        patch_position_grid_size: int = 32,
+        patch_position_mlp_hidden_dim: int = 128,
+        query_conditioned_visual_scale_mode: str = "none",
+        query_conditioned_visual_scale_min: float = 0.95,
+        query_conditioned_visual_scale_max: float = 1.15,
+        query_conditioned_visual_scale_init: Optional[float] = None,
+        query_conditioned_patch_selector_mode: str = "none",
+        query_conditioned_patch_selector_hidden_dim: int = 256,
+        query_conditioned_patch_selector_max_residual: float = 0.25,
+        query_conditioned_patch_selector_normalize_mean: bool = True,
         condition_dim: Optional[int] = None,
         condition_scale_init: float = 0.02,
     ):
@@ -216,6 +597,19 @@ class QuestionConditionedPerceiverResampler(PerceiverResampler):
             dropout=dropout,
             output_scale=output_scale,
             output_gate_init=output_gate_init,
+            trainable_scale_mode=trainable_scale_mode,
+            use_2d_patch_position_features=use_2d_patch_position_features,
+            patch_position_feature_type=patch_position_feature_type,
+            patch_position_grid_size=patch_position_grid_size,
+            patch_position_mlp_hidden_dim=patch_position_mlp_hidden_dim,
+            query_conditioned_visual_scale_mode=query_conditioned_visual_scale_mode,
+            query_conditioned_visual_scale_min=query_conditioned_visual_scale_min,
+            query_conditioned_visual_scale_max=query_conditioned_visual_scale_max,
+            query_conditioned_visual_scale_init=query_conditioned_visual_scale_init,
+            query_conditioned_patch_selector_mode=query_conditioned_patch_selector_mode,
+            query_conditioned_patch_selector_hidden_dim=query_conditioned_patch_selector_hidden_dim,
+            query_conditioned_patch_selector_max_residual=query_conditioned_patch_selector_max_residual,
+            query_conditioned_patch_selector_normalize_mean=query_conditioned_patch_selector_normalize_mean,
         )
         self.condition_dim = int(condition_dim or output_dim)
         self.condition_norm = nn.LayerNorm(self.condition_dim)
@@ -262,14 +656,173 @@ class QuestionConditionedPerceiverResampler(PerceiverResampler):
             question_summary: Optional pooled prompt/context embedding [B, H]
         """
         batch_size = x.shape[0]
-        context = self.input_proj(x)
+        x = self._apply_query_patch_selector(x, attention_mask, question_summary)
+        context = self.input_proj(self._add_patch_position_features(x))
         latents = self.latents.unsqueeze(0).expand(batch_size, -1, -1)
         latents = self._condition_latents(latents, question_summary)
 
         for layer in self.layers:
             latents = layer(latents, context, attention_mask)
 
-        return self.norm(latents) * self._output_multiplier()
+        image_tokens = self.norm(latents) * self._output_multiplier()
+        return self._apply_query_visual_scale(image_tokens, question_summary)
+
+
+class QueryConditionedVisualScale(nn.Module):
+    """Bounded query-conditioned absolute visual scale for D1/D2."""
+
+    def __init__(
+        self,
+        condition_dim: int,
+        num_latents: int,
+        mode: str,
+        min_scale: float,
+        max_scale: float,
+        init_scale: float,
+    ):
+        super().__init__()
+        self.mode = str(mode).strip().lower()
+        if self.mode not in {"scalar", "per_token"}:
+            raise ValueError(f"Unsupported query visual scale mode: {mode!r}")
+        self.min_scale = float(min_scale)
+        self.max_scale = float(max_scale)
+        self.init_scale = float(init_scale)
+        if not self.min_scale < self.max_scale:
+            raise ValueError(
+                "query visual scale bounds must satisfy min < max, got "
+                f"{self.min_scale} >= {self.max_scale}"
+            )
+        if not self.min_scale < self.init_scale < self.max_scale:
+            raise ValueError(
+                "query visual scale init must be strictly inside bounds, got "
+                f"init={self.init_scale}, bounds=({self.min_scale}, {self.max_scale})"
+            )
+
+        output_dim = 1 if self.mode == "scalar" else int(num_latents)
+        self.norm = nn.LayerNorm(condition_dim)
+        self.proj = nn.Linear(condition_dim, output_dim)
+        nn.init.zeros_(self.proj.weight)
+        ratio = (self.init_scale - self.min_scale) / (self.max_scale - self.min_scale)
+        init_logit = torch.logit(torch.tensor(ratio, dtype=torch.float32))
+        nn.init.constant_(self.proj.bias, float(init_logit.item()))
+
+    def forward(
+        self,
+        question_summary: Optional[torch.Tensor],
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        if question_summary is None:
+            shape = (batch_size, 1, 1) if self.mode == "scalar" else (batch_size, self.proj.out_features, 1)
+            return torch.full(
+                shape,
+                self.init_scale,
+                device=device,
+                dtype=dtype,
+            )
+
+        summary = question_summary.to(
+            device=device,
+            dtype=self.norm.weight.dtype,
+        )
+        logits = self.proj(self.norm(summary))
+        scale = self.min_scale + (self.max_scale - self.min_scale) * torch.sigmoid(logits)
+        if self.mode == "scalar":
+            scale = scale.view(scale.shape[0], 1, 1)
+        else:
+            scale = scale.unsqueeze(-1)
+        return scale.to(device=device, dtype=dtype)
+
+
+class QueryConditionedPatchSelector(nn.Module):
+    """Neutral bounded query-conditioned residual patch weighting for D3."""
+
+    def __init__(
+        self,
+        condition_dim: int,
+        input_dim: int,
+        hidden_dim: int,
+        max_residual: float,
+        normalize_mean: bool = True,
+    ):
+        super().__init__()
+        self.condition_dim = int(condition_dim)
+        self.input_dim = int(input_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.max_residual = float(max_residual)
+        self.normalize_mean = bool(normalize_mean)
+        if self.hidden_dim <= 0:
+            raise ValueError(f"hidden_dim must be > 0, got {hidden_dim}")
+        if not 0.0 < self.max_residual < 1.0:
+            raise ValueError(
+                f"max_residual must be between 0 and 1, got {max_residual}"
+            )
+
+        self.patch_norm = nn.LayerNorm(self.input_dim)
+        self.condition_norm = nn.LayerNorm(self.condition_dim)
+        self.condition_proj = nn.Linear(self.condition_dim, self.input_dim)
+        self.score_mlp = nn.Sequential(
+            nn.Linear(self.input_dim, self.hidden_dim),
+            nn.GELU(),
+            nn.Linear(self.hidden_dim, 1),
+        )
+        nn.init.zeros_(self.score_mlp[-1].weight)
+        nn.init.zeros_(self.score_mlp[-1].bias)
+        self._last_patch_weights = None
+
+    def forward(
+        self,
+        patches: torch.Tensor,
+        question_summary: Optional[torch.Tensor],
+        attention_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        self._last_patch_weights = None
+        if question_summary is None:
+            return patches
+
+        module_dtype = self.patch_norm.weight.dtype
+        patch_features = self.patch_norm(patches.to(dtype=module_dtype))
+        summary = question_summary.to(device=patches.device, dtype=module_dtype)
+        condition = self.condition_proj(self.condition_norm(summary)).unsqueeze(1)
+        logits = self.score_mlp(torch.tanh(patch_features + condition)).squeeze(-1)
+        weights = 1.0 + self.max_residual * torch.tanh(logits)
+
+        if attention_mask is not None:
+            valid = attention_mask.to(device=patches.device, dtype=torch.bool)
+            weights = torch.where(valid, weights, torch.ones_like(weights))
+        else:
+            valid = None
+
+        if self.normalize_mean:
+            if valid is None:
+                mean = weights.mean(dim=1, keepdim=True).clamp_min(1e-6)
+            else:
+                valid_f = valid.to(dtype=weights.dtype)
+                denom = valid_f.sum(dim=1, keepdim=True).clamp_min(1.0)
+                mean = (weights * valid_f).sum(dim=1, keepdim=True) / denom
+                mean = mean.clamp_min(1e-6)
+            normalized = weights / mean
+            if valid is not None:
+                weights = torch.where(valid, normalized, torch.ones_like(weights))
+            else:
+                weights = normalized
+
+        weights = weights.to(device=patches.device, dtype=patches.dtype).unsqueeze(-1)
+        self._last_patch_weights = weights.detach()
+        return patches * weights
+
+    def get_diagnostics(self) -> dict[str, float]:
+        weights = self._last_patch_weights
+        if weights is None:
+            return {}
+        weights = weights.detach().float()
+        return {
+            "train/query_patch_weight_mean": float(weights.mean().item()),
+            "train/query_patch_weight_min": float(weights.min().item()),
+            "train/query_patch_weight_max": float(weights.max().item()),
+            "train/query_patch_weight_std": float(weights.std().item()),
+        }
 
 
 class PerceiverResamplerBlock(nn.Module):

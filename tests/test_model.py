@@ -125,6 +125,283 @@ class TestPerceiverResampler:
         assert num_params > 1_000_000, \
             f"Expected >1M params, got {num_params}"
 
+    def test_zero_initialized_2d_patch_features_preserve_output(self):
+        """C1 position features should be an exact zero warm-start."""
+        from models.projectors.perceiver_resampler import PerceiverResampler
+
+        torch.manual_seed(11)
+        base = PerceiverResampler(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+        )
+        c1 = PerceiverResampler(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+            use_2d_patch_position_features=True,
+            patch_position_grid_size=4,
+        )
+        incompatible = c1.load_state_dict(base.state_dict(), strict=False)
+
+        assert incompatible.missing_keys == ["patch_position_embedding"]
+        assert incompatible.unexpected_keys == []
+        assert torch.count_nonzero(c1.patch_position_embedding).item() == 0
+
+        x = torch.randn(2, 17, 8)
+        base.eval()
+        c1.eval()
+        with torch.no_grad():
+            assert torch.equal(base(x), c1(x))
+
+    def test_2d_patch_features_support_non_square_token_count(self):
+        from models.projectors.perceiver_resampler import PerceiverResampler
+
+        resampler = PerceiverResampler(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+            use_2d_patch_position_features=True,
+            patch_position_grid_size=4,
+        )
+        output = resampler(torch.randn(2, 11, 8))
+
+        assert output.shape == (2, 4, 16)
+
+    def test_zero_initialized_coordinate_patch_features_preserve_output(self):
+        """C2 coordinate MLP should also be an exact zero warm-start."""
+        from models.projectors.perceiver_resampler import PerceiverResampler
+
+        torch.manual_seed(12)
+        base = PerceiverResampler(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+        )
+        c2 = PerceiverResampler(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+            patch_position_feature_type="coord_mlp",
+            patch_position_mlp_hidden_dim=6,
+        )
+        incompatible = c2.load_state_dict(base.state_dict(), strict=False)
+
+        assert set(incompatible.missing_keys) == {
+            "patch_position_mlp.0.weight",
+            "patch_position_mlp.0.bias",
+            "patch_position_mlp.2.weight",
+            "patch_position_mlp.2.bias",
+        }
+        assert incompatible.unexpected_keys == []
+        assert c2.patch_position_embedding is None
+        assert c2.patch_position_feature_type == "coord_mlp"
+        assert torch.count_nonzero(c2.patch_position_mlp[-1].weight).item() == 0
+        assert torch.count_nonzero(c2.patch_position_mlp[-1].bias).item() == 0
+
+        x = torch.randn(2, 17, 8)
+        base.eval()
+        c2.eval()
+        with torch.no_grad():
+            assert torch.equal(base(x), c2(x))
+
+    def test_coordinate_patch_features_support_non_square_token_count(self):
+        from models.projectors.perceiver_resampler import PerceiverResampler
+
+        resampler = PerceiverResampler(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+            patch_position_feature_type="coord_mlp",
+            patch_position_mlp_hidden_dim=6,
+        )
+        output = resampler(torch.randn(2, 11, 8))
+
+        assert output.shape == (2, 4, 16)
+
+    def test_query_conditioned_scalar_scale_preserves_output_at_init(self):
+        from models.projectors.perceiver_resampler import PerceiverResampler
+
+        torch.manual_seed(13)
+        base = PerceiverResampler(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+            output_scale=1.05,
+        )
+        d1 = PerceiverResampler(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+            output_scale=1.05,
+            query_conditioned_visual_scale_mode="scalar",
+            query_conditioned_visual_scale_min=0.95,
+            query_conditioned_visual_scale_max=1.15,
+            query_conditioned_visual_scale_init=1.05,
+        )
+        incompatible = d1.load_state_dict(base.state_dict(), strict=False)
+
+        assert set(incompatible.missing_keys) == {
+            "query_visual_scale.norm.weight",
+            "query_visual_scale.norm.bias",
+            "query_visual_scale.proj.weight",
+            "query_visual_scale.proj.bias",
+        }
+        assert incompatible.unexpected_keys == []
+
+        x = torch.randn(2, 17, 8)
+        question_summary = torch.randn(2, 16)
+        base.eval()
+        d1.eval()
+        with torch.no_grad():
+            assert torch.equal(base(x), d1(x, question_summary=question_summary))
+
+    def test_query_conditioned_per_token_scale_is_bounded_and_query_dependent(self):
+        from models.projectors.perceiver_resampler import PerceiverResampler
+
+        resampler = PerceiverResampler(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+            output_scale=1.05,
+            query_conditioned_visual_scale_mode="per_token",
+            query_conditioned_visual_scale_min=0.95,
+            query_conditioned_visual_scale_max=1.15,
+            query_conditioned_visual_scale_init=1.05,
+        )
+        with torch.no_grad():
+            resampler.query_visual_scale.proj.weight.zero_()
+            resampler.query_visual_scale.proj.weight[:, 0] = 4.0
+
+        question_summary = torch.tensor(
+            [
+                [2.0] + [0.0] * 15,
+                [-2.0] + [0.0] * 15,
+            ]
+        )
+        scale = resampler.query_visual_scale(
+            question_summary,
+            batch_size=2,
+            device=question_summary.device,
+            dtype=question_summary.dtype,
+        )
+
+        assert scale.shape == (2, 4, 1)
+        assert torch.all(scale >= 0.95)
+        assert torch.all(scale <= 1.15)
+        assert not torch.equal(scale[0], scale[1])
+
+    def test_query_conditioned_patch_selector_preserves_output_at_init(self):
+        from models.projectors.perceiver_resampler import PerceiverResampler
+
+        torch.manual_seed(17)
+        base = PerceiverResampler(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+            output_scale=1.05,
+        )
+        d3 = PerceiverResampler(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+            output_scale=1.05,
+            query_conditioned_patch_selector_mode="residual_mlp",
+            query_conditioned_patch_selector_hidden_dim=6,
+            query_conditioned_patch_selector_max_residual=0.25,
+        )
+        incompatible = d3.load_state_dict(base.state_dict(), strict=False)
+
+        assert set(incompatible.missing_keys) == {
+            "query_patch_selector.patch_norm.weight",
+            "query_patch_selector.patch_norm.bias",
+            "query_patch_selector.condition_norm.weight",
+            "query_patch_selector.condition_norm.bias",
+            "query_patch_selector.condition_proj.weight",
+            "query_patch_selector.condition_proj.bias",
+            "query_patch_selector.score_mlp.0.weight",
+            "query_patch_selector.score_mlp.0.bias",
+            "query_patch_selector.score_mlp.2.weight",
+            "query_patch_selector.score_mlp.2.bias",
+        }
+        assert incompatible.unexpected_keys == []
+
+        x = torch.randn(2, 17, 8)
+        question_summary = torch.randn(2, 16)
+        base.eval()
+        d3.eval()
+        with torch.no_grad():
+            assert torch.equal(base(x), d3(x, question_summary=question_summary))
+            weights = d3.query_patch_selector._last_patch_weights
+            assert torch.equal(weights, torch.ones_like(weights))
+
+    def test_query_conditioned_patch_selector_is_bounded_and_query_dependent(self):
+        from models.projectors.perceiver_resampler import QueryConditionedPatchSelector
+
+        selector = QueryConditionedPatchSelector(
+            condition_dim=8,
+            input_dim=4,
+            hidden_dim=6,
+            max_residual=0.25,
+            normalize_mean=False,
+        )
+        with torch.no_grad():
+            selector.condition_proj.weight.zero_()
+            selector.condition_proj.bias.zero_()
+            selector.score_mlp[0].weight.zero_()
+            selector.score_mlp[0].bias.zero_()
+            selector.score_mlp[0].weight[:, 0] = 1.0
+            selector.score_mlp[2].weight.fill_(1.0)
+            selector.score_mlp[2].bias.zero_()
+
+        patches = torch.tensor(
+            [
+                [[2.0, 0.0, 0.0, 0.0], [-2.0, 0.0, 0.0, 0.0]],
+                [[-2.0, 0.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0]],
+            ]
+        )
+        question_summary = torch.zeros(2, 8)
+        out = selector(patches, question_summary=question_summary)
+        weights = selector._last_patch_weights
+
+        assert out.shape == patches.shape
+        assert torch.all(weights >= 0.75)
+        assert torch.all(weights <= 1.25)
+        assert not torch.equal(weights[0], weights[1])
+
     def test_question_conditioned_output_shape(self):
         """Question-conditioned resampler preserves the fixed visual-token contract."""
         from models.projectors.perceiver_resampler import QuestionConditionedPerceiverResampler
@@ -163,6 +440,47 @@ class TestPerceiverResampler:
         out_b = resampler(x, question_summary=torch.ones(1, 32))
 
         assert not torch.allclose(out_a, out_b)
+
+
+class TestGatedVisualCrossAttentionAdapter:
+    """Tests for E1 gated visual cross-attention adapters."""
+
+    def test_zero_gate_preserves_hidden_states(self):
+        from models.visual_cross_attention import GatedVisualCrossAttentionAdapter
+
+        torch.manual_seed(21)
+        adapter = GatedVisualCrossAttentionAdapter(
+            hidden_size=16,
+            num_heads=4,
+            gate_init=0.0,
+        )
+        hidden = torch.randn(2, 5, 16)
+        visual = torch.randn(2, 7, 16)
+
+        with torch.no_grad():
+            out = adapter(hidden, visual)
+
+        assert torch.equal(out, hidden)
+
+    def test_nonzero_gate_is_visual_dependent(self):
+        from models.visual_cross_attention import GatedVisualCrossAttentionAdapter
+
+        torch.manual_seed(22)
+        adapter = GatedVisualCrossAttentionAdapter(
+            hidden_size=16,
+            num_heads=4,
+            gate_init=0.25,
+        )
+        hidden = torch.randn(2, 5, 16)
+        visual_a = torch.randn(2, 7, 16)
+        visual_b = torch.randn(2, 7, 16)
+
+        out_a = adapter(hidden, visual_a)
+        out_b = adapter(hidden, visual_b)
+
+        assert out_a.shape == hidden.shape
+        assert not torch.equal(out_a, hidden)
+        assert not torch.equal(out_a, out_b)
 
 
 class TestSpatialPerceiverResampler:

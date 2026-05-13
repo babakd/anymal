@@ -65,10 +65,16 @@ class PretrainConfig(TrainerConfig):
     connector_rms_regularizer_alpha: float = 0.0
     connector_rms_regularizer_eps: float = 1e-6
     connector_rms_regularizer_target: str = "batch_text"
+    connector_scale_only_training: bool = False
+    connector_trainable_prefixes: Tuple[str, ...] = ()
     connector_warmup_trainable_prefixes: Tuple[str, ...] = (
         "projector.output_proj",
         "projector.output_gate_logit",
+        "projector.trainable_output_log_scale",
     )
+    contrastive_answer_suppression: bool = False
+    contrastive_lambda: float = 0.1
+    contrastive_margin: float = 0.5
 
     # Caption prompt for training
     caption_prompt: str = "A photo of"
@@ -108,6 +114,22 @@ class PretrainTrainer(Trainer):
     ):
         # Configure model for Stage 1
         model.set_training_stage(1)
+        self._connector_scale_only_training = bool(config.connector_scale_only_training)
+        self._connector_trainable_prefixes = self._normalize_prefixes(
+            config.connector_trainable_prefixes
+        )
+        if self._connector_scale_only_training and self._connector_trainable_prefixes:
+            raise ValueError(
+                "connector_scale_only_training and connector_trainable_prefixes "
+                "are mutually exclusive"
+            )
+        if self._connector_scale_only_training:
+            self._enable_connector_scale_only_training(model)
+        elif self._connector_trainable_prefixes:
+            self._enable_connector_prefix_only_training(
+                model,
+                self._connector_trainable_prefixes,
+            )
 
         self._connector_warmup_active = False
         self._loss_scale = float(config.loss_scale)
@@ -115,6 +137,22 @@ class PretrainTrainer(Trainer):
             raise ValueError(f"loss_scale must be > 0, got {config.loss_scale}")
         if self._loss_scale != 1.0:
             print_rank_0(f"Stage 1 loss scale: multiplying backward loss by {self._loss_scale:g}")
+        self._contrastive_answer_suppression = bool(
+            config.contrastive_answer_suppression
+        )
+        self._contrastive_lambda = float(config.contrastive_lambda)
+        self._contrastive_margin = float(config.contrastive_margin)
+        if self._contrastive_answer_suppression:
+            if self._contrastive_lambda < 0:
+                raise ValueError(
+                    "contrastive_lambda must be >= 0, "
+                    f"got {config.contrastive_lambda}"
+                )
+            print_rank_0(
+                "Stage 1 contrastive answer suppression enabled: "
+                f"lambda={self._contrastive_lambda:g}, "
+                f"margin={self._contrastive_margin:g}"
+            )
         self._loss_normalization = str(config.loss_normalization or "mean").strip().lower()
         self._loss_normalization_target_tokens = float(config.loss_normalization_target_tokens)
         self._loss_normalization_min_multiplier = float(config.loss_normalization_min_multiplier)
@@ -185,10 +223,9 @@ class PretrainTrainer(Trainer):
                 f"{self._loss_normalization_max_multiplier:g}]"
             )
         self._connector_warmup_steps = int(config.connector_warmup_steps or 0)
-        prefixes = config.connector_warmup_trainable_prefixes or ()
-        if isinstance(prefixes, str):
-            prefixes = tuple(p.strip() for p in prefixes.split(",") if p.strip())
-        self._connector_warmup_trainable_prefixes = tuple(prefixes)
+        self._connector_warmup_trainable_prefixes = self._normalize_prefixes(
+            config.connector_warmup_trainable_prefixes
+        )
         if self._connector_warmup_steps > 0:
             allowed_params = [
                 name
@@ -227,6 +264,60 @@ class PretrainTrainer(Trainer):
             eval_dataloader=eval_dataloader,
         )
 
+    def _enable_connector_scale_only_training(self, model) -> None:
+        """Freeze the connector except its opt-in trainable output scale."""
+        trainable_scale_params = []
+        for name, param in model.named_parameters():
+            if not name.startswith("projector."):
+                continue
+            keep_trainable = name == "projector.trainable_output_log_scale"
+            param.requires_grad = keep_trainable
+            if keep_trainable:
+                trainable_scale_params.append((name, param.numel()))
+
+        if not trainable_scale_params:
+            raise ValueError(
+                "connector_scale_only_training=True requires a V3 connector with "
+                "trainable_scale_mode set to 'global' or 'per_token'."
+            )
+
+        total = sum(count for _name, count in trainable_scale_params)
+        print_rank_0(
+            "Stage 1 connector scale-only training: "
+            f"{len(trainable_scale_params)} tensor(s), {total:,} parameter(s)"
+        )
+
+    def _enable_connector_prefix_only_training(
+        self,
+        model,
+        prefixes: Tuple[str, ...],
+    ) -> None:
+        """Freeze connector parameters except those matching explicit prefixes."""
+        active_params = []
+        frozen_tensors = 0
+        for name, param in model.named_parameters():
+            if not self._is_connector_param_name(name):
+                continue
+            keep_trainable = self._matches_trainable_prefix(name, prefixes)
+            param.requires_grad = keep_trainable
+            if keep_trainable:
+                active_params.append((name, param.numel()))
+            else:
+                frozen_tensors += 1
+
+        if not active_params:
+            raise ValueError(
+                "connector_trainable_prefixes was requested, but no connector "
+                f"parameters matched prefixes={prefixes}"
+            )
+
+        total = sum(count for _name, count in active_params)
+        print_rank_0(
+            "Stage 1 connector prefix-only training: "
+            f"prefixes={prefixes}, {len(active_params)} active tensor(s), "
+            f"{total:,} parameter(s), {frozen_tensors} frozen tensor(s)"
+        )
+
     def _verify_trainable_params(self, model):
         """Verify that only the projector is trainable."""
         trainable_modules = []
@@ -242,6 +333,13 @@ class PretrainTrainer(Trainer):
         adapter_modules = [model.projector]
         if hasattr(model, "token_compressor"):
             adapter_modules.append(model.token_compressor)
+        visual_cross_attention = getattr(
+            model,
+            "visual_cross_attention_adapters",
+            None,
+        )
+        if visual_cross_attention is not None:
+            adapter_modules.append(visual_cross_attention)
         adapter_params = sum(
             p.numel()
             for module in adapter_modules
@@ -316,6 +414,52 @@ class PretrainTrainer(Trainer):
             )
             raw_loss = outputs.loss
             objective_loss, objective_metrics = self._normalize_stage1_loss(raw_loss, labels)
+            if self._contrastive_answer_suppression:
+                negative_images = batch.get("negative_images")
+                if negative_images is None:
+                    raise ValueError(
+                        "contrastive_answer_suppression=True requires "
+                        "negative_images in every batch"
+                    )
+                if negative_images.ndim != 5:
+                    raise ValueError(
+                        "negative_images must have shape [B, K, 3, H, W], "
+                        f"got {list(negative_images.shape)}"
+                    )
+                logp_pos = self._answer_logp_from_logits(outputs.logits, labels)
+                num_variants = int(negative_images.shape[1])
+                contrastive_loss = torch.zeros(
+                    (), device=labels.device, dtype=objective_loss.dtype
+                )
+                contrastive_active_rate = 0.0
+                for variant_idx in range(num_variants):
+                    neg_outputs = self.model(
+                        images=negative_images[:, variant_idx],
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=None,
+                    )
+                    logp_neg = self._answer_logp_from_logits(neg_outputs.logits, labels)
+                    hinge = torch.relu(
+                        self._contrastive_margin - logp_pos + logp_neg
+                    )
+                    contrastive_loss = (
+                        contrastive_loss + hinge.mean() / max(num_variants, 1)
+                    )
+                    contrastive_active_rate += (
+                        float((hinge.detach() > 0).float().mean().item())
+                        / max(num_variants, 1)
+                    )
+                objective_loss = (
+                    objective_loss + self._contrastive_lambda * contrastive_loss
+                )
+                objective_metrics["train/contrastive_loss"] = float(
+                    contrastive_loss.detach().item()
+                )
+                objective_metrics["train/contrastive_active_rate"] = (
+                    contrastive_active_rate
+                )
+                objective_metrics["train/contrastive_variants"] = float(num_variants)
             rms_loss, rms_metrics = self._connector_rms_regularizer_loss(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -354,6 +498,24 @@ class PretrainTrainer(Trainer):
         # Return the unscaled objective loss for logging and health monitoring.
         # Raw HF token-mean loss is logged separately as train/raw_loss.
         return objective_loss.item()
+
+    @staticmethod
+    def _answer_logp_from_logits(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        shift_logits = logits[:, :-1, :]
+        shift_labels = labels[:, 1:]
+        mask = shift_labels != -100
+        safe_labels = shift_labels.masked_fill(~mask, 0)
+        token_logp = torch.log_softmax(shift_logits, dim=-1)
+        answer_logp = token_logp.gather(-1, safe_labels.unsqueeze(-1)).squeeze(-1)
+        return (answer_logp * mask).sum(dim=1)
+
+    def _prepare_eval_batch_for_model(
+        self,
+        batch: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not self._contrastive_answer_suppression or "negative_images" not in batch:
+            return batch
+        return {key: value for key, value in batch.items() if key != "negative_images"}
 
     def _connector_rms_regularizer_loss(
         self,
@@ -576,10 +738,22 @@ class PretrainTrainer(Trainer):
     def _is_connector_param_name(name: str) -> bool:
         return name.startswith("projector.") or name.startswith("token_compressor.")
 
+    @staticmethod
+    def _normalize_prefixes(prefixes: Any) -> Tuple[str, ...]:
+        if prefixes is None:
+            return ()
+        if isinstance(prefixes, str):
+            prefixes = prefixes.replace(" ", ",").split(",")
+        return tuple(str(prefix).strip() for prefix in prefixes if str(prefix).strip())
+
+    @staticmethod
+    def _matches_trainable_prefix(name: str, prefixes: Tuple[str, ...]) -> bool:
+        return any(name == prefix or name.startswith(f"{prefix}.") for prefix in prefixes)
+
     def _is_connector_warmup_trainable_param_name(self, name: str) -> bool:
-        return any(
-            name == prefix or name.startswith(f"{prefix}.")
-            for prefix in self._connector_warmup_trainable_prefixes
+        return self._matches_trainable_prefix(
+            name,
+            self._connector_warmup_trainable_prefixes,
         )
 
     def _zero_masked_connector_warmup_grads(self) -> None:

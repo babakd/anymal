@@ -771,6 +771,12 @@ class Trainer:
                 torch.load(projector_path, map_location=self.device, weights_only=True)
             )
             print_rank_0("  Loaded projector weights")
+        if hasattr(self.unwrapped_model, "load_visual_cross_attention_adapters"):
+            self.unwrapped_model.load_visual_cross_attention_adapters(
+                checkpoint_dir,
+                map_location=self.device,
+                allow_missing=False,
+            )
 
         compressor_path = _os.path.join(checkpoint_dir, "token_compressor.pt")
         if _os.path.exists(compressor_path) and hasattr(self.unwrapped_model, "token_compressor"):

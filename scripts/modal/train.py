@@ -425,6 +425,67 @@ def _parse_lora_target_modules(value):
     return parsed or None
 
 
+def _normalize_v3_patch_position_feature_type(value=None, use_2d=False) -> str:
+    if value is None:
+        return "learned_table" if use_2d else "none"
+    text = str(value).strip().lower().replace("-", "_")
+    if text in {"", "auto"}:
+        return "learned_table" if use_2d else "none"
+    if text in {"none", "off", "false", "0"}:
+        return "none"
+    if text in {"table", "learned", "learned_table", "embedding"}:
+        return "learned_table"
+    if text in {"coord", "coords", "coordinate", "coordinates", "coord_mlp", "coordinate_mlp"}:
+        return "coord_mlp"
+    raise ValueError(
+        "--v3-patch-position-feature-type must be one of: none, "
+        "learned_table, coord_mlp"
+    )
+
+
+def _metadata_v3_patch_position_feature_type(meta: dict) -> str:
+    if meta.get("patch_position_feature_type") is not None:
+        return _normalize_v3_patch_position_feature_type(
+            meta.get("patch_position_feature_type"),
+            use_2d=bool(meta.get("use_2d_patch_position_features")),
+        )
+    return "learned_table" if bool(meta.get("use_2d_patch_position_features")) else "none"
+
+
+def _normalize_v3_query_patch_selector_mode(value=None) -> str:
+    text = str(value or "none").strip().lower().replace("-", "_")
+    if text in {"", "none", "off", "false", "0"}:
+        return "none"
+    if text in {"on", "true", "1", "residual", "residual_mlp"}:
+        return "residual_mlp"
+    raise ValueError(
+        "--v3-query-conditioned-patch-selector-mode must be one of: "
+        "none, residual_mlp"
+    )
+
+
+def _normalize_v3_visual_cross_attention_mode(value=None) -> str:
+    text = str(value or "none").strip().lower().replace("-", "_")
+    if text in {"", "none", "off", "false", "0"}:
+        return "none"
+    if text in {"on", "true", "1", "gated", "gated_cross_attention"}:
+        return "gated"
+    raise ValueError(
+        "--v3-visual-cross-attention-mode must be one of: none, gated"
+    )
+
+
+def _parse_v3_visual_cross_attention_layers(value=None):
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [int(item) for item in value]
+    text = str(value).strip()
+    if not text:
+        return None
+    return [int(part) for part in text.replace(" ", ",").split(",") if part]
+
+
 def _checkpoint_matches_run_config(
     checkpoint_dir: str,
     expected_architecture: str,
@@ -433,6 +494,24 @@ def _checkpoint_matches_run_config(
     v3_connector_type: str = None,
     v3_connector_output_scale: float = None,
     v3_connector_output_gate_init: float = None,
+    v3_connector_trainable_scale_mode: str = None,
+    v3_use_2d_patch_position_features: bool = None,
+    v3_patch_position_feature_type: str = None,
+    v3_query_conditioned_visual_scale_mode: str = None,
+    v3_query_conditioned_visual_scale_min: float = None,
+    v3_query_conditioned_visual_scale_max: float = None,
+    v3_query_conditioned_visual_scale_init: float = None,
+    v3_query_conditioned_patch_selector_mode: str = None,
+    v3_query_conditioned_patch_selector_hidden_dim: int = None,
+    v3_query_conditioned_patch_selector_max_residual: float = None,
+    v3_query_conditioned_patch_selector_normalize_mean: bool = None,
+    v3_visual_cross_attention_mode: str = None,
+    v3_visual_cross_attention_layers: str = None,
+    v3_visual_cross_attention_num_heads: int = None,
+    v3_visual_cross_attention_adapter_dim: int = None,
+    v3_visual_cross_attention_gate_init: float = None,
+    v3_visual_cross_attention_dropout: float = None,
+    v3_visual_cross_attention_freeze_connector: bool = None,
     v4_connector_type: str = None,
     v4_global_image_tokens: int = None,
     v4_local_image_tokens: int = None,
@@ -488,11 +567,62 @@ def _checkpoint_matches_run_config(
         expected_values = {
             "connector_output_scale": v3_connector_output_scale,
             "connector_output_gate_init": v3_connector_output_gate_init,
+            "connector_trainable_scale_mode": v3_connector_trainable_scale_mode,
+            "use_2d_patch_position_features": v3_use_2d_patch_position_features,
+            "patch_position_feature_type": (
+                _normalize_v3_patch_position_feature_type(
+                    v3_patch_position_feature_type,
+                    use_2d=bool(v3_use_2d_patch_position_features),
+                )
+                if v3_patch_position_feature_type is not None
+                else None
+            ),
+            "query_conditioned_visual_scale_mode": v3_query_conditioned_visual_scale_mode,
+            "query_conditioned_visual_scale_min": v3_query_conditioned_visual_scale_min,
+            "query_conditioned_visual_scale_max": v3_query_conditioned_visual_scale_max,
+            "query_conditioned_visual_scale_init": v3_query_conditioned_visual_scale_init,
+            "query_conditioned_patch_selector_mode": (
+                _normalize_v3_query_patch_selector_mode(
+                    v3_query_conditioned_patch_selector_mode
+                )
+                if v3_query_conditioned_patch_selector_mode is not None
+                else None
+            ),
+            "query_conditioned_patch_selector_hidden_dim": v3_query_conditioned_patch_selector_hidden_dim,
+            "query_conditioned_patch_selector_max_residual": v3_query_conditioned_patch_selector_max_residual,
+            "query_conditioned_patch_selector_normalize_mean": v3_query_conditioned_patch_selector_normalize_mean,
+            "visual_cross_attention_mode": (
+                _normalize_v3_visual_cross_attention_mode(v3_visual_cross_attention_mode)
+                if v3_visual_cross_attention_mode is not None
+                else None
+            ),
+            "visual_cross_attention_layers": _parse_v3_visual_cross_attention_layers(
+                v3_visual_cross_attention_layers
+            ),
+            "visual_cross_attention_num_heads": v3_visual_cross_attention_num_heads,
+            "visual_cross_attention_adapter_dim": v3_visual_cross_attention_adapter_dim,
+            "visual_cross_attention_gate_init": v3_visual_cross_attention_gate_init,
+            "visual_cross_attention_dropout": v3_visual_cross_attention_dropout,
+            "visual_cross_attention_freeze_connector": v3_visual_cross_attention_freeze_connector,
         }
         for key, expected in expected_values.items():
             if expected is None:
                 continue
-            checkpoint_value = meta.get(key)
+            checkpoint_value = (
+                _metadata_v3_patch_position_feature_type(meta)
+                if key == "patch_position_feature_type"
+                else meta.get(key)
+            )
+            if key == "use_2d_patch_position_features" and checkpoint_value is None:
+                if bool(expected):
+                    continue
+                checkpoint_value = False
+            if key in {
+                "query_conditioned_visual_scale_mode",
+                "query_conditioned_patch_selector_mode",
+                "visual_cross_attention_mode",
+            } and checkpoint_value is None:
+                checkpoint_value = "none"
             if checkpoint_value != expected:
                 print(
                     f"Skipping checkpoint {checkpoint_dir}: {key}="
@@ -538,6 +668,24 @@ def _auto_discover_pretrain_checkpoint(
     v3_connector_type: str = None,
     v3_connector_output_scale: float = None,
     v3_connector_output_gate_init: float = None,
+    v3_connector_trainable_scale_mode: str = None,
+    v3_use_2d_patch_position_features: bool = None,
+    v3_patch_position_feature_type: str = None,
+    v3_query_conditioned_visual_scale_mode: str = None,
+    v3_query_conditioned_visual_scale_min: float = None,
+    v3_query_conditioned_visual_scale_max: float = None,
+    v3_query_conditioned_visual_scale_init: float = None,
+    v3_query_conditioned_patch_selector_mode: str = None,
+    v3_query_conditioned_patch_selector_hidden_dim: int = None,
+    v3_query_conditioned_patch_selector_max_residual: float = None,
+    v3_query_conditioned_patch_selector_normalize_mean: bool = None,
+    v3_visual_cross_attention_mode: str = None,
+    v3_visual_cross_attention_layers: str = None,
+    v3_visual_cross_attention_num_heads: int = None,
+    v3_visual_cross_attention_adapter_dim: int = None,
+    v3_visual_cross_attention_gate_init: float = None,
+    v3_visual_cross_attention_dropout: float = None,
+    v3_visual_cross_attention_freeze_connector: bool = None,
     v4_connector_type: str = None,
     v4_global_image_tokens: int = None,
     v4_local_image_tokens: int = None,
@@ -562,6 +710,24 @@ def _auto_discover_pretrain_checkpoint(
             v3_connector_type=v3_connector_type,
             v3_connector_output_scale=v3_connector_output_scale,
             v3_connector_output_gate_init=v3_connector_output_gate_init,
+            v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
+            v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
+            v3_patch_position_feature_type=v3_patch_position_feature_type,
+            v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
+            v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
+            v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
+            v3_query_conditioned_visual_scale_init=v3_query_conditioned_visual_scale_init,
+            v3_query_conditioned_patch_selector_mode=v3_query_conditioned_patch_selector_mode,
+            v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
+            v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
+            v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+            v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
+            v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
+            v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
+            v3_visual_cross_attention_adapter_dim=v3_visual_cross_attention_adapter_dim,
+            v3_visual_cross_attention_gate_init=v3_visual_cross_attention_gate_init,
+            v3_visual_cross_attention_dropout=v3_visual_cross_attention_dropout,
+            v3_visual_cross_attention_freeze_connector=v3_visual_cross_attention_freeze_connector,
             v4_connector_type=v4_connector_type,
             v4_global_image_tokens=v4_global_image_tokens,
             v4_local_image_tokens=v4_local_image_tokens,
@@ -939,6 +1105,7 @@ class Trainer:
         contrastive_lambda: float = 0.1,
         contrastive_margin: float = 0.5,
         connector_warmup_steps: int = 0,
+        connector_trainable_prefixes: str = "",
         pretrain_loss_scale: float = 1.0,
         pretrain_loss_normalization: str = "mean",
         pretrain_loss_normalization_target_tokens: float = 8.0,
@@ -948,6 +1115,24 @@ class Trainer:
         v3_connector_type: str = V3_DEFAULT_CONNECTOR_TYPE,
         v3_connector_output_scale: float = None,
         v3_connector_output_gate_init: float = None,
+        v3_connector_trainable_scale_mode: str = None,
+        v3_use_2d_patch_position_features: bool = False,
+        v3_patch_position_feature_type: str = None,
+        v3_query_conditioned_visual_scale_mode: str = "none",
+        v3_query_conditioned_visual_scale_min: float = 0.95,
+        v3_query_conditioned_visual_scale_max: float = 1.15,
+        v3_query_conditioned_visual_scale_init: float = None,
+        v3_query_conditioned_patch_selector_mode: str = "none",
+        v3_query_conditioned_patch_selector_hidden_dim: int = 256,
+        v3_query_conditioned_patch_selector_max_residual: float = 0.25,
+        v3_query_conditioned_patch_selector_normalize_mean: bool = True,
+        v3_visual_cross_attention_mode: str = "none",
+        v3_visual_cross_attention_layers: str = None,
+        v3_visual_cross_attention_num_heads: int = 16,
+        v3_visual_cross_attention_adapter_dim: int = 512,
+        v3_visual_cross_attention_gate_init: float = 0.0,
+        v3_visual_cross_attention_dropout: float = 0.0,
+        v3_visual_cross_attention_freeze_connector: bool = False,
         v4_global_image_tokens: int = None,
         v4_local_image_tokens: int = None,
         v4_connector_layers: int = None,
@@ -1082,6 +1267,23 @@ class Trainer:
                 v3_connector_type=v3_connector_type,
                 v3_connector_output_scale=v3_connector_output_scale,
                 v3_connector_output_gate_init=v3_connector_output_gate_init,
+                v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
+                v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
+                v3_patch_position_feature_type=v3_patch_position_feature_type,
+                v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
+                v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
+                v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
+                v3_query_conditioned_visual_scale_init=v3_query_conditioned_visual_scale_init,
+                v3_query_conditioned_patch_selector_mode=v3_query_conditioned_patch_selector_mode,
+                v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
+                v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
+                v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+                v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
+                v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
+                v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
+                v3_visual_cross_attention_gate_init=v3_visual_cross_attention_gate_init,
+                v3_visual_cross_attention_dropout=v3_visual_cross_attention_dropout,
+                v3_visual_cross_attention_freeze_connector=v3_visual_cross_attention_freeze_connector,
                 v4_global_image_tokens=v4_global_tokens,
                 v4_local_image_tokens=v4_local_tokens,
                 v4_connector_layers=v4_connector_layers,
@@ -1126,7 +1328,25 @@ class Trainer:
                 v3_connector_type=v3_connector_type,
                 v3_connector_output_scale=v3_connector_output_scale,
                 v3_connector_output_gate_init=v3_connector_output_gate_init,
+                v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
+                v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
+                v3_patch_position_feature_type=v3_patch_position_feature_type,
+                v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
+                v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
+                v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
+                v3_query_conditioned_visual_scale_init=v3_query_conditioned_visual_scale_init,
+                v3_query_conditioned_patch_selector_mode=v3_query_conditioned_patch_selector_mode,
+                v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
+                v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
+                v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+                v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
+                v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
+                v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
+                v3_visual_cross_attention_gate_init=v3_visual_cross_attention_gate_init,
+                v3_visual_cross_attention_dropout=v3_visual_cross_attention_dropout,
+                v3_visual_cross_attention_freeze_connector=v3_visual_cross_attention_freeze_connector,
                 connector_warmup_steps=connector_warmup_steps,
+                connector_trainable_prefixes=connector_trainable_prefixes,
                 pretrain_loss_scale=pretrain_loss_scale,
                 pretrain_loss_normalization=pretrain_loss_normalization,
                 pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
@@ -1384,6 +1604,24 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                   v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
                   v3_connector_output_scale=None,
                   v3_connector_output_gate_init=None,
+                  v3_connector_trainable_scale_mode=None,
+                  v3_use_2d_patch_position_features=False,
+                  v3_patch_position_feature_type=None,
+                  v3_query_conditioned_visual_scale_mode="none",
+                  v3_query_conditioned_visual_scale_min=0.95,
+                  v3_query_conditioned_visual_scale_max=1.15,
+                  v3_query_conditioned_visual_scale_init=None,
+                  v3_query_conditioned_patch_selector_mode="none",
+                  v3_query_conditioned_patch_selector_hidden_dim=256,
+                  v3_query_conditioned_patch_selector_max_residual=0.25,
+                  v3_query_conditioned_patch_selector_normalize_mean=True,
+                  v3_visual_cross_attention_mode="none",
+                  v3_visual_cross_attention_layers=None,
+                  v3_visual_cross_attention_num_heads=16,
+                  v3_visual_cross_attention_adapter_dim=512,
+                  v3_visual_cross_attention_gate_init=0.0,
+                  v3_visual_cross_attention_dropout=0.0,
+                  v3_visual_cross_attention_freeze_connector=False,
                   v4_global_image_tokens=None, v4_local_image_tokens=None,
                   v4_connector_layers=None, v4_connector_heads=None,
                   v4_connector_ff_mult=None, v4_connector_hidden_dim=None,
@@ -1428,6 +1666,23 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
             v3_connector_type=v3_connector_type or V3_DEFAULT_CONNECTOR_TYPE,
             v3_connector_output_scale=v3_connector_output_scale,
             v3_connector_output_gate_init=v3_connector_output_gate_init,
+            v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
+            v3_patch_position_feature_type=v3_patch_position_feature_type,
+            v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
+            v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
+            v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
+            v3_query_conditioned_visual_scale_init=v3_query_conditioned_visual_scale_init,
+            v3_query_conditioned_patch_selector_mode=v3_query_conditioned_patch_selector_mode,
+            v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
+            v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
+            v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+            v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
+            v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
+            v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
+            v3_visual_cross_attention_adapter_dim=v3_visual_cross_attention_adapter_dim,
+            v3_visual_cross_attention_gate_init=v3_visual_cross_attention_gate_init,
+            v3_visual_cross_attention_dropout=v3_visual_cross_attention_dropout,
+            v3_visual_cross_attention_freeze_connector=v3_visual_cross_attention_freeze_connector,
             v4_global_image_tokens=v4_global_image_tokens,
             v4_local_image_tokens=v4_local_image_tokens,
             v4_connector_layers=v4_connector_layers,
@@ -1456,6 +1711,97 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
             v3_connector_output_scale = meta.get("connector_output_scale")
         if v3_connector_output_gate_init is None:
             v3_connector_output_gate_init = meta.get("connector_output_gate_init")
+        if v3_connector_trainable_scale_mode is None:
+            v3_connector_trainable_scale_mode = meta.get("connector_trainable_scale_mode")
+        if (
+            not v3_use_2d_patch_position_features
+            and "use_2d_patch_position_features" in meta
+        ):
+            v3_use_2d_patch_position_features = bool(
+                meta["use_2d_patch_position_features"]
+            )
+        if (
+            v3_patch_position_feature_type is None
+            and "patch_position_feature_type" in meta
+        ):
+            v3_patch_position_feature_type = meta["patch_position_feature_type"]
+        if (
+            v3_query_conditioned_visual_scale_mode in {None, "none"}
+            and meta.get("query_conditioned_visual_scale_mode") is not None
+        ):
+            v3_query_conditioned_visual_scale_mode = meta[
+                "query_conditioned_visual_scale_mode"
+            ]
+        if (
+            v3_query_conditioned_visual_scale_init is None
+            and meta.get("query_conditioned_visual_scale_init") is not None
+        ):
+            v3_query_conditioned_visual_scale_init = meta[
+                "query_conditioned_visual_scale_init"
+            ]
+        if meta.get("query_conditioned_visual_scale_min") is not None:
+            v3_query_conditioned_visual_scale_min = meta[
+                "query_conditioned_visual_scale_min"
+            ]
+        if meta.get("query_conditioned_visual_scale_max") is not None:
+            v3_query_conditioned_visual_scale_max = meta[
+                "query_conditioned_visual_scale_max"
+            ]
+        if (
+            v3_query_conditioned_patch_selector_mode in {None, "none"}
+            and meta.get("query_conditioned_patch_selector_mode") is not None
+        ):
+            v3_query_conditioned_patch_selector_mode = meta[
+                "query_conditioned_patch_selector_mode"
+            ]
+        if meta.get("query_conditioned_patch_selector_hidden_dim") is not None:
+            v3_query_conditioned_patch_selector_hidden_dim = meta[
+                "query_conditioned_patch_selector_hidden_dim"
+            ]
+        if meta.get("query_conditioned_patch_selector_max_residual") is not None:
+            v3_query_conditioned_patch_selector_max_residual = meta[
+                "query_conditioned_patch_selector_max_residual"
+            ]
+        if meta.get("query_conditioned_patch_selector_normalize_mean") is not None:
+            v3_query_conditioned_patch_selector_normalize_mean = bool(
+                meta["query_conditioned_patch_selector_normalize_mean"]
+            )
+        if (
+            v3_visual_cross_attention_mode in {None, "none"}
+            and meta.get("visual_cross_attention_mode") is not None
+        ):
+            v3_visual_cross_attention_mode = meta["visual_cross_attention_mode"]
+        if (
+            v3_visual_cross_attention_layers is None
+            and meta.get("visual_cross_attention_layers") is not None
+        ):
+            v3_visual_cross_attention_layers = meta["visual_cross_attention_layers"]
+        if meta.get("visual_cross_attention_num_heads") is not None:
+            v3_visual_cross_attention_num_heads = meta["visual_cross_attention_num_heads"]
+        if meta.get("visual_cross_attention_adapter_dim") is not None:
+            v3_visual_cross_attention_adapter_dim = meta["visual_cross_attention_adapter_dim"]
+        if meta.get("visual_cross_attention_gate_init") is not None:
+            v3_visual_cross_attention_gate_init = meta["visual_cross_attention_gate_init"]
+        if meta.get("visual_cross_attention_dropout") is not None:
+            v3_visual_cross_attention_dropout = meta["visual_cross_attention_dropout"]
+        if meta.get("visual_cross_attention_freeze_connector") is not None:
+            v3_visual_cross_attention_freeze_connector = bool(
+                meta["visual_cross_attention_freeze_connector"]
+            )
+        v3_patch_position_feature_type = _normalize_v3_patch_position_feature_type(
+            v3_patch_position_feature_type,
+            use_2d=v3_use_2d_patch_position_features,
+        )
+        v3_use_2d_patch_position_features = v3_patch_position_feature_type != "none"
+        v3_query_conditioned_patch_selector_mode = _normalize_v3_query_patch_selector_mode(
+            v3_query_conditioned_patch_selector_mode
+        )
+        v3_visual_cross_attention_mode = _normalize_v3_visual_cross_attention_mode(
+            v3_visual_cross_attention_mode
+        )
+        v3_visual_cross_attention_layers = _parse_v3_visual_cross_attention_layers(
+            v3_visual_cross_attention_layers
+        )
     if arch_key == "anymal_v4" and pretrain_checkpoint:
         from model_metadata import read_model_metadata
 
@@ -1563,6 +1909,56 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                     float(v3_connector_output_gate_init)
                     if v3_connector_output_gate_init is not None
                     else None
+                ),
+                "connector_trainable_scale_mode": (
+                    v3_connector_trainable_scale_mode or "none"
+                ),
+                "use_2d_patch_position_features": bool(
+                    v3_use_2d_patch_position_features
+                ),
+                "patch_position_feature_type": v3_patch_position_feature_type,
+                "query_conditioned_visual_scale_mode": (
+                    v3_query_conditioned_visual_scale_mode or "none"
+                ),
+                "query_conditioned_visual_scale_min": float(
+                    v3_query_conditioned_visual_scale_min
+                ),
+                "query_conditioned_visual_scale_max": float(
+                    v3_query_conditioned_visual_scale_max
+                ),
+                "query_conditioned_visual_scale_init": (
+                    float(v3_query_conditioned_visual_scale_init)
+                    if v3_query_conditioned_visual_scale_init is not None
+                    else None
+                ),
+                "query_conditioned_patch_selector_mode": (
+                    v3_query_conditioned_patch_selector_mode or "none"
+                ),
+                "query_conditioned_patch_selector_hidden_dim": int(
+                    v3_query_conditioned_patch_selector_hidden_dim
+                ),
+                "query_conditioned_patch_selector_max_residual": float(
+                    v3_query_conditioned_patch_selector_max_residual
+                ),
+                "query_conditioned_patch_selector_normalize_mean": bool(
+                    v3_query_conditioned_patch_selector_normalize_mean
+                ),
+                "visual_cross_attention_mode": v3_visual_cross_attention_mode,
+                "visual_cross_attention_layers": v3_visual_cross_attention_layers,
+                "visual_cross_attention_num_heads": int(
+                    v3_visual_cross_attention_num_heads
+                ),
+                "visual_cross_attention_adapter_dim": int(
+                    v3_visual_cross_attention_adapter_dim
+                ),
+                "visual_cross_attention_gate_init": float(
+                    v3_visual_cross_attention_gate_init
+                ),
+                "visual_cross_attention_dropout": float(
+                    v3_visual_cross_attention_dropout
+                ),
+                "visual_cross_attention_freeze_connector": bool(
+                    v3_visual_cross_attention_freeze_connector
                 ),
                 "project_directly_to_llm_dim": True,
             }
@@ -1838,6 +2234,10 @@ def run_pretrain(
     llm_backbone=None,
     dataset="llava_pretrain",
     connector_warmup_steps=0,
+    connector_trainable_prefixes="",
+    contrastive_answer_suppression=False,
+    contrastive_lambda=0.1,
+    contrastive_margin=0.5,
     pretrain_loss_scale=1.0,
     pretrain_loss_normalization="mean",
     pretrain_loss_normalization_target_tokens=8.0,
@@ -1848,6 +2248,24 @@ def run_pretrain(
     v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
     v3_connector_output_scale=None,
     v3_connector_output_gate_init=None,
+    v3_connector_trainable_scale_mode=None,
+    v3_use_2d_patch_position_features=False,
+    v3_patch_position_feature_type=None,
+    v3_query_conditioned_visual_scale_mode="none",
+    v3_query_conditioned_visual_scale_min=0.95,
+    v3_query_conditioned_visual_scale_max=1.15,
+    v3_query_conditioned_visual_scale_init=None,
+    v3_query_conditioned_patch_selector_mode="none",
+    v3_query_conditioned_patch_selector_hidden_dim=256,
+    v3_query_conditioned_patch_selector_max_residual=0.25,
+    v3_query_conditioned_patch_selector_normalize_mean=True,
+    v3_visual_cross_attention_mode="none",
+    v3_visual_cross_attention_layers=None,
+    v3_visual_cross_attention_num_heads=16,
+    v3_visual_cross_attention_adapter_dim=512,
+    v3_visual_cross_attention_gate_init=0.0,
+    v3_visual_cross_attention_dropout=0.0,
+    v3_visual_cross_attention_freeze_connector=False,
     v4_global_image_tokens=None,
     v4_local_image_tokens=None,
     v4_connector_layers=None,
@@ -1893,6 +2311,98 @@ def run_pretrain(
             v3_connector_output_scale = meta.get("connector_output_scale")
         if v3_connector_output_gate_init is None:
             v3_connector_output_gate_init = meta.get("connector_output_gate_init")
+        if v3_connector_trainable_scale_mode is None:
+            v3_connector_trainable_scale_mode = meta.get("connector_trainable_scale_mode")
+        if (
+            not v3_use_2d_patch_position_features
+            and "use_2d_patch_position_features" in meta
+        ):
+            v3_use_2d_patch_position_features = bool(
+                meta["use_2d_patch_position_features"]
+            )
+        if (
+            v3_patch_position_feature_type is None
+            and "patch_position_feature_type" in meta
+        ):
+            v3_patch_position_feature_type = meta["patch_position_feature_type"]
+        if (
+            v3_query_conditioned_visual_scale_mode in {None, "none"}
+            and meta.get("query_conditioned_visual_scale_mode") is not None
+        ):
+            v3_query_conditioned_visual_scale_mode = meta[
+                "query_conditioned_visual_scale_mode"
+            ]
+        if meta.get("query_conditioned_visual_scale_min") is not None:
+            v3_query_conditioned_visual_scale_min = meta[
+                "query_conditioned_visual_scale_min"
+            ]
+        if meta.get("query_conditioned_visual_scale_max") is not None:
+            v3_query_conditioned_visual_scale_max = meta[
+                "query_conditioned_visual_scale_max"
+            ]
+        if (
+            v3_query_conditioned_visual_scale_init is None
+            and meta.get("query_conditioned_visual_scale_init") is not None
+        ):
+            v3_query_conditioned_visual_scale_init = meta[
+                "query_conditioned_visual_scale_init"
+            ]
+        if (
+            v3_query_conditioned_patch_selector_mode in {None, "none"}
+            and meta.get("query_conditioned_patch_selector_mode") is not None
+        ):
+            v3_query_conditioned_patch_selector_mode = meta[
+                "query_conditioned_patch_selector_mode"
+            ]
+        if meta.get("query_conditioned_patch_selector_hidden_dim") is not None:
+            v3_query_conditioned_patch_selector_hidden_dim = meta[
+                "query_conditioned_patch_selector_hidden_dim"
+            ]
+        if meta.get("query_conditioned_patch_selector_max_residual") is not None:
+            v3_query_conditioned_patch_selector_max_residual = meta[
+                "query_conditioned_patch_selector_max_residual"
+            ]
+        if meta.get("query_conditioned_patch_selector_normalize_mean") is not None:
+            v3_query_conditioned_patch_selector_normalize_mean = bool(
+                meta["query_conditioned_patch_selector_normalize_mean"]
+            )
+        if (
+            v3_visual_cross_attention_mode in {None, "none"}
+            and meta.get("visual_cross_attention_mode") is not None
+        ):
+            v3_visual_cross_attention_mode = meta["visual_cross_attention_mode"]
+        if (
+            v3_visual_cross_attention_layers is None
+            and meta.get("visual_cross_attention_layers") is not None
+        ):
+            v3_visual_cross_attention_layers = meta["visual_cross_attention_layers"]
+        if meta.get("visual_cross_attention_num_heads") is not None:
+            v3_visual_cross_attention_num_heads = meta["visual_cross_attention_num_heads"]
+        if meta.get("visual_cross_attention_adapter_dim") is not None:
+            v3_visual_cross_attention_adapter_dim = meta["visual_cross_attention_adapter_dim"]
+        if meta.get("visual_cross_attention_gate_init") is not None:
+            v3_visual_cross_attention_gate_init = meta["visual_cross_attention_gate_init"]
+        if meta.get("visual_cross_attention_dropout") is not None:
+            v3_visual_cross_attention_dropout = meta["visual_cross_attention_dropout"]
+        if meta.get("visual_cross_attention_freeze_connector") is not None:
+            v3_visual_cross_attention_freeze_connector = bool(
+                meta["visual_cross_attention_freeze_connector"]
+            )
+    if arch_key == "anymal_v3":
+        v3_patch_position_feature_type = _normalize_v3_patch_position_feature_type(
+            v3_patch_position_feature_type,
+            use_2d=v3_use_2d_patch_position_features,
+        )
+        v3_use_2d_patch_position_features = v3_patch_position_feature_type != "none"
+        v3_query_conditioned_patch_selector_mode = _normalize_v3_query_patch_selector_mode(
+            v3_query_conditioned_patch_selector_mode
+        )
+        v3_visual_cross_attention_mode = _normalize_v3_visual_cross_attention_mode(
+            v3_visual_cross_attention_mode
+        )
+        v3_visual_cross_attention_layers = _parse_v3_visual_cross_attention_layers(
+            v3_visual_cross_attention_layers
+        )
     if arch_key == "anymal_v4" and (pretrain_checkpoint or resume_checkpoint):
         from model_metadata import read_model_metadata
 
@@ -1997,6 +2507,56 @@ def run_pretrain(
                     float(v3_connector_output_gate_init)
                     if v3_connector_output_gate_init is not None
                     else None
+                ),
+                "connector_trainable_scale_mode": (
+                    v3_connector_trainable_scale_mode or "none"
+                ),
+                "use_2d_patch_position_features": bool(
+                    v3_use_2d_patch_position_features
+                ),
+                "patch_position_feature_type": v3_patch_position_feature_type,
+                "query_conditioned_visual_scale_mode": (
+                    v3_query_conditioned_visual_scale_mode or "none"
+                ),
+                "query_conditioned_visual_scale_min": float(
+                    v3_query_conditioned_visual_scale_min
+                ),
+                "query_conditioned_visual_scale_max": float(
+                    v3_query_conditioned_visual_scale_max
+                ),
+                "query_conditioned_visual_scale_init": (
+                    float(v3_query_conditioned_visual_scale_init)
+                    if v3_query_conditioned_visual_scale_init is not None
+                    else None
+                ),
+                "query_conditioned_patch_selector_mode": (
+                    v3_query_conditioned_patch_selector_mode or "none"
+                ),
+                "query_conditioned_patch_selector_hidden_dim": int(
+                    v3_query_conditioned_patch_selector_hidden_dim
+                ),
+                "query_conditioned_patch_selector_max_residual": float(
+                    v3_query_conditioned_patch_selector_max_residual
+                ),
+                "query_conditioned_patch_selector_normalize_mean": bool(
+                    v3_query_conditioned_patch_selector_normalize_mean
+                ),
+                "visual_cross_attention_mode": v3_visual_cross_attention_mode,
+                "visual_cross_attention_layers": v3_visual_cross_attention_layers,
+                "visual_cross_attention_num_heads": int(
+                    v3_visual_cross_attention_num_heads
+                ),
+                "visual_cross_attention_adapter_dim": int(
+                    v3_visual_cross_attention_adapter_dim
+                ),
+                "visual_cross_attention_gate_init": float(
+                    v3_visual_cross_attention_gate_init
+                ),
+                "visual_cross_attention_dropout": float(
+                    v3_visual_cross_attention_dropout
+                ),
+                "visual_cross_attention_freeze_connector": bool(
+                    v3_visual_cross_attention_freeze_connector
                 ),
                 "project_directly_to_llm_dim": True,
             }
@@ -2149,8 +2709,66 @@ def run_pretrain(
             raise FileNotFoundError(
                 f"Expected projector.pt in pretrain checkpoint: {pretrain_checkpoint}"
             )
-        model.projector.load_state_dict(torch.load(projector_path, map_location="cpu"))
+        projector_state = torch.load(projector_path, map_location="cpu")
+        v3_scale_mode = str(v3_connector_trainable_scale_mode or "none").strip().lower()
+        allowed_missing = set()
+        if arch_key == "anymal_v3":
+            if v3_scale_mode not in {"none", "off", "false", "0"}:
+                allowed_missing.add("trainable_output_log_scale")
+            if v3_patch_position_feature_type == "learned_table":
+                allowed_missing.add("patch_position_embedding")
+        allowed_missing_prefixes = set()
+        if arch_key == "anymal_v3" and v3_patch_position_feature_type == "coord_mlp":
+            allowed_missing_prefixes.add("patch_position_mlp.")
+        if (
+            arch_key == "anymal_v3"
+            and str(v3_query_conditioned_visual_scale_mode or "none").strip().lower()
+            not in {"none", "off", "false", "0"}
+        ):
+            allowed_missing_prefixes.add("query_visual_scale.")
+        if (
+            arch_key == "anymal_v3"
+            and _normalize_v3_query_patch_selector_mode(
+                v3_query_conditioned_patch_selector_mode
+            )
+            != "none"
+        ):
+            allowed_missing_prefixes.add("query_patch_selector.")
+        if arch_key == "anymal_v3" and (allowed_missing or allowed_missing_prefixes):
+            incompatible = model.projector.load_state_dict(projector_state, strict=False)
+            missing = set(incompatible.missing_keys)
+            unexpected = set(incompatible.unexpected_keys)
+            disallowed_missing = {
+                key
+                for key in missing
+                if key not in allowed_missing
+                and not any(key.startswith(prefix) for prefix in allowed_missing_prefixes)
+            }
+            if disallowed_missing or unexpected:
+                raise RuntimeError(
+                    "V3 projector warm-start only allows missing "
+                    f"{sorted(allowed_missing)} and prefixes "
+                    f"{sorted(allowed_missing_prefixes)}; "
+                    f"missing={sorted(missing)}, "
+                    f"unexpected={sorted(unexpected)}"
+                )
+            if missing:
+                print(
+                    "Initialized new V3 projector parameter(s) while "
+                    f"warm-starting from {pretrain_checkpoint}: {sorted(missing)}"
+                )
+        else:
+            model.projector.load_state_dict(projector_state)
         print("Loaded Stage 1 connector weights")
+        if hasattr(model, "load_visual_cross_attention_adapters"):
+            model.load_visual_cross_attention_adapters(
+                pretrain_checkpoint,
+                map_location="cpu",
+                allow_missing=True,
+            )
+
+    if dataset == "v10_qwen_gqa_contrastive_stage1b":
+        contrastive_answer_suppression = True
 
     # Diagnose model (rank 0 only)
     from training.distributed import is_main_process as _is_main
@@ -2181,6 +2799,8 @@ def run_pretrain(
         "v5_semantic_calibration_robust",
         "v9_qwen_controlaware_stage1b",
         "v9_qwen_gqa_stage1b",
+        "v10_qwen_gqa_antishuffle_stage1b",
+        "v10_qwen_gqa_contrastive_stage1b",
     }:
         grounding_dataset_name = dataset
         dataset = load_finetune_dataset(
@@ -2277,6 +2897,15 @@ def run_pretrain(
             pretrain_connector_rms_regularizer_target or "batch_text"
         ),
         connector_warmup_steps=int(connector_warmup_steps or 0),
+        connector_trainable_prefixes=connector_trainable_prefixes or (),
+        connector_scale_only_training=(
+            arch_key == "anymal_v3"
+            and str(v3_connector_trainable_scale_mode or "none").strip().lower()
+            not in {"none", "off", "false", "0"}
+        ),
+        contrastive_answer_suppression=bool(contrastive_answer_suppression),
+        contrastive_lambda=float(contrastive_lambda),
+        contrastive_margin=float(contrastive_margin),
     )
 
     # Train
@@ -3520,6 +4149,106 @@ def load_finetune_dataset(
         volume.commit()
         return output_path, gqa_image_dir
 
+    def _gqa_contrastive_answer_suppression_path(split="train_balanced", max_samples=10000):
+        """Build GQA positives paired with shuffled, same-answer, and blank negatives."""
+        from PIL import Image
+
+        safe_split = str(split).replace("/", "_")
+        output_path = (
+            "/checkpoints/gqa_data/"
+            f"v10_qwen_gqa_contrastive_{safe_split}_{int(max_samples)}.json"
+        )
+        gqa_path, gqa_image_dir = _gqa_direct_answer_path(
+            split=split,
+            max_samples=max_samples,
+        )
+        blank_filename = "anymal_blank_gray_384.jpg"
+        blank_path = os.path.join(gqa_image_dir, blank_filename)
+        if not os.path.exists(blank_path):
+            Image.new("RGB", (384, 384), color=(128, 128, 128)).save(blank_path)
+            volume.commit()
+        if os.path.exists(output_path):
+            return output_path, gqa_image_dir
+
+        with open(gqa_path, "r") as f:
+            rows = _json.load(f)
+
+        def _answer_key(row):
+            conversations = row.get("conversations") or []
+            if len(conversations) < 2:
+                return ""
+            return " ".join(str(conversations[-1].get("value", "")).lower().split())
+
+        by_answer = {}
+        for row in rows:
+            answer = _answer_key(row)
+            if not answer:
+                continue
+            by_answer.setdefault(answer, []).append(row)
+
+        def _select_row(pool, source_image, offset_seed):
+            if not pool:
+                return None
+            for step in range(min(len(pool), 64)):
+                candidate = pool[(offset_seed + step) % len(pool)]
+                if candidate.get("image") != source_image:
+                    return candidate
+            return None
+
+        rng = random.Random(10405)
+        shuffled_rows = list(rows)
+        rng.shuffle(shuffled_rows)
+        samples = []
+        for i, row in enumerate(rows):
+            image = row.get("image")
+            answer = _answer_key(row)
+            if not image or not answer:
+                continue
+            shuffled = _select_row(
+                shuffled_rows,
+                image,
+                offset_seed=i * 7919 + len(answer),
+            )
+            wrong = _select_row(
+                by_answer.get(answer, []),
+                image,
+                offset_seed=i * 104729 + len(answer),
+            )
+            if wrong is None:
+                wrong = _select_row(
+                    shuffled_rows,
+                    image,
+                    offset_seed=i * 104729 + len(answer),
+                )
+            if shuffled is None or wrong is None:
+                continue
+            sample = dict(row)
+            sample["id"] = f"v10_qwen_gqa_contrastive_{row.get('id', i)}"
+            sample["negative_images"] = [
+                shuffled["image"],
+                wrong["image"],
+                blank_filename,
+            ]
+            sample["negative_image_types"] = [
+                "shuffled_image",
+                "wrong_image_same_answer",
+                "blank_image",
+            ]
+            samples.append(sample)
+            if len(samples) >= int(max_samples):
+                break
+
+        if not samples:
+            raise RuntimeError("GQA contrastive answer-suppression generation produced no samples.")
+
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(
+            f"Built {len(samples)} GQA contrastive answer-suppression samples at {output_path}"
+        )
+        volume.commit()
+        return output_path, gqa_image_dir
+
     def _coco_absence_pope_style_path(max_samples=10000):
         """Build POPE-style object absence probes from COCO train2017 instances."""
         output_path = (
@@ -3848,11 +4577,41 @@ def load_finetune_dataset(
         print(f"Loaded {len(ds)} {dataset} instruction samples")
         return ds
 
+    if dataset == "v10_qwen_gqa_contrastive_stage1b":
+        calibration_prompt = (
+            "Answer with only the final answer. Do not include role labels, "
+            "explanations, or the word assistant. End after the answer."
+        )
+        contrastive_path, gqa_image_dir = _gqa_contrastive_answer_suppression_path(
+            split="train_balanced",
+            max_samples=10000,
+        )
+        ds = create_instruction_dataset(
+            data_path=contrastive_path,
+            image_dir=gqa_image_dir,
+            tokenizer=tokenizer,
+            image_size=image_size,
+            max_length=max_length,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+            system_prompt=calibration_prompt,
+            use_augmentation=False,
+            image_augmentation_mode="none",
+            filter_to_available_images=True,
+        )
+        print(f"Loaded {len(ds)} {dataset} instruction samples")
+        return ds
+
     if dataset in {
         "v9_qwen_controlaware_stage2",
         "v9_qwen_gqa_preserving_stage2",
         "v9_qwen_controlaware_stage1b",
         "v9_qwen_gqa_stage1b",
+        "v10_qwen_gqa_antishuffle_stage1b",
     }:
         calibration_prompt = (
             "Answer with only the final answer. Do not include role labels, "
@@ -4045,6 +4804,36 @@ def load_finetune_dataset(
                         "system_prompt": training_system_prompt,
                         "use_augmentation": False,
                     },
+                    {
+                        "name": "coco_pope_style_presence",
+                        "weight": 0.025,
+                        "data_path": _get_pope_presence_path(),
+                        "system_prompt": pope_prompt,
+                        "use_augmentation": False,
+                    },
+                    {
+                        "name": "coco_pope_style_absence",
+                        "weight": 0.025,
+                        "data_path": _get_pope_absence_path(),
+                        "system_prompt": pope_prompt,
+                        "use_augmentation": False,
+                    },
+                ]
+            )
+        elif dataset == "v10_qwen_gqa_antishuffle_stage1b":
+            mixture_sources = _v3_grounding_sources(0.70)
+            mixture_sources.extend(
+                [
+                    {
+                        "name": "gqa_direct_answer",
+                        "weight": 0.15,
+                        "data_path": gqa_path,
+                        "image_dir": gqa_image_dir,
+                        "system_prompt": training_system_prompt,
+                        "use_augmentation": False,
+                    },
+                    _control_source("vqa_shuffled_counterfactual", 0.05, shuffled_path, shuffled_image_dir),
+                    _control_source("vqa_wrong_same_answer_type_counterfactual", 0.05, wrong_path, wrong_image_dir),
                     {
                         "name": "coco_pope_style_presence",
                         "weight": 0.025,
@@ -4938,6 +5727,13 @@ def _pretrain_worker(local_rank, world_size, config):
             pretrain_image_tokens=config.get("pretrain_image_tokens"),
             dataset=config.get("dataset", "llava_pretrain"),
             connector_warmup_steps=config.get("connector_warmup_steps", 0),
+            connector_trainable_prefixes=config.get("connector_trainable_prefixes", ""),
+            contrastive_answer_suppression=config.get(
+                "contrastive_answer_suppression",
+                False,
+            ),
+            contrastive_lambda=config.get("contrastive_lambda", 0.1),
+            contrastive_margin=config.get("contrastive_margin", 0.5),
             pretrain_loss_scale=config.get("pretrain_loss_scale", 1.0),
             pretrain_loss_normalization=config.get("pretrain_loss_normalization", "mean"),
             pretrain_loss_normalization_target_tokens=config.get(
@@ -4957,6 +5753,70 @@ def _pretrain_worker(local_rank, world_size, config):
             v3_connector_type=config.get("v3_connector_type", V3_DEFAULT_CONNECTOR_TYPE),
             v3_connector_output_scale=config.get("v3_connector_output_scale"),
             v3_connector_output_gate_init=config.get("v3_connector_output_gate_init"),
+            v3_connector_trainable_scale_mode=config.get("v3_connector_trainable_scale_mode"),
+            v3_use_2d_patch_position_features=config.get(
+                "v3_use_2d_patch_position_features",
+                False,
+            ),
+            v3_patch_position_feature_type=config.get("v3_patch_position_feature_type"),
+            v3_query_conditioned_visual_scale_mode=config.get(
+                "v3_query_conditioned_visual_scale_mode",
+                "none",
+            ),
+            v3_query_conditioned_visual_scale_min=config.get(
+                "v3_query_conditioned_visual_scale_min",
+                0.95,
+            ),
+            v3_query_conditioned_visual_scale_max=config.get(
+                "v3_query_conditioned_visual_scale_max",
+                1.15,
+            ),
+            v3_query_conditioned_visual_scale_init=config.get(
+                "v3_query_conditioned_visual_scale_init",
+            ),
+            v3_query_conditioned_patch_selector_mode=config.get(
+                "v3_query_conditioned_patch_selector_mode",
+                "none",
+            ),
+            v3_query_conditioned_patch_selector_hidden_dim=config.get(
+                "v3_query_conditioned_patch_selector_hidden_dim",
+                256,
+            ),
+            v3_query_conditioned_patch_selector_max_residual=config.get(
+                "v3_query_conditioned_patch_selector_max_residual",
+                0.25,
+            ),
+            v3_query_conditioned_patch_selector_normalize_mean=config.get(
+                "v3_query_conditioned_patch_selector_normalize_mean",
+                True,
+            ),
+            v3_visual_cross_attention_mode=config.get(
+                "v3_visual_cross_attention_mode",
+                "none",
+            ),
+            v3_visual_cross_attention_layers=config.get(
+                "v3_visual_cross_attention_layers"
+            ),
+            v3_visual_cross_attention_num_heads=config.get(
+                "v3_visual_cross_attention_num_heads",
+                16,
+            ),
+            v3_visual_cross_attention_adapter_dim=config.get(
+                "v3_visual_cross_attention_adapter_dim",
+                512,
+            ),
+            v3_visual_cross_attention_gate_init=config.get(
+                "v3_visual_cross_attention_gate_init",
+                0.0,
+            ),
+            v3_visual_cross_attention_dropout=config.get(
+                "v3_visual_cross_attention_dropout",
+                0.0,
+            ),
+            v3_visual_cross_attention_freeze_connector=config.get(
+                "v3_visual_cross_attention_freeze_connector",
+                False,
+            ),
             v4_global_image_tokens=config.get("v4_global_image_tokens"),
             v4_local_image_tokens=config.get("v4_local_image_tokens"),
             v4_connector_layers=config.get("v4_connector_layers"),
@@ -4988,6 +5848,10 @@ def _run_pretrain_distributed(
     pretrain_image_tokens=None,
     dataset="llava_pretrain",
     connector_warmup_steps=0,
+    connector_trainable_prefixes="",
+    contrastive_answer_suppression=False,
+    contrastive_lambda=0.1,
+    contrastive_margin=0.5,
     pretrain_loss_scale=1.0,
     pretrain_loss_normalization="mean",
     pretrain_loss_normalization_target_tokens=8.0,
@@ -4998,6 +5862,24 @@ def _run_pretrain_distributed(
     v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
     v3_connector_output_scale=None,
     v3_connector_output_gate_init=None,
+    v3_connector_trainable_scale_mode=None,
+    v3_use_2d_patch_position_features=False,
+    v3_patch_position_feature_type=None,
+    v3_query_conditioned_visual_scale_mode="none",
+    v3_query_conditioned_visual_scale_min=0.95,
+    v3_query_conditioned_visual_scale_max=1.15,
+    v3_query_conditioned_visual_scale_init=None,
+    v3_query_conditioned_patch_selector_mode="none",
+    v3_query_conditioned_patch_selector_hidden_dim=256,
+    v3_query_conditioned_patch_selector_max_residual=0.25,
+    v3_query_conditioned_patch_selector_normalize_mean=True,
+    v3_visual_cross_attention_mode="none",
+    v3_visual_cross_attention_layers=None,
+    v3_visual_cross_attention_num_heads=16,
+    v3_visual_cross_attention_adapter_dim=512,
+    v3_visual_cross_attention_gate_init=0.0,
+    v3_visual_cross_attention_dropout=0.0,
+    v3_visual_cross_attention_freeze_connector=False,
     v4_global_image_tokens=None,
     v4_local_image_tokens=None,
     v4_connector_layers=None,
@@ -5058,6 +5940,10 @@ def _run_pretrain_distributed(
         "pretrain_image_tokens": pretrain_image_tokens,
         "dataset": dataset,
         "connector_warmup_steps": connector_warmup_steps,
+        "connector_trainable_prefixes": connector_trainable_prefixes,
+        "contrastive_answer_suppression": contrastive_answer_suppression,
+        "contrastive_lambda": contrastive_lambda,
+        "contrastive_margin": contrastive_margin,
         "pretrain_loss_scale": pretrain_loss_scale,
         "pretrain_loss_normalization": pretrain_loss_normalization,
         "pretrain_loss_normalization_target_tokens": pretrain_loss_normalization_target_tokens,
@@ -5068,6 +5954,24 @@ def _run_pretrain_distributed(
         "v3_connector_type": v3_connector_type,
         "v3_connector_output_scale": v3_connector_output_scale,
         "v3_connector_output_gate_init": v3_connector_output_gate_init,
+        "v3_connector_trainable_scale_mode": v3_connector_trainable_scale_mode,
+        "v3_use_2d_patch_position_features": v3_use_2d_patch_position_features,
+        "v3_patch_position_feature_type": v3_patch_position_feature_type,
+        "v3_query_conditioned_visual_scale_mode": v3_query_conditioned_visual_scale_mode,
+        "v3_query_conditioned_visual_scale_min": v3_query_conditioned_visual_scale_min,
+        "v3_query_conditioned_visual_scale_max": v3_query_conditioned_visual_scale_max,
+        "v3_query_conditioned_visual_scale_init": v3_query_conditioned_visual_scale_init,
+        "v3_query_conditioned_patch_selector_mode": v3_query_conditioned_patch_selector_mode,
+        "v3_query_conditioned_patch_selector_hidden_dim": v3_query_conditioned_patch_selector_hidden_dim,
+        "v3_query_conditioned_patch_selector_max_residual": v3_query_conditioned_patch_selector_max_residual,
+        "v3_query_conditioned_patch_selector_normalize_mean": v3_query_conditioned_patch_selector_normalize_mean,
+        "v3_visual_cross_attention_mode": v3_visual_cross_attention_mode,
+        "v3_visual_cross_attention_layers": v3_visual_cross_attention_layers,
+        "v3_visual_cross_attention_num_heads": v3_visual_cross_attention_num_heads,
+        "v3_visual_cross_attention_adapter_dim": v3_visual_cross_attention_adapter_dim,
+        "v3_visual_cross_attention_gate_init": v3_visual_cross_attention_gate_init,
+        "v3_visual_cross_attention_dropout": v3_visual_cross_attention_dropout,
+        "v3_visual_cross_attention_freeze_connector": v3_visual_cross_attention_freeze_connector,
         "v4_global_image_tokens": v4_global_image_tokens,
         "v4_local_image_tokens": v4_local_image_tokens,
         "v4_connector_layers": v4_connector_layers,
@@ -5112,6 +6016,10 @@ def pretrain_distributed(
     pretrain_image_tokens=None,
     dataset="llava_pretrain",
     connector_warmup_steps=0,
+    connector_trainable_prefixes="",
+    contrastive_answer_suppression=False,
+    contrastive_lambda=0.1,
+    contrastive_margin=0.5,
     pretrain_loss_scale=1.0,
     pretrain_loss_normalization="mean",
     pretrain_loss_normalization_target_tokens=8.0,
@@ -5122,6 +6030,24 @@ def pretrain_distributed(
     v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
     v3_connector_output_scale=None,
     v3_connector_output_gate_init=None,
+    v3_connector_trainable_scale_mode=None,
+    v3_use_2d_patch_position_features=False,
+    v3_patch_position_feature_type=None,
+    v3_query_conditioned_visual_scale_mode="none",
+    v3_query_conditioned_visual_scale_min=0.95,
+    v3_query_conditioned_visual_scale_max=1.15,
+    v3_query_conditioned_visual_scale_init=None,
+    v3_query_conditioned_patch_selector_mode="none",
+    v3_query_conditioned_patch_selector_hidden_dim=256,
+    v3_query_conditioned_patch_selector_max_residual=0.25,
+    v3_query_conditioned_patch_selector_normalize_mean=True,
+    v3_visual_cross_attention_mode="none",
+    v3_visual_cross_attention_layers=None,
+    v3_visual_cross_attention_num_heads=16,
+    v3_visual_cross_attention_adapter_dim=512,
+    v3_visual_cross_attention_gate_init=0.0,
+    v3_visual_cross_attention_dropout=0.0,
+    v3_visual_cross_attention_freeze_connector=False,
     v4_global_image_tokens=None,
     v4_local_image_tokens=None,
     v4_connector_layers=None,
@@ -5151,6 +6077,10 @@ def pretrain_distributed(
         pretrain_image_tokens=pretrain_image_tokens,
         dataset=dataset,
         connector_warmup_steps=connector_warmup_steps,
+        connector_trainable_prefixes=connector_trainable_prefixes,
+        contrastive_answer_suppression=contrastive_answer_suppression,
+        contrastive_lambda=contrastive_lambda,
+        contrastive_margin=contrastive_margin,
         pretrain_loss_scale=pretrain_loss_scale,
         pretrain_loss_normalization=pretrain_loss_normalization,
         pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
@@ -5161,6 +6091,24 @@ def pretrain_distributed(
         v3_connector_type=v3_connector_type,
         v3_connector_output_scale=v3_connector_output_scale,
         v3_connector_output_gate_init=v3_connector_output_gate_init,
+        v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
+        v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
+        v3_patch_position_feature_type=v3_patch_position_feature_type,
+        v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
+        v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
+        v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
+        v3_query_conditioned_visual_scale_init=v3_query_conditioned_visual_scale_init,
+        v3_query_conditioned_patch_selector_mode=v3_query_conditioned_patch_selector_mode,
+        v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
+        v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
+        v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+        v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
+        v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
+        v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
+        v3_visual_cross_attention_adapter_dim=v3_visual_cross_attention_adapter_dim,
+        v3_visual_cross_attention_gate_init=v3_visual_cross_attention_gate_init,
+        v3_visual_cross_attention_dropout=v3_visual_cross_attention_dropout,
+        v3_visual_cross_attention_freeze_connector=v3_visual_cross_attention_freeze_connector,
         v4_global_image_tokens=v4_global_image_tokens,
         v4_local_image_tokens=v4_local_image_tokens,
         v4_connector_layers=v4_connector_layers,
@@ -5201,6 +6149,10 @@ def pretrain_distributed_h100(
     pretrain_image_tokens=None,
     dataset="llava_pretrain",
     connector_warmup_steps=0,
+    connector_trainable_prefixes="",
+    contrastive_answer_suppression=False,
+    contrastive_lambda=0.1,
+    contrastive_margin=0.5,
     pretrain_loss_scale=1.0,
     pretrain_loss_normalization="mean",
     pretrain_loss_normalization_target_tokens=8.0,
@@ -5211,6 +6163,24 @@ def pretrain_distributed_h100(
     v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
     v3_connector_output_scale=None,
     v3_connector_output_gate_init=None,
+    v3_connector_trainable_scale_mode=None,
+    v3_use_2d_patch_position_features=False,
+    v3_patch_position_feature_type=None,
+    v3_query_conditioned_visual_scale_mode="none",
+    v3_query_conditioned_visual_scale_min=0.95,
+    v3_query_conditioned_visual_scale_max=1.15,
+    v3_query_conditioned_visual_scale_init=None,
+    v3_query_conditioned_patch_selector_mode="none",
+    v3_query_conditioned_patch_selector_hidden_dim=256,
+    v3_query_conditioned_patch_selector_max_residual=0.25,
+    v3_query_conditioned_patch_selector_normalize_mean=True,
+    v3_visual_cross_attention_mode="none",
+    v3_visual_cross_attention_layers=None,
+    v3_visual_cross_attention_num_heads=16,
+    v3_visual_cross_attention_adapter_dim=512,
+    v3_visual_cross_attention_gate_init=0.0,
+    v3_visual_cross_attention_dropout=0.0,
+    v3_visual_cross_attention_freeze_connector=False,
     v4_global_image_tokens=None,
     v4_local_image_tokens=None,
     v4_connector_layers=None,
@@ -5240,6 +6210,10 @@ def pretrain_distributed_h100(
         pretrain_image_tokens=pretrain_image_tokens,
         dataset=dataset,
         connector_warmup_steps=connector_warmup_steps,
+        connector_trainable_prefixes=connector_trainable_prefixes,
+        contrastive_answer_suppression=contrastive_answer_suppression,
+        contrastive_lambda=contrastive_lambda,
+        contrastive_margin=contrastive_margin,
         pretrain_loss_scale=pretrain_loss_scale,
         pretrain_loss_normalization=pretrain_loss_normalization,
         pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
@@ -5250,6 +6224,24 @@ def pretrain_distributed_h100(
         v3_connector_type=v3_connector_type,
         v3_connector_output_scale=v3_connector_output_scale,
         v3_connector_output_gate_init=v3_connector_output_gate_init,
+        v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
+        v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
+        v3_patch_position_feature_type=v3_patch_position_feature_type,
+        v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
+        v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
+        v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
+        v3_query_conditioned_visual_scale_init=v3_query_conditioned_visual_scale_init,
+        v3_query_conditioned_patch_selector_mode=v3_query_conditioned_patch_selector_mode,
+        v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
+        v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
+        v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+        v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
+        v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
+        v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
+        v3_visual_cross_attention_adapter_dim=v3_visual_cross_attention_adapter_dim,
+        v3_visual_cross_attention_gate_init=v3_visual_cross_attention_gate_init,
+        v3_visual_cross_attention_dropout=v3_visual_cross_attention_dropout,
+        v3_visual_cross_attention_freeze_connector=v3_visual_cross_attention_freeze_connector,
         v4_global_image_tokens=v4_global_image_tokens,
         v4_local_image_tokens=v4_local_image_tokens,
         v4_connector_layers=v4_connector_layers,
@@ -5433,6 +6425,7 @@ def main(
     contrastive_lambda: float = 0.1,
     contrastive_margin: float = 0.5,
     connector_warmup_steps: int = 0,
+    connector_trainable_prefixes: str = "",
     pretrain_loss_scale: float = 1.0,
     pretrain_loss_normalization: str = "mean",
     pretrain_loss_normalization_target_tokens: float = 8.0,
@@ -5443,6 +6436,24 @@ def main(
     v3_connector_type: str = V3_DEFAULT_CONNECTOR_TYPE,
     v3_connector_output_scale: float = None,
     v3_connector_output_gate_init: float = None,
+    v3_connector_trainable_scale_mode: str = None,
+    v3_use_2d_patch_position_features: bool = False,
+    v3_patch_position_feature_type: str = None,
+    v3_query_conditioned_visual_scale_mode: str = "none",
+    v3_query_conditioned_visual_scale_min: float = 0.95,
+    v3_query_conditioned_visual_scale_max: float = 1.15,
+    v3_query_conditioned_visual_scale_init: float = None,
+    v3_query_conditioned_patch_selector_mode: str = "none",
+    v3_query_conditioned_patch_selector_hidden_dim: int = 256,
+    v3_query_conditioned_patch_selector_max_residual: float = 0.25,
+    v3_query_conditioned_patch_selector_normalize_mean: bool = True,
+    v3_visual_cross_attention_mode: str = "none",
+    v3_visual_cross_attention_layers: str = None,
+    v3_visual_cross_attention_num_heads: int = 16,
+    v3_visual_cross_attention_adapter_dim: int = 512,
+    v3_visual_cross_attention_gate_init: float = 0.0,
+    v3_visual_cross_attention_dropout: float = 0.0,
+    v3_visual_cross_attention_freeze_connector: bool = False,
     v4_global_image_tokens: int = None,
     v4_local_image_tokens: int = None,
     v4_connector_layers: int = None,
@@ -5495,6 +6506,8 @@ def main(
         "v9_qwen_contrastive_answer_suppression_stage2",
     }:
         freeze_connector = True
+    if stage == "pretrain" and dataset == "v10_qwen_gqa_contrastive_stage1b":
+        contrastive_answer_suppression = True
     resolved_v4_connector_type = v4_connector_type or V4_DEFAULT_CONNECTOR_TYPE
     resolved_deepstack_layers = _parse_v4_hidden_state_indices(
         v4_deepstack_hidden_state_indices
@@ -5508,6 +6521,24 @@ def main(
     if token_compressor_type not in {"learned", "perceiver", "perceiver2", "avg"}:
         raise ValueError(
             "--token-compressor-type must be one of: learned, perceiver, perceiver2, avg"
+        )
+    if arch_key == "anymal_v3":
+        v3_patch_position_feature_type = _normalize_v3_patch_position_feature_type(
+            v3_patch_position_feature_type,
+            use_2d=v3_use_2d_patch_position_features,
+        )
+        v3_use_2d_patch_position_features = v3_patch_position_feature_type != "none"
+        v3_query_conditioned_visual_scale_mode = str(
+            v3_query_conditioned_visual_scale_mode or "none"
+        ).strip().lower()
+        v3_query_conditioned_patch_selector_mode = _normalize_v3_query_patch_selector_mode(
+            v3_query_conditioned_patch_selector_mode
+        )
+        v3_visual_cross_attention_mode = _normalize_v3_visual_cross_attention_mode(
+            v3_visual_cross_attention_mode
+        )
+        v3_visual_cross_attention_layers = _parse_v3_visual_cross_attention_layers(
+            v3_visual_cross_attention_layers
         )
 
     # Generate unique run name locally BEFORE any .remote() call for fresh runs.
@@ -5527,6 +6558,38 @@ def main(
         print(f"  V3 connector type: {v3_connector_type or V3_DEFAULT_CONNECTOR_TYPE}")
         print(f"  V3 connector output scale: {v3_connector_output_scale if v3_connector_output_scale is not None else 1.0}")
         print(f"  V3 connector output gate init: {v3_connector_output_gate_init}")
+        print(f"  V3 trainable scale mode: {v3_connector_trainable_scale_mode or 'none'}")
+        print(f"  V3 2D patch position features: {bool(v3_use_2d_patch_position_features)}")
+        print(f"  V3 patch position feature type: {v3_patch_position_feature_type}")
+        print(f"  V3 query-conditioned visual scale mode: {v3_query_conditioned_visual_scale_mode}")
+        if v3_query_conditioned_visual_scale_mode != "none":
+            print(
+                "  V3 query-conditioned visual scale bounds: "
+                f"{v3_query_conditioned_visual_scale_min}..{v3_query_conditioned_visual_scale_max}"
+            )
+            print(
+                "  V3 query-conditioned visual scale init: "
+                f"{v3_query_conditioned_visual_scale_init}"
+            )
+        print(f"  V3 query-conditioned patch selector mode: {v3_query_conditioned_patch_selector_mode}")
+        if v3_query_conditioned_patch_selector_mode != "none":
+            print(
+                "  V3 query-conditioned patch selector: "
+                f"hidden={v3_query_conditioned_patch_selector_hidden_dim}, "
+                f"max_residual={v3_query_conditioned_patch_selector_max_residual}, "
+                f"normalize_mean={v3_query_conditioned_patch_selector_normalize_mean}"
+            )
+        print(f"  V3 visual cross-attention mode: {v3_visual_cross_attention_mode}")
+        if v3_visual_cross_attention_mode != "none":
+            print(
+                "  V3 visual cross-attention: "
+                f"layers={v3_visual_cross_attention_layers or 'default'}, "
+                f"heads={v3_visual_cross_attention_num_heads}, "
+                f"adapter_dim={v3_visual_cross_attention_adapter_dim}, "
+                f"gate_init={v3_visual_cross_attention_gate_init}, "
+                f"dropout={v3_visual_cross_attention_dropout}, "
+                f"freeze_connector={v3_visual_cross_attention_freeze_connector}"
+            )
     print(f"  GPU type: {gpu_type}")
     print(f"  Modal GPU resource: {selected_gpu}")
     print(
@@ -5593,6 +6656,8 @@ def main(
         print(f"  Projector warmup steps: {projector_warmup_steps}")
     if stage == "pretrain" and connector_warmup_steps:
         print(f"  Stage 1 connector warmup steps: {connector_warmup_steps}")
+    if stage == "pretrain" and connector_trainable_prefixes:
+        print(f"  Stage 1 connector trainable prefixes: {connector_trainable_prefixes}")
     if stage == "pretrain" and pretrain_loss_scale != 1.0:
         print(f"  Stage 1 loss scale: {pretrain_loss_scale}")
     if stage == "pretrain" and pretrain_connector_rms_regularizer_alpha:
@@ -5613,6 +6678,10 @@ def main(
             "  Stage 1 checkpoint save steps: "
             f"{pretrain_save_steps or _checkpoint_save_interval(max_steps)}"
         )
+        if contrastive_answer_suppression:
+            print("  Stage 1 contrastive answer suppression: enabled")
+            print(f"  Contrastive lambda: {contrastive_lambda}")
+            print(f"  Contrastive margin: {contrastive_margin}")
     if stage == "finetune":
         print(f"  Freeze connector: {freeze_connector}")
     if stage == "finetune" and finetune_preserve_checkpoint_steps:
@@ -5666,6 +6735,10 @@ def main(
             pretrain_image_tokens=pretrain_image_tokens,
             dataset=dataset,
             connector_warmup_steps=connector_warmup_steps,
+            connector_trainable_prefixes=connector_trainable_prefixes,
+            contrastive_answer_suppression=contrastive_answer_suppression,
+            contrastive_lambda=contrastive_lambda,
+            contrastive_margin=contrastive_margin,
             pretrain_loss_scale=pretrain_loss_scale,
             pretrain_loss_normalization=pretrain_loss_normalization,
             pretrain_loss_normalization_target_tokens=pretrain_loss_normalization_target_tokens,
@@ -5676,6 +6749,24 @@ def main(
             v3_connector_type=v3_connector_type,
             v3_connector_output_scale=v3_connector_output_scale,
             v3_connector_output_gate_init=v3_connector_output_gate_init,
+            v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
+            v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
+            v3_patch_position_feature_type=v3_patch_position_feature_type,
+            v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
+            v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
+            v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
+            v3_query_conditioned_visual_scale_init=v3_query_conditioned_visual_scale_init,
+            v3_query_conditioned_patch_selector_mode=v3_query_conditioned_patch_selector_mode,
+            v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
+            v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
+            v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+            v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
+            v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
+            v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
+            v3_visual_cross_attention_adapter_dim=v3_visual_cross_attention_adapter_dim,
+            v3_visual_cross_attention_gate_init=v3_visual_cross_attention_gate_init,
+            v3_visual_cross_attention_dropout=v3_visual_cross_attention_dropout,
+            v3_visual_cross_attention_freeze_connector=v3_visual_cross_attention_freeze_connector,
             v4_global_image_tokens=v4_global_tokens,
             v4_local_image_tokens=v4_local_tokens,
             v4_connector_layers=v4_connector_layers,
@@ -5730,6 +6821,24 @@ def main(
             v3_connector_type=v3_connector_type,
             v3_connector_output_scale=v3_connector_output_scale,
             v3_connector_output_gate_init=v3_connector_output_gate_init,
+            v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
+            v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
+            v3_patch_position_feature_type=v3_patch_position_feature_type,
+            v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
+            v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
+            v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
+            v3_query_conditioned_visual_scale_init=v3_query_conditioned_visual_scale_init,
+            v3_query_conditioned_patch_selector_mode=v3_query_conditioned_patch_selector_mode,
+            v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
+            v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
+            v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+            v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
+            v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
+            v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
+            v3_visual_cross_attention_adapter_dim=v3_visual_cross_attention_adapter_dim,
+            v3_visual_cross_attention_gate_init=v3_visual_cross_attention_gate_init,
+            v3_visual_cross_attention_dropout=v3_visual_cross_attention_dropout,
+            v3_visual_cross_attention_freeze_connector=v3_visual_cross_attention_freeze_connector,
             v4_global_image_tokens=v4_global_tokens,
             v4_local_image_tokens=v4_local_tokens,
             v4_connector_layers=v4_connector_layers,
