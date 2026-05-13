@@ -91,6 +91,7 @@ class PerceiverResampler(nn.Module):
         patch_position_feature_type: Optional[str] = None,
         patch_position_grid_size: int = 32,
         patch_position_mlp_hidden_dim: int = 128,
+        patch_position_feature_scale: float = 1.0,
         query_conditioned_visual_scale_mode: str = "none",
         query_conditioned_visual_scale_min: float = 0.95,
         query_conditioned_visual_scale_max: float = 1.15,
@@ -122,6 +123,12 @@ class PerceiverResampler(nn.Module):
             raise ValueError(
                 "patch_position_mlp_hidden_dim must be > 0, "
                 f"got {patch_position_mlp_hidden_dim}"
+            )
+        self.patch_position_feature_scale = float(patch_position_feature_scale)
+        if self.patch_position_feature_scale < 0.0:
+            raise ValueError(
+                "patch_position_feature_scale must be >= 0, "
+                f"got {patch_position_feature_scale}"
             )
         self.output_scale = float(output_scale)
         if self.output_scale <= 0:
@@ -445,9 +452,11 @@ class PerceiverResampler(nn.Module):
             "dtype": x.dtype,
         }
         if self.patch_position_feature_type == "learned_table":
-            return x + self._learned_patch_position_features(**kwargs)
+            features = self._learned_patch_position_features(**kwargs)
+            return x + features * self.patch_position_feature_scale
         if self.patch_position_feature_type == "coord_mlp":
-            return x + self._coord_mlp_patch_position_features(**kwargs)
+            features = self._coord_mlp_patch_position_features(**kwargs)
+            return x + features * self.patch_position_feature_scale
         raise RuntimeError(
             f"Unsupported patch_position_feature_type={self.patch_position_feature_type!r}"
         )
@@ -576,6 +585,7 @@ class QuestionConditionedPerceiverResampler(PerceiverResampler):
         patch_position_feature_type: Optional[str] = None,
         patch_position_grid_size: int = 32,
         patch_position_mlp_hidden_dim: int = 128,
+        patch_position_feature_scale: float = 1.0,
         query_conditioned_visual_scale_mode: str = "none",
         query_conditioned_visual_scale_min: float = 0.95,
         query_conditioned_visual_scale_max: float = 1.15,
@@ -602,6 +612,7 @@ class QuestionConditionedPerceiverResampler(PerceiverResampler):
             patch_position_feature_type=patch_position_feature_type,
             patch_position_grid_size=patch_position_grid_size,
             patch_position_mlp_hidden_dim=patch_position_mlp_hidden_dim,
+            patch_position_feature_scale=patch_position_feature_scale,
             query_conditioned_visual_scale_mode=query_conditioned_visual_scale_mode,
             query_conditioned_visual_scale_min=query_conditioned_visual_scale_min,
             query_conditioned_visual_scale_max=query_conditioned_visual_scale_max,

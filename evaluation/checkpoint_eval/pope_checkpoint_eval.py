@@ -18,8 +18,23 @@ from pathlib import Path
 
 import modal
 
-PROJECT_DIR = Path(__file__).resolve().parents[2]
 REMOTE_PROJECT_DIR = "/root/anymal"
+
+
+def _resolve_project_dir() -> Path:
+    path = Path(__file__).resolve()
+    if len(path.parents) >= 3:
+        return path.parents[2]
+    remote_project = Path(REMOTE_PROJECT_DIR)
+    if remote_project.exists():
+        return remote_project
+    cwd = Path.cwd()
+    if (cwd / "models").exists() and (cwd / "evaluation").exists():
+        return cwd
+    return path.parent
+
+
+PROJECT_DIR = _resolve_project_dir()
 if os.path.exists(REMOTE_PROJECT_DIR) and REMOTE_PROJECT_DIR not in sys.path:
     sys.path.insert(0, REMOTE_PROJECT_DIR)
 

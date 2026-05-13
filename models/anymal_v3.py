@@ -61,6 +61,7 @@ class AnyMALv3(AnyMALv2):
         patch_position_feature_type: Optional[str] = None,
         patch_position_grid_size: int = 32,
         patch_position_mlp_hidden_dim: int = 128,
+        patch_position_feature_scale: float = 1.0,
         query_conditioned_visual_scale_mode: str = "none",
         query_conditioned_visual_scale_min: float = 0.95,
         query_conditioned_visual_scale_max: float = 1.15,
@@ -134,6 +135,7 @@ class AnyMALv3(AnyMALv2):
         self.patch_position_feature_type = patch_position_feature_type
         self.patch_position_grid_size = int(patch_position_grid_size)
         self.patch_position_mlp_hidden_dim = int(patch_position_mlp_hidden_dim)
+        self.patch_position_feature_scale = float(patch_position_feature_scale)
         self.query_conditioned_visual_scale_mode = str(
             query_conditioned_visual_scale_mode or "none"
         ).strip().lower()
@@ -227,6 +229,7 @@ class AnyMALv3(AnyMALv2):
             patch_position_feature_type=self.patch_position_feature_type,
             patch_position_grid_size=self.patch_position_grid_size,
             patch_position_mlp_hidden_dim=self.patch_position_mlp_hidden_dim,
+            patch_position_feature_scale=self.patch_position_feature_scale,
             query_conditioned_visual_scale_mode=self.query_conditioned_visual_scale_mode,
             query_conditioned_visual_scale_min=self.query_conditioned_visual_scale_min,
             query_conditioned_visual_scale_max=self.query_conditioned_visual_scale_max,
@@ -256,6 +259,11 @@ class AnyMALv3(AnyMALv2):
             self.projector,
             "patch_position_mlp_hidden_dim",
             self.patch_position_mlp_hidden_dim,
+        )
+        self.patch_position_feature_scale = getattr(
+            self.projector,
+            "patch_position_feature_scale",
+            self.patch_position_feature_scale,
         )
         self.query_conditioned_visual_scale_mode = getattr(
             self.projector,
@@ -924,6 +932,7 @@ class AnyMALv3(AnyMALv2):
                 "patch_position_feature_type": self.patch_position_feature_type,
                 "patch_position_grid_size": self.patch_position_grid_size,
                 "patch_position_mlp_hidden_dim": self.patch_position_mlp_hidden_dim,
+                "patch_position_feature_scale": self.patch_position_feature_scale,
                 "query_conditioned_visual_scale_mode": self.query_conditioned_visual_scale_mode,
                 "query_conditioned_visual_scale_min": self.query_conditioned_visual_scale_min,
                 "query_conditioned_visual_scale_max": self.query_conditioned_visual_scale_max,
@@ -1044,6 +1053,13 @@ class AnyMALv3(AnyMALv2):
         ):
             kwargs["patch_position_mlp_hidden_dim"] = int(
                 meta["patch_position_mlp_hidden_dim"]
+            )
+        if (
+            "patch_position_feature_scale" not in kwargs
+            and meta.get("patch_position_feature_scale") is not None
+        ):
+            kwargs["patch_position_feature_scale"] = float(
+                meta["patch_position_feature_scale"]
             )
         if (
             "query_conditioned_visual_scale_mode" not in kwargs
@@ -1191,6 +1207,12 @@ class AnyMALv3(AnyMALv2):
             expected_values["patch_position_mlp_hidden_dim"] = getattr(
                 model,
                 "patch_position_mlp_hidden_dim",
+                None,
+            )
+        if "patch_position_feature_scale" in meta:
+            expected_values["patch_position_feature_scale"] = getattr(
+                model,
+                "patch_position_feature_scale",
                 None,
             )
         if "query_conditioned_visual_scale_mode" in meta:

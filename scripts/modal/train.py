@@ -497,6 +497,7 @@ def _checkpoint_matches_run_config(
     v3_connector_trainable_scale_mode: str = None,
     v3_use_2d_patch_position_features: bool = None,
     v3_patch_position_feature_type: str = None,
+    v3_patch_position_feature_scale: float = None,
     v3_query_conditioned_visual_scale_mode: str = None,
     v3_query_conditioned_visual_scale_min: float = None,
     v3_query_conditioned_visual_scale_max: float = None,
@@ -569,6 +570,7 @@ def _checkpoint_matches_run_config(
             "connector_output_gate_init": v3_connector_output_gate_init,
             "connector_trainable_scale_mode": v3_connector_trainable_scale_mode,
             "use_2d_patch_position_features": v3_use_2d_patch_position_features,
+            "patch_position_feature_scale": v3_patch_position_feature_scale,
             "patch_position_feature_type": (
                 _normalize_v3_patch_position_feature_type(
                     v3_patch_position_feature_type,
@@ -617,6 +619,8 @@ def _checkpoint_matches_run_config(
                 if bool(expected):
                     continue
                 checkpoint_value = False
+            if key == "patch_position_feature_scale" and checkpoint_value is None:
+                checkpoint_value = 1.0
             if key in {
                 "query_conditioned_visual_scale_mode",
                 "query_conditioned_patch_selector_mode",
@@ -671,6 +675,7 @@ def _auto_discover_pretrain_checkpoint(
     v3_connector_trainable_scale_mode: str = None,
     v3_use_2d_patch_position_features: bool = None,
     v3_patch_position_feature_type: str = None,
+    v3_patch_position_feature_scale: float = None,
     v3_query_conditioned_visual_scale_mode: str = None,
     v3_query_conditioned_visual_scale_min: float = None,
     v3_query_conditioned_visual_scale_max: float = None,
@@ -713,6 +718,7 @@ def _auto_discover_pretrain_checkpoint(
             v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
             v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
             v3_patch_position_feature_type=v3_patch_position_feature_type,
+            v3_patch_position_feature_scale=v3_patch_position_feature_scale,
             v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
             v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
             v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
@@ -1118,6 +1124,7 @@ class Trainer:
         v3_connector_trainable_scale_mode: str = None,
         v3_use_2d_patch_position_features: bool = False,
         v3_patch_position_feature_type: str = None,
+        v3_patch_position_feature_scale: float = None,
         v3_query_conditioned_visual_scale_mode: str = "none",
         v3_query_conditioned_visual_scale_min: float = 0.95,
         v3_query_conditioned_visual_scale_max: float = 1.15,
@@ -1270,6 +1277,7 @@ class Trainer:
                 v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
                 v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
                 v3_patch_position_feature_type=v3_patch_position_feature_type,
+                v3_patch_position_feature_scale=v3_patch_position_feature_scale,
                 v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
                 v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
                 v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
@@ -1331,6 +1339,7 @@ class Trainer:
                 v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
                 v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
                 v3_patch_position_feature_type=v3_patch_position_feature_type,
+                v3_patch_position_feature_scale=v3_patch_position_feature_scale,
                 v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
                 v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
                 v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
@@ -1607,6 +1616,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                   v3_connector_trainable_scale_mode=None,
                   v3_use_2d_patch_position_features=False,
                   v3_patch_position_feature_type=None,
+                  v3_patch_position_feature_scale=None,
                   v3_query_conditioned_visual_scale_mode="none",
                   v3_query_conditioned_visual_scale_min=0.95,
                   v3_query_conditioned_visual_scale_max=1.15,
@@ -1725,6 +1735,8 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
             and "patch_position_feature_type" in meta
         ):
             v3_patch_position_feature_type = meta["patch_position_feature_type"]
+        if v3_patch_position_feature_scale is None:
+            v3_patch_position_feature_scale = meta.get("patch_position_feature_scale")
         if (
             v3_query_conditioned_visual_scale_mode in {None, "none"}
             and meta.get("query_conditioned_visual_scale_mode") is not None
@@ -1917,6 +1929,11 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                     v3_use_2d_patch_position_features
                 ),
                 "patch_position_feature_type": v3_patch_position_feature_type,
+                "patch_position_feature_scale": (
+                    float(v3_patch_position_feature_scale)
+                    if v3_patch_position_feature_scale is not None
+                    else 1.0
+                ),
                 "query_conditioned_visual_scale_mode": (
                     v3_query_conditioned_visual_scale_mode or "none"
                 ),
@@ -2251,6 +2268,7 @@ def run_pretrain(
     v3_connector_trainable_scale_mode=None,
     v3_use_2d_patch_position_features=False,
     v3_patch_position_feature_type=None,
+    v3_patch_position_feature_scale=None,
     v3_query_conditioned_visual_scale_mode="none",
     v3_query_conditioned_visual_scale_min=0.95,
     v3_query_conditioned_visual_scale_max=1.15,
@@ -2325,6 +2343,8 @@ def run_pretrain(
             and "patch_position_feature_type" in meta
         ):
             v3_patch_position_feature_type = meta["patch_position_feature_type"]
+        if v3_patch_position_feature_scale is None:
+            v3_patch_position_feature_scale = meta.get("patch_position_feature_scale")
         if (
             v3_query_conditioned_visual_scale_mode in {None, "none"}
             and meta.get("query_conditioned_visual_scale_mode") is not None
@@ -2515,6 +2535,11 @@ def run_pretrain(
                     v3_use_2d_patch_position_features
                 ),
                 "patch_position_feature_type": v3_patch_position_feature_type,
+                "patch_position_feature_scale": (
+                    float(v3_patch_position_feature_scale)
+                    if v3_patch_position_feature_scale is not None
+                    else 1.0
+                ),
                 "query_conditioned_visual_scale_mode": (
                     v3_query_conditioned_visual_scale_mode or "none"
                 ),
@@ -2667,6 +2692,12 @@ def run_pretrain(
                     expected_values["connector_output_gate_init"] = getattr(
                         model,
                         "connector_output_gate_init",
+                        None,
+                    )
+                if v3_patch_position_feature_scale is not None:
+                    expected_values["patch_position_feature_scale"] = getattr(
+                        model,
+                        "patch_position_feature_scale",
                         None,
                     )
             if expected_llm_backbone != CURRENT_LLAMA3_BACKBONE:
@@ -5759,6 +5790,7 @@ def _pretrain_worker(local_rank, world_size, config):
                 False,
             ),
             v3_patch_position_feature_type=config.get("v3_patch_position_feature_type"),
+            v3_patch_position_feature_scale=config.get("v3_patch_position_feature_scale"),
             v3_query_conditioned_visual_scale_mode=config.get(
                 "v3_query_conditioned_visual_scale_mode",
                 "none",
@@ -5865,6 +5897,7 @@ def _run_pretrain_distributed(
     v3_connector_trainable_scale_mode=None,
     v3_use_2d_patch_position_features=False,
     v3_patch_position_feature_type=None,
+    v3_patch_position_feature_scale=None,
     v3_query_conditioned_visual_scale_mode="none",
     v3_query_conditioned_visual_scale_min=0.95,
     v3_query_conditioned_visual_scale_max=1.15,
@@ -5957,6 +5990,7 @@ def _run_pretrain_distributed(
         "v3_connector_trainable_scale_mode": v3_connector_trainable_scale_mode,
         "v3_use_2d_patch_position_features": v3_use_2d_patch_position_features,
         "v3_patch_position_feature_type": v3_patch_position_feature_type,
+        "v3_patch_position_feature_scale": v3_patch_position_feature_scale,
         "v3_query_conditioned_visual_scale_mode": v3_query_conditioned_visual_scale_mode,
         "v3_query_conditioned_visual_scale_min": v3_query_conditioned_visual_scale_min,
         "v3_query_conditioned_visual_scale_max": v3_query_conditioned_visual_scale_max,
@@ -6033,6 +6067,7 @@ def pretrain_distributed(
     v3_connector_trainable_scale_mode=None,
     v3_use_2d_patch_position_features=False,
     v3_patch_position_feature_type=None,
+    v3_patch_position_feature_scale=None,
     v3_query_conditioned_visual_scale_mode="none",
     v3_query_conditioned_visual_scale_min=0.95,
     v3_query_conditioned_visual_scale_max=1.15,
@@ -6094,6 +6129,7 @@ def pretrain_distributed(
         v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
         v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
         v3_patch_position_feature_type=v3_patch_position_feature_type,
+        v3_patch_position_feature_scale=v3_patch_position_feature_scale,
         v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
         v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
         v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
@@ -6166,6 +6202,7 @@ def pretrain_distributed_h100(
     v3_connector_trainable_scale_mode=None,
     v3_use_2d_patch_position_features=False,
     v3_patch_position_feature_type=None,
+    v3_patch_position_feature_scale=None,
     v3_query_conditioned_visual_scale_mode="none",
     v3_query_conditioned_visual_scale_min=0.95,
     v3_query_conditioned_visual_scale_max=1.15,
@@ -6227,6 +6264,7 @@ def pretrain_distributed_h100(
         v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
         v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
         v3_patch_position_feature_type=v3_patch_position_feature_type,
+        v3_patch_position_feature_scale=v3_patch_position_feature_scale,
         v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
         v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
         v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
@@ -6439,6 +6477,7 @@ def main(
     v3_connector_trainable_scale_mode: str = None,
     v3_use_2d_patch_position_features: bool = False,
     v3_patch_position_feature_type: str = None,
+    v3_patch_position_feature_scale: float = None,
     v3_query_conditioned_visual_scale_mode: str = "none",
     v3_query_conditioned_visual_scale_min: float = 0.95,
     v3_query_conditioned_visual_scale_max: float = 1.15,
@@ -6561,6 +6600,7 @@ def main(
         print(f"  V3 trainable scale mode: {v3_connector_trainable_scale_mode or 'none'}")
         print(f"  V3 2D patch position features: {bool(v3_use_2d_patch_position_features)}")
         print(f"  V3 patch position feature type: {v3_patch_position_feature_type}")
+        print(f"  V3 patch position feature scale: {v3_patch_position_feature_scale}")
         print(f"  V3 query-conditioned visual scale mode: {v3_query_conditioned_visual_scale_mode}")
         if v3_query_conditioned_visual_scale_mode != "none":
             print(
@@ -6752,6 +6792,7 @@ def main(
             v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
             v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
             v3_patch_position_feature_type=v3_patch_position_feature_type,
+            v3_patch_position_feature_scale=v3_patch_position_feature_scale,
             v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
             v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
             v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
@@ -6824,6 +6865,7 @@ def main(
             v3_connector_trainable_scale_mode=v3_connector_trainable_scale_mode,
             v3_use_2d_patch_position_features=v3_use_2d_patch_position_features,
             v3_patch_position_feature_type=v3_patch_position_feature_type,
+            v3_patch_position_feature_scale=v3_patch_position_feature_scale,
             v3_query_conditioned_visual_scale_mode=v3_query_conditioned_visual_scale_mode,
             v3_query_conditioned_visual_scale_min=v3_query_conditioned_visual_scale_min,
             v3_query_conditioned_visual_scale_max=v3_query_conditioned_visual_scale_max,
