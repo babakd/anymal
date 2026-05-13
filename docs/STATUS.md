@@ -4,10 +4,10 @@ Last updated: 2026-05-13
 
 ## Current Best Candidate
 
-The current viable replacement candidate is the V9 Qwen/Qwen3-8B checkpoint:
+The current Qwen/Qwen3-8B frontier candidate is the V11 C1-salvage checkpoint:
 
 ```text
-/checkpoints/pretrain-output/v9-qwen3-stage1b2350-scale105-final/checkpoint-2350-scale105
+/checkpoints/pretrain-output/v11-qwen3-c1-posscale000-scale1125/checkpoint-posscale000-scale1125
 ```
 
 It uses:
@@ -16,61 +16,81 @@ It uses:
 - Decoder backbone: `Qwen/Qwen3-8B`
 - Vision tower: SigLIP2-So400m at 384px
 - Connector: V3 Perceiver-style connector with 128 image tokens
-- Materialized connector output scale: `1.05`
+- Materialized connector output scale: `1.125`
+- Learned 2D patch-position feature path present but attenuated with
+  `patch_position_feature_scale: 0.0`
 - Checkpoint contents: `model_meta.json` and `projector.pt`
 - Resume status: eval/inference checkpoint only, not an optimizer-resume
   checkpoint
 
-The full V9 result ledger lives at `experiments/v9_qwen/results.md`. The latest
-experiment index lives at `experiments/LATEST.md`, and the confirmation plan
-lives at `experiments/v9_qwen/confirm.md`.
+The V11 result ledger lives at `experiments/v11_qwen/results.md`. The V9 result
+ledger remains at `experiments/v9_qwen/results.md`.
 
-## Latest V10 Ceiling Note
+## Latest V11 Ceiling Note
 
-The V10 Qwen3 ceiling search on 2026-05-13 did not produce a promotable
-successor. The C1 learned-2D-position branch reached GQA `44.5` but regressed
-corrupted-image controls, and the final E1 gated visual-cross-attention branch
-screened at GQA `43.4`. Treat the V9/Batch-A family as the active Qwen path;
-see `experiments/v10_qwen/ceiling_results.md`.
+The V11 Qwen3 ceiling search on 2026-05-13 found a no-training C1 salvage point
+that improves trusted GQA n1000 to `44.9` while bringing corrupted-image
+controls back inside the V9-style guardrails. The key setting is to keep C1's
+common projector weights, materialize connector scale `1.125`, and set
+`patch_position_feature_scale` to `0.0`.
+
+The cheap C1 salvage surface appears locally plateaued: V9-C1 interpolation did
+not keep controls, fine scale checks around `1.125` did not exceed `44.9`,
+prefix-only patch-position-table training did not move GQA, and a 10-step
+all-projector continuation regressed GQA to `44.0`.
 
 ## Latest Confirmation Note
 
-The materialized no-override confirmation bundle on 2026-05-12 reproduced the
-canonical gates, including GQA `44.000` on the established n=500 slice. A larger
-trusted GQA n=1000 diagnostic landed at `43.100` for Qwen scale-1.05 versus
-`43.700` for the V3 robust incumbent on the same slice. Treat promotion as on
-hold pending the GQA-slice decision; see
-`experiments/v9_qwen/confirmation_results.md`.
+The materialized no-override V11 confirmation bundle on 2026-05-13 includes:
+
+```text
+GQA trusted n1000:       44.900
+Clean VQA n3000 mean:   65.922 across seeds 42/43/44
+Blank n3000 seed42:     39.078
+Shuffled n3000 seed42:  36.767
+Wrong-image n3000:      37.178
+POPE adversarial n1000: 80.100
+```
+
+Leakage audit status: no confirmed leakage. The COCO/VQA/POPE split-aware audit
+passes with zero exact/numeric/raw overlaps, and direct GQA image/question ID
+inspection found zero overlap. The broad generic audit reports 18 splitless
+numeric/raw overlaps against a GQA train source; these are treated as known
+false-positive filename-stem collisions and are recorded in the V11 ledger.
 
 ## Promotion Gates
 
-The V9 candidate passed the replacement gates recorded in the final ledger:
+The V11 frontier passes the available old replacement gates recorded in the
+current ledger:
 
-| Gate | Required | V9 result |
+| Gate | Required | V11 result |
 | --- | ---: | ---: |
-| Clean VQA | `>= 62.967` | `66.133` n=3000 seed42 |
-| Blank image | `<= 39.733` | `38.811` n=3000 seed42 |
-| Shuffled image | `<= 37.367` | `36.900` n=3000 seed42 |
-| Wrong image, same answer type | `<= 38.900` | `37.967` n=1000 seed42 |
-| Perturbation mean | `>= 60.189` | `66.856` |
-| POPE | `>= 77.100` | `79.100` |
-| GQA | `>= 43.800` | `44.000` |
+| Clean VQA | `>= 62.967` | `65.922` n=3000 mean over seeds 42/43/44 |
+| Blank image | `<= 39.733` | `39.078` n=3000 seed42 |
+| Shuffled image | `<= 37.367` | `36.767` n=3000 seed42 |
+| Wrong image, same answer type | `<= 38.900` | `37.178` n=3000 seed42 |
+| Perturbation mean | `>= 60.189` | `65.633` over mild blur/crop/translate n=1000 |
+| POPE | `>= 77.100` | `80.100` n=1000 |
+| GQA | `>= 43.800` | `44.900` trusted n=1000 |
 | EOS rate | `>= 0.98` | pass |
 | Max-token hit | `<= 0.02` | pass |
 | Assistant-prefix rate | `<= 0.01` | pass |
-| Strict-clean gap | `<= 1.0` | `0.000` |
-| Leakage audit | pass | pass |
+| Strict-clean gap | `<= 1.0` | pass on checked evals |
+| Leakage audit | pass | no confirmed leakage; see note above |
 
 ## Active Direction
 
-The next research work should treat V9 Qwen scale-1.05 as the incumbent
-candidate, then focus on:
+The next research work should treat the V11 C1-salvage checkpoint as the Qwen
+frontier and V9 scale-1.05 as the stable fallback, then focus on:
 
-- confirming reproducibility of the materialized checkpoint and eval scripts,
-- reducing duplicated VQA/GQA/POPE evaluator code,
-- making Modal training/eval entrypoints thinner and easier to smoke-test,
-- moving generated artifacts out of git unless they are curated summary
-  artifacts.
+- E1 gated visual-cross-attention repair with gradient-proof diagnostics and
+  nonzero-gate retries,
+- 192-token V3/Qwen Perceiver token-budget exploration with dense GQA/control
+  screens,
+- revised contrastive/control objectives only with a concrete diagnostic for why
+  the all-projector C1 continuation regressed GQA,
+- continuing to keep generated eval dumps out of git unless they are curated
+  summary artifacts.
 
 Do not rely on older V3/V4 handoff text as the current state. Those documents
 remain useful provenance, but they predate the V8/V9 Qwen campaigns.
