@@ -339,7 +339,7 @@ def _load_model(run, llama_path: str, device):
     import sys
 
     sys.path.insert(0, "/root/anymal")
-    from v1_v2_compare_inference import _load_v1_model, _load_v2_model
+    from scripts.inference.v1_v2_compare_inference import _load_v1_model, _load_v2_model
 
     if run["architecture"] == "v1":
         return _load_v1_model(run["checkpoint"], llama_path, device)

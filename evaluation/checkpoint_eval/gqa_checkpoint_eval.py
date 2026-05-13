@@ -520,7 +520,7 @@ def _load_model(run: dict, device, llm_backbone=None, connector_output_scale_ove
     from model_metadata import read_model_metadata
     from models.anymal_v3 import AnyMALv3
     from models.anymal_v4 import AnyMALv4
-    from v1_v2_compare_inference import _load_v1_model, _load_v2_model
+    from scripts.inference.v1_v2_compare_inference import _load_v1_model, _load_v2_model
     from evaluation.checkpoint_eval.vqa_checkpoint_eval import (
         _ensure_eval_llm_path,
         _resolve_eval_llm_path,
@@ -719,6 +719,29 @@ def evaluate_gqa(
             "connector_hidden_dim",
             "connector_output_scale",
             "connector_output_gate_init",
+            "connector_trainable_scale_mode",
+            "use_2d_patch_position_features",
+            "patch_position_feature_type",
+            "patch_position_grid_size",
+            "patch_position_mlp_hidden_dim",
+            "query_conditioned_visual_scale_mode",
+            "query_conditioned_visual_scale_min",
+            "query_conditioned_visual_scale_max",
+            "query_conditioned_visual_scale_init",
+            "query_conditioned_visual_scale_parameterization",
+            "query_conditioned_patch_selector_mode",
+            "query_conditioned_patch_selector_hidden_dim",
+            "query_conditioned_patch_selector_max_residual",
+            "query_conditioned_patch_selector_normalize_mean",
+            "query_conditioned_patch_selector_parameterization",
+            "visual_cross_attention_mode",
+            "visual_cross_attention_layers",
+            "visual_cross_attention_num_heads",
+            "visual_cross_attention_adapter_dim",
+            "visual_cross_attention_gate_init",
+            "visual_cross_attention_dropout",
+            "visual_cross_attention_freeze_connector",
+            "visual_cross_attention_parameterization",
             "use_2d_position_features",
             "project_directly_to_llm_dim",
             "deepstack_num_feature_levels",
