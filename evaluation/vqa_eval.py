@@ -49,6 +49,9 @@ USER_HEADER = "<|start_header_id|>user<|end_header_id|>\n\n"
 ASSISTANT_HEADER = "<|start_header_id|>assistant<|end_header_id|>\n\n"
 END_TURN = "<|eot_id|>"
 ASSISTANT_ROLE_PREFIX_RE = re.compile(r"^assistant\s*[:\n\r]+\s*", re.IGNORECASE)
+THINKING_CLOSE_RE = re.compile(r"</think\s*>", re.IGNORECASE)
+THINKING_TAG_RE = re.compile(r"</?think\s*>", re.IGNORECASE)
+CHAT_SPECIAL_TOKEN_RE = re.compile(r"<\|[^>]+?\|>")
 NUMBER_WORDS = {
     "zero",
     "one",
@@ -322,10 +325,12 @@ class VQAEvaluator:
         model,
         device: torch.device = None,
         max_new_tokens: int = 32,
+        strip_thinking: bool = True,
     ):
         self.model = model
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.max_new_tokens = max_new_tokens
+        self.strip_thinking = bool(strip_thinking)
         self.stop_token_ids = _special_stop_token_ids(self.model.tokenizer)
 
         self.model.to(self.device)
@@ -357,6 +362,9 @@ class VQAEvaluator:
         strict_total_score = 0.0
         strict_answer_type_scores = {}
         assistant_prefix_count = 0
+        thinking_tag_count = 0
+        thinking_closed_count = 0
+        post_thinking_empty_count = 0
         predicted_kind_by_answer_type = {}
         assistant_prefix_by_answer_type = {}
         answer_counts = Counter()
@@ -400,16 +408,33 @@ class VQAEvaluator:
                     generated,
                     skip_special_tokens=True,
                 ).strip()
+                raw_answer_with_special = self.model.tokenizer.decode(
+                    generated,
+                    skip_special_tokens=False,
+                ).strip()
+                processing_answer = (
+                    raw_answer_with_special
+                    if THINKING_TAG_RE.search(raw_answer_with_special)
+                    else raw_answer
+                )
+                thinking_tag_present = bool(THINKING_TAG_RE.search(processing_answer))
+                thinking_closed = bool(THINKING_CLOSE_RE.search(processing_answer))
+                if thinking_tag_present:
+                    thinking_tag_count += 1
+                if thinking_closed:
+                    thinking_closed_count += 1
                 has_assistant_prefix = bool(ASSISTANT_ROLE_PREFIX_RE.match(raw_answer))
                 if has_assistant_prefix:
                     assistant_prefix_count += 1
 
                 # Clean up answer
-                pred_answer = self._process_answer(raw_answer)
+                pred_answer = self._process_answer(processing_answer)
                 strict_answer = self._process_answer(
-                    raw_answer,
+                    processing_answer,
                     strip_assistant_prefix=False,
                 )
+                if thinking_tag_present and not pred_answer:
+                    post_thinking_empty_count += 1
                 answer_counts[pred_answer] += 1
                 raw_answer_counts[raw_answer] += 1
 
@@ -451,6 +476,8 @@ class VQAEvaluator:
                     "answer": pred_answer,
                     "strict_answer": strict_answer,
                     "assistant_role_prefix": has_assistant_prefix,
+                    "thinking_tag_present": thinking_tag_present,
+                    "thinking_tag_closed": thinking_closed,
                     "predicted_answer_kind": self._classify_processed_answer(pred_answer),
                     "answers": gt_answers,
                     "answer_type": answer_type,
@@ -496,6 +523,18 @@ class VQAEvaluator:
             assistant_prefix_count / len(generated_token_counts)
             if generated_token_counts else 0.0
         )
+        thinking_tag_rate = (
+            thinking_tag_count / len(generated_token_counts)
+            if generated_token_counts else 0.0
+        )
+        thinking_closed_rate = (
+            thinking_closed_count / len(generated_token_counts)
+            if generated_token_counts else 0.0
+        )
+        post_thinking_empty_rate = (
+            post_thinking_empty_count / len(generated_token_counts)
+            if generated_token_counts else 0.0
+        )
 
         results = {
             "accuracy": accuracy * 100,  # Percentage
@@ -505,6 +544,9 @@ class VQAEvaluator:
             "eos_rate": eos_rate,
             "hit_max_new_tokens_rate": hit_max_new_tokens_rate,
             "assistant_role_prefix_rate": assistant_prefix_rate,
+            "thinking_tag_rate": thinking_tag_rate,
+            "thinking_closed_rate": thinking_closed_rate,
+            "post_thinking_empty_rate": post_thinking_empty_rate,
             "top_answers": answer_counts.most_common(20),
             "top_raw_answers": raw_answer_counts.most_common(20),
         }
@@ -534,6 +576,17 @@ class VQAEvaluator:
 
         return results
 
+    def _strip_thinking_block(self, answer: str) -> str:
+        answer = str(answer or "").strip()
+        if not self.strip_thinking:
+            return answer
+        if THINKING_CLOSE_RE.search(answer):
+            answer = THINKING_CLOSE_RE.split(answer)[-1].strip()
+            return CHAT_SPECIAL_TOKEN_RE.sub(" ", answer).strip()
+        if THINKING_TAG_RE.search(answer):
+            return ""
+        return CHAT_SPECIAL_TOKEN_RE.sub(" ", answer).strip()
+
     def _process_answer(self, answer: str, strip_assistant_prefix: bool = True) -> str:
         """
         Process generated answer for evaluation.
@@ -543,8 +596,7 @@ class VQAEvaluator:
         - Remove punctuation
         - Remove articles (a, an, the)
         """
-        # Lowercase
-        answer = answer.lower().strip()
+        answer = self._strip_thinking_block(answer).lower().strip()
 
         # Some chat models duplicate the assistant role header before content
         # (e.g. "assistant\n\nyes"). Strip that before first-line truncation.
@@ -689,6 +741,7 @@ def evaluate_vqav2(
         image_size=384 if is_siglip_arch else 224,
         is_train=False,
         use_augmentation=False,
+        image_view_mode=getattr(model, "image_view_mode", "single"),
     )
 
     dataset = VQADataset(

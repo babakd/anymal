@@ -465,6 +465,7 @@ def evaluate_coco_captioning(
         image_size=384 if is_siglip_arch else 224,
         is_train=False,
         use_augmentation=False,
+        image_view_mode=getattr(model, "image_view_mode", "single"),
     )
 
     dataset = COCOCaptionDataset(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gc
 import json
+import math
 import os
 import random
 import sys
@@ -289,9 +290,83 @@ def _process_for_exact(answer: str) -> str:
     return " ".join(words).strip()
 
 
-def _compute_gqa_metrics(predictions: list[dict], meta_by_question: dict) -> dict:
+def _confidence_z(confidence: float) -> float:
+    confidence = float(confidence)
+    known = {
+        0.80: 1.2815515655446004,
+        0.90: 1.6448536269514722,
+        0.95: 1.959963984540054,
+        0.98: 2.3263478740408408,
+        0.99: 2.5758293035489004,
+    }
+    for key, value in known.items():
+        if abs(confidence - key) < 1e-9:
+            return value
+    return known[0.95]
+
+
+def _ci_label(confidence: float) -> str:
+    return f"ci{int(round(float(confidence) * 100))}"
+
+
+def _wilson_ci(successes: int, total: int, confidence: float = 0.95) -> tuple[float, float]:
+    if total <= 0:
+        return 0.0, 0.0
+    z = _confidence_z(confidence)
+    phat = float(successes) / float(total)
+    denom = 1.0 + z * z / total
+    center = (phat + z * z / (2.0 * total)) / denom
+    margin = (
+        z
+        * math.sqrt((phat * (1.0 - phat) + z * z / (4.0 * total)) / total)
+        / denom
+    )
+    return max(0.0, center - margin), min(1.0, center + margin)
+
+
+def _bootstrap_mean_ci(
+    values: list[int],
+    seed: int,
+    n_resamples: int = 10000,
+    confidence: float = 0.95,
+) -> tuple[float, float]:
+    if not values:
+        return 0.0, 0.0
+    n_resamples = int(n_resamples)
+    if n_resamples <= 0:
+        return 0.0, 0.0
+    total = len(values)
+    p_hat = float(sum(values)) / float(total)
+    alpha = (1.0 - float(confidence)) / 2.0
+    try:
+        import numpy as np
+
+        rng = np.random.default_rng(int(seed))
+        means = rng.binomial(total, p_hat, size=n_resamples) / float(total)
+        low, high = np.quantile(means, [alpha, 1.0 - alpha])
+        return float(low), float(high)
+    except Exception:
+        rng = random.Random(int(seed))
+        means = []
+        for _ in range(n_resamples):
+            successes = sum(1 for _ in range(total) if rng.random() < p_hat)
+            means.append(successes / float(total))
+        means.sort()
+        low_idx = min(max(int(math.floor(alpha * (n_resamples - 1))), 0), n_resamples - 1)
+        high_idx = min(max(int(math.ceil((1.0 - alpha) * (n_resamples - 1))), 0), n_resamples - 1)
+        return float(means[low_idx]), float(means[high_idx])
+
+
+def _compute_gqa_metrics(
+    predictions: list[dict],
+    meta_by_question: dict,
+    ci_confidence: float = 0.95,
+    bootstrap_resamples: int = 10000,
+    bootstrap_seed: int = 12345,
+) -> dict:
     total = 0
     correct = 0
+    correct_values: list[int] = []
     buckets: dict[str, dict[str, int]] = {}
     for row in predictions:
         question_id = str(row.get("question_id"))
@@ -304,6 +379,7 @@ def _compute_gqa_metrics(predictions: list[dict], meta_by_question: dict) -> dic
         row["gqa_types"] = meta.get("types") or {}
         total += 1
         correct += int(is_correct)
+        correct_values.append(int(is_correct))
         types = meta.get("types") or {}
         for key in ("structural", "semantic", "detailed"):
             value = str(types.get(key) or "unknown")
@@ -311,9 +387,27 @@ def _compute_gqa_metrics(predictions: list[dict], meta_by_question: dict) -> dic
             bucket["correct"] += int(is_correct)
             bucket["total"] += 1
 
+    ci_name = _ci_label(ci_confidence)
+    wilson_low, wilson_high = _wilson_ci(correct, total, ci_confidence)
+    bootstrap_low, bootstrap_high = _bootstrap_mean_ci(
+        correct_values,
+        seed=int(bootstrap_seed),
+        n_resamples=int(bootstrap_resamples),
+        confidence=float(ci_confidence),
+    )
     metrics = {
+        "gqa_correct": correct,
+        "gqa_total": total,
         "gqa_accuracy": 100.0 * correct / total if total else 0.0,
         "gqa_exact_match_rate": correct / total if total else 0.0,
+        "gqa_ci_confidence": float(ci_confidence),
+        "gqa_ci_method": "wilson_and_binary_bootstrap",
+        "gqa_bootstrap_resamples": int(bootstrap_resamples),
+        "gqa_bootstrap_seed": int(bootstrap_seed),
+        f"gqa_accuracy_{ci_name}_binomial_low": 100.0 * wilson_low,
+        f"gqa_accuracy_{ci_name}_binomial_high": 100.0 * wilson_high,
+        f"gqa_accuracy_{ci_name}_bootstrap_low": 100.0 * bootstrap_low,
+        f"gqa_accuracy_{ci_name}_bootstrap_high": 100.0 * bootstrap_high,
     }
     for name, bucket in sorted(buckets.items()):
         key = name.replace(":", "_").replace("/", "_").replace(" ", "_")
@@ -329,17 +423,32 @@ def _safe_image_filename(image_id: str) -> str:
     return f"{safe}.jpg"
 
 
-def _prepare_hf_gqa_records(split: str, max_samples: int, seed: int, image_dir: str) -> tuple[list[dict], dict]:
+def _prepare_hf_gqa_records(
+    split: str,
+    max_samples: int,
+    seed: int,
+    image_dir: str,
+    sample_offset: int = 0,
+    eval_slice_name: str | None = None,
+) -> tuple[list[dict], dict]:
     from datasets import load_dataset
 
+    max_samples = int(max_samples)
+    sample_offset = int(sample_offset)
+    if max_samples < 0:
+        raise ValueError(f"max_samples must be >= 0, got {max_samples}")
+    if sample_offset < 0:
+        raise ValueError(f"sample_offset must be >= 0, got {sample_offset}")
     os.makedirs(image_dir, exist_ok=True)
     os.makedirs(HF_GQA_CACHE_DIR, exist_ok=True)
     dataset = load_dataset(HF_GQA_DATASET, split=split, cache_dir=HF_GQA_CACHE_DIR)
     indices = list(range(len(dataset)))
     rng = random.Random(seed)
     rng.shuffle(indices)
+    if sample_offset:
+        indices = indices[sample_offset:]
     if max_samples:
-        indices = indices[: int(max_samples)]
+        indices = indices[:max_samples]
 
     records = []
     downloaded = 0
@@ -375,6 +484,11 @@ def _prepare_hf_gqa_records(split: str, max_samples: int, seed: int, image_dir: 
         "source_dataset": HF_GQA_DATASET,
         "source_url": f"https://huggingface.co/datasets/{HF_GQA_DATASET}",
         "source_note": "Hugging Face parquet mirror of GQA testdev_balanced with embedded images.",
+        "eval_slice_name": str(eval_slice_name or ""),
+        "split_definition_version": "gqa_hf_seeded_windows_v1",
+        "selection_seed": int(seed),
+        "sample_offset": sample_offset,
+        "sample_count": len(records),
         "rows": len(records),
         "original_rows": len(dataset),
         "unique_image_ids": len({row["image_id"] for row in records}),
@@ -456,6 +570,7 @@ def _build_gqa_dataloader(
     prompt_style: str,
     system_prompt: str | None,
     vision_image_size: int | None = None,
+    chat_template_family: str | None = None,
 ):
     import torch.nn.functional as F
     from torch.utils.data import DataLoader
@@ -470,6 +585,7 @@ def _build_gqa_dataloader(
             image_size=resolved_image_size,
             is_train=False,
             use_augmentation=False,
+            image_view_mode=getattr(model, "image_view_mode", "single"),
         )
     else:
         transform = get_image_transform(image_size=224, is_train=False, use_augmentation=False)
@@ -482,7 +598,10 @@ def _build_gqa_dataloader(
         num_image_tokens=getattr(model, "num_image_tokens", 0),
         prompt_style=prompt_style,
         system_prompt=system_prompt,
-        chat_template_family=getattr(getattr(model, "llm", None), "chat_template_family", None),
+        chat_template_family=(
+            chat_template_family
+            or getattr(getattr(model, "llm", None), "chat_template_family", None)
+        ),
     )
     pad_token_id = model.tokenizer.pad_token_id or model.tokenizer.eos_token_id
 
@@ -541,6 +660,7 @@ def _build_gqa_dataloader(
             if architecture in {"v2", "v3", "v4"}
             else "clip_224"
         ),
+        "image_view_mode": getattr(model, "image_view_mode", "single"),
         "control_uses_wrong_images": False,
         "control_seed": None,
     }
@@ -713,18 +833,25 @@ def evaluate_gqa(
     candidate_architecture="v4",
     gqa_split="testdev_balanced",
     max_samples=1000,
+    sample_offset=0,
+    eval_slice_name="",
     seed=42,
     batch_size=8,
     image_dir=DEFAULT_IMAGE_DIR,
     prompt_style="training_chat",
     system_prompt=TRUSTED_GQA_SYSTEM_PROMPT,
+    chat_template_family=None,
     prediction_samples=0,
+    max_new_tokens=16,
     remote_output_path=None,
     train_sources=None,
     eval_schema_version="v6",
     llm_backbone=CURRENT_LLAMA3_BACKBONE,
     connector_output_scale_override=None,
     vision_image_size_override=None,
+    ci_confidence=0.95,
+    bootstrap_resamples=10000,
+    bootstrap_seed=12345,
 ):
     import torch
 
@@ -737,6 +864,8 @@ def evaluate_gqa(
         max_samples=int(max_samples),
         seed=int(seed),
         image_dir=image_dir,
+        sample_offset=int(sample_offset),
+        eval_slice_name=str(eval_slice_name or ""),
     )
     meta_by_question = {
         record["question_id"]: {
@@ -778,14 +907,21 @@ def evaluate_gqa(
             records=records,
             system_prompt=system_prompt,
             vision_image_size=vision_image_size,
+            chat_template_family=chat_template_family,
         )
         print("[gqa_eval] Dataloader ready; starting VQA evaluator", flush=True)
-        evaluator = VQAEvaluator(model, device=device, max_new_tokens=16)
+        evaluator = VQAEvaluator(model, device=device, max_new_tokens=int(max_new_tokens))
         prediction_output = f"/tmp/{run['key']}_gqa_predictions.json"
         hygiene_metrics = evaluator.evaluate(dataloader, output_file=prediction_output)
         with open(prediction_output, "r", encoding="utf-8") as f:
             predictions = json.load(f)
-        gqa_metrics = _compute_gqa_metrics(predictions, meta_by_question)
+        gqa_metrics = _compute_gqa_metrics(
+            predictions,
+            meta_by_question,
+            ci_confidence=float(ci_confidence),
+            bootstrap_resamples=int(bootstrap_resamples),
+            bootstrap_seed=int(bootstrap_seed),
+        )
         metrics = {**hygiene_metrics, **gqa_metrics}
         connector_meta_keys = {
             "connector_type",
@@ -871,11 +1007,15 @@ def evaluate_gqa(
         "generation_mode": "decoder_leftpad_greedy",
         "gqa_split": str(gqa_split),
         "max_samples": int(max_samples),
+        "sample_offset": int(sample_offset),
+        "eval_slice_name": str(eval_slice_name or ""),
         "seed": int(seed),
         "batch_size": int(batch_size),
         "image_dir": image_dir,
         "prompt_style": str(prompt_style),
         "system_prompt": system_prompt,
+        "chat_template_family": chat_template_family,
+        "max_new_tokens": int(max_new_tokens),
         "connector_output_scale_override": (
             None
             if connector_output_scale_override is None
@@ -886,6 +1026,9 @@ def evaluate_gqa(
             if vision_image_size_override is None
             else int(vision_image_size_override)
         ),
+        "ci_confidence": float(ci_confidence),
+        "bootstrap_resamples": int(bootstrap_resamples),
+        "bootstrap_seed": int(bootstrap_seed),
         "runs": results,
     }
     if remote_output_path:
@@ -904,12 +1047,16 @@ def main(
     candidate_architecture: str = "v4",
     gqa_split: str = "testdev_balanced",
     max_samples: int = 1000,
+    sample_offset: int = 0,
+    eval_slice_name: str = "",
     seed: int = 42,
     batch_size: int = 8,
     image_dir: str = DEFAULT_IMAGE_DIR,
     prompt_style: str = "training_chat",
     system_prompt: str = TRUSTED_GQA_SYSTEM_PROMPT,
+    chat_template_family: str = None,
     prediction_samples: int = 0,
+    max_new_tokens: int = 16,
     output: str = "gqa_checkpoint_eval.json",
     remote_output_path: str = None,
     train_sources: str = "",
@@ -917,6 +1064,9 @@ def main(
     llm_backbone: str = CURRENT_LLAMA3_BACKBONE,
     connector_output_scale_override: float = None,
     vision_image_size_override: int = None,
+    ci_confidence: float = 0.95,
+    bootstrap_resamples: int = 10000,
+    bootstrap_seed: int = 12345,
     background: bool = False,
 ):
     call = evaluate_gqa.spawn(
@@ -925,18 +1075,25 @@ def main(
         candidate_architecture=candidate_architecture,
         gqa_split=gqa_split,
         max_samples=max_samples,
+        sample_offset=sample_offset,
+        eval_slice_name=eval_slice_name,
         seed=seed,
         batch_size=batch_size,
         image_dir=image_dir,
         prompt_style=prompt_style,
         system_prompt=system_prompt,
+        chat_template_family=chat_template_family,
         prediction_samples=prediction_samples,
+        max_new_tokens=max_new_tokens,
         remote_output_path=remote_output_path,
         train_sources=train_sources,
         eval_schema_version=eval_schema_version,
         llm_backbone=llm_backbone,
         connector_output_scale_override=connector_output_scale_override,
         vision_image_size_override=vision_image_size_override,
+        ci_confidence=ci_confidence,
+        bootstrap_resamples=bootstrap_resamples,
+        bootstrap_seed=bootstrap_seed,
     )
     if background:
         print(f"Spawned background GQA eval: {call}")
