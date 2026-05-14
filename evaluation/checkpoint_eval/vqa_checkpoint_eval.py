@@ -419,6 +419,7 @@ def _build_vqa_dataloader(
             image_size=384,
             is_train=False,
             use_augmentation=False,
+            image_view_mode=getattr(model, "image_view_mode", "single"),
         )
         placeholder_id = getattr(model, "image_placeholder_token_id", None)
         num_image_tokens = getattr(model, "num_image_tokens", 0)
@@ -528,6 +529,7 @@ def _build_vqa_dataloader(
     image_transform_meta = {
         "name": image_perturbation,
         "base_transform": "siglip2_384" if architecture in {"v2", "v3", "v4"} else "clip_224",
+        "image_view_mode": getattr(model, "image_view_mode", "single"),
         "control_uses_wrong_images": bool(control_source_indices is not None),
         "control_seed": int(seed),
     }

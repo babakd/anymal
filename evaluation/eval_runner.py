@@ -89,6 +89,7 @@ class EvalRunner:
                 image_size=image_size,
                 is_train=False,
                 use_augmentation=False,
+                image_view_mode=getattr(self.model, "image_view_mode", "single"),
             )
             placeholder_id = getattr(self.model, "image_placeholder_token_id", None)
             num_image_tokens = getattr(self.model, "num_image_tokens", 0) if is_siglip_arch else 0
