@@ -24,7 +24,8 @@ It uses:
   checkpoint
 
 The V11 result ledger lives at `experiments/v11_qwen/results.md`. The V9 result
-ledger remains at `experiments/v9_qwen/results.md`.
+ledger remains at `experiments/v9_qwen/results.md`. The follow-on V12 ceiling
+search ledger lives at `experiments/v12_qwen/results.md`.
 
 ## Latest V11 Ceiling Note
 
@@ -80,17 +81,20 @@ current ledger:
 
 ## Active Direction
 
-The next research work should treat the V11 C1-salvage checkpoint as the Qwen
-frontier and V9 scale-1.05 as the stable fallback, then focus on:
+The V12 aggressive Qwen3 ceiling search pushed the major planned high-ceiling
+directions: repaired visual cross-attention, larger image-token budgets,
+controlled V11 continuations, DeepStack/multi-level features, higher-resolution
+eval/training smoke, and vision-side SigLIP adaptation. No branch beat V11 on a
+robust matched check. The best apparent n1000 moves either tied V11 exactly on
+matched n3000 or rediscovered the same V11 basin.
 
-- E1 gated visual-cross-attention repair with gradient-proof diagnostics and
-  nonzero-gate retries,
-- 192-token V3/Qwen Perceiver token-budget exploration with dense GQA/control
-  screens,
-- revised contrastive/control objectives only with a concrete diagnostic for why
-  the all-projector C1 continuation regressed GQA,
-- continuing to keep generated eval dumps out of git unless they are curated
-  summary artifacts.
+Current operating stance:
+
+- Treat V11 C1-salvage as the Qwen frontier.
+- Treat V9 scale-1.05 as the stable fallback.
+- Do not rerun V12 DeepStack, token-budget, spatial-contrastive, or final-block
+  SigLIP recipes without a new mechanism or diagnostic.
+- Keep generated eval dumps out of git unless they are curated summaries.
 
 Do not rely on older V3/V4 handoff text as the current state. Those documents
 remain useful provenance, but they predate the V8/V9 Qwen campaigns.
