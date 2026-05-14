@@ -14,7 +14,7 @@ import torch.nn as nn
 
 from .anymal_v3 import AnyMALv3
 from .encoders import SigLIP2Encoder
-from .llm import LlamaWrapper
+from .llm import LlamaWrapper, canonicalize_llm_backbone
 from .projectors import DeepStackSpatialPerceiverResampler, SpatialPerceiverResampler
 from model_metadata import (
     validate_checkpoint_architecture,
@@ -33,6 +33,7 @@ class AnyMALv4(AnyMALv3):
         llm_model_name: str = "meta-llama/Meta-Llama-3-8B-Instruct",
         vision_encoder_type: str = "siglip2",
         vision_model_name: str = "google/siglip2-so400m-patch14-384",
+        vision_image_size: int = 384,
         connector_type: str = "spatial_perceiver_resampler",
         num_global_image_tokens: int = 64,
         num_local_image_tokens: int = 64,
@@ -62,6 +63,7 @@ class AnyMALv4(AnyMALv3):
         cache_dir: Optional[str] = None,
     ):
         nn.Module.__init__(self)
+        self.llm_backbone = canonicalize_llm_backbone(llm_model_name)
 
         total_tokens = num_global_image_tokens + num_local_image_tokens
         if num_image_tokens is not None and num_image_tokens != total_tokens:
@@ -71,6 +73,8 @@ class AnyMALv4(AnyMALv3):
             )
         if total_tokens <= 0:
             raise ValueError("AnyMALv4 requires at least one image token.")
+        if int(vision_image_size) <= 0:
+            raise ValueError(f"vision_image_size must be > 0, got {vision_image_size}")
         if vision_encoder_type != "siglip2":
             raise ValueError(
                 f"Unsupported vision_encoder_type '{vision_encoder_type}'. Expected 'siglip2'."
@@ -87,6 +91,7 @@ class AnyMALv4(AnyMALv3):
         self.freeze_vision = freeze_vision
         self.freeze_llm = freeze_llm
         self.vision_encoder_type = vision_encoder_type
+        self.vision_image_size = int(vision_image_size)
         self.connector_type = connector_type
         self.num_global_image_tokens = num_global_image_tokens
         self.num_local_image_tokens = num_local_image_tokens
@@ -153,6 +158,23 @@ class AnyMALv4(AnyMALv3):
             None if connector_output_gate_init is None else float(connector_output_gate_init)
         )
         self.project_directly_to_llm_dim = bool(connector_hidden_dim == llm_dim)
+        # V4 inherits the strict splice/generation path from V3, but does not
+        # use V3's optional question-conditioned or decoder-side adapter paths.
+        self.query_conditioned_visual_scale_mode = "none"
+        self.query_conditioned_patch_selector_mode = "none"
+        self.visual_cross_attention_mode = "none"
+        self.visual_cross_attention_layers = []
+        self.visual_cross_attention_num_heads = 0
+        self.visual_cross_attention_adapter_dim = None
+        self.visual_cross_attention_gate_init = 0.0
+        self.visual_cross_attention_dropout = 0.0
+        self.visual_cross_attention_freeze_connector = False
+        self.visual_cross_attention_adapters = nn.ModuleDict()
+        self._visual_cross_attention_hook_handles = []
+        self._active_visual_memory = None
+        self._last_visual_cross_attention_diagnostics: Dict[str, float] = {}
+        self._last_connector_diagnostics: Dict[str, float] = {}
+        self._last_connector_output_rms_tensor = None
         projector_cls = (
             DeepStackSpatialPerceiverResampler
             if connector_type == "deepstack_spatial_perceiver_resampler"
@@ -224,6 +246,7 @@ class AnyMALv4(AnyMALv3):
         self,
         images: torch.Tensor,
         target_num_tokens: Optional[torch.Tensor] = None,
+        question_summary: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.BoolTensor, torch.LongTensor]:
         """
         Encode images with the fixed-size V4 visual prefix.
@@ -232,6 +255,8 @@ class AnyMALv4(AnyMALv3):
         frozen SigLIP2 tower; default spatial connectors keep the single final
         feature level used by the base V4 path.
         """
+        if question_summary is not None:
+            raise ValueError("AnyMALv4 does not support question-conditioned image encoding.")
         if images.dtype != torch.float32:
             images = images.to(torch.float32)
 
@@ -248,11 +273,19 @@ class AnyMALv4(AnyMALv3):
         use_deepstack = self.connector_type == "deepstack_spatial_perceiver_resampler"
         with torch.no_grad() if self.freeze_vision else torch.enable_grad():
             if use_deepstack:
-                vision_features = self.image_encoder(
-                    images,
-                    output_hidden_states=True,
-                    hidden_state_indices=self.deepstack_hidden_state_indices,
-                )
+                if (
+                    self.deepstack_num_feature_levels == 1
+                    and tuple(self.deepstack_hidden_state_indices) == (-1,)
+                ):
+                    # Exact-bridge mode: use the same final SigLIP output path
+                    # as V3, then wrap it for the DeepStack connector.
+                    vision_features = (self.image_encoder(images),)
+                else:
+                    vision_features = self.image_encoder(
+                        images,
+                        output_hidden_states=True,
+                        hidden_state_indices=self.deepstack_hidden_state_indices,
+                    )
             else:
                 vision_features = self.image_encoder(images)
 
@@ -265,7 +298,23 @@ class AnyMALv4(AnyMALv3):
         elif vision_features.dtype != projector_dtype:
             vision_features = vision_features.to(projector_dtype)
 
+        diagnostic_features = (
+            vision_features[-1] if isinstance(vision_features, (list, tuple)) else vision_features
+        )
+        self._last_connector_diagnostics = {
+            "train/vision_feature_rms": self._tensor_rms(diagnostic_features),
+            "train/vision_feature_mean": float(
+                diagnostic_features.detach().float().mean().item()
+            ),
+            "train/vision_feature_std": float(
+                diagnostic_features.detach().float().std().item()
+            ),
+        }
         image_tokens = self.projector(vision_features)
+        self._last_connector_output_rms_tensor = (
+            image_tokens.float().pow(2).mean().sqrt()
+        )
+        self._record_connector_output_diagnostics(image_tokens)
         token_mask = torch.ones(
             image_tokens.shape[:2],
             dtype=torch.bool,
@@ -282,6 +331,7 @@ class AnyMALv4(AnyMALv3):
     def _metadata_expected_values(self) -> Dict[str, object]:
         values = {
             "vision_encoder_type": self.vision_encoder_type,
+            "vision_image_size": self.vision_image_size,
             "connector_type": self.connector_type,
             "num_image_tokens": self.num_image_tokens,
             "max_image_tokens": self.max_image_tokens,
@@ -336,6 +386,14 @@ class AnyMALv4(AnyMALv3):
         extra = self._metadata_expected_values()
         extra.update(
             {
+                **(
+                    self.llm.get_model_metadata()
+                    if hasattr(self.llm, "get_model_metadata")
+                    else {
+                        "llm_backbone": self.llm_backbone,
+                        "llm_model_name": self.llm_backbone,
+                    }
+                ),
                 "llm_checkpoint_saved": llm_saved,
                 "llm_base_weights_saved": bool(llm_saved and save_llm_base),
             }
@@ -353,13 +411,24 @@ class AnyMALv4(AnyMALv3):
         import os
         from peft import PeftModel
 
+        allow_connector_output_scale_override = bool(
+            kwargs.pop("allow_connector_output_scale_override", False)
+        )
         validate_checkpoint_architecture(save_path, expected_architecture=cls.architecture)
+        from model_metadata import read_model_metadata
+
+        meta = read_model_metadata(save_path) or {}
+        if "vision_image_size" not in kwargs and meta.get("vision_image_size") is not None:
+            kwargs["vision_image_size"] = int(meta["vision_image_size"])
 
         model = cls(llm_model_name=llm_model_name, **kwargs)
+        expected_values = model._metadata_expected_values()
+        if allow_connector_output_scale_override:
+            expected_values.pop("connector_output_scale", None)
         validate_checkpoint_metadata_values(
             save_path,
             expected_architecture=cls.architecture,
-            expected_values=model._metadata_expected_values(),
+            expected_values=expected_values,
         )
 
         projector_path = os.path.join(save_path, "projector.pt")

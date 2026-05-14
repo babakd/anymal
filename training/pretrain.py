@@ -67,6 +67,7 @@ class PretrainConfig(TrainerConfig):
     connector_rms_regularizer_target: str = "batch_text"
     connector_scale_only_training: bool = False
     connector_trainable_prefixes: Tuple[str, ...] = ()
+    vision_trainable_prefixes: Tuple[str, ...] = ()
     connector_warmup_trainable_prefixes: Tuple[str, ...] = (
         "projector.output_proj",
         "projector.output_gate_logit",
@@ -118,17 +119,34 @@ class PretrainTrainer(Trainer):
         self._connector_trainable_prefixes = self._normalize_prefixes(
             config.connector_trainable_prefixes
         )
-        if self._connector_scale_only_training and self._connector_trainable_prefixes:
+        self._freeze_connector_for_stage1 = self._is_freeze_prefix_sentinel(
+            self._connector_trainable_prefixes
+        )
+        if (
+            self._connector_scale_only_training
+            and self._connector_trainable_prefixes
+            and not self._freeze_connector_for_stage1
+        ):
             raise ValueError(
                 "connector_scale_only_training and connector_trainable_prefixes "
                 "are mutually exclusive"
             )
-        if self._connector_scale_only_training:
+        if self._freeze_connector_for_stage1:
+            self._enable_connector_frozen_training(model)
+        elif self._connector_scale_only_training:
             self._enable_connector_scale_only_training(model)
         elif self._connector_trainable_prefixes:
             self._enable_connector_prefix_only_training(
                 model,
                 self._connector_trainable_prefixes,
+            )
+        self._vision_trainable_prefixes = self._normalize_prefixes(
+            config.vision_trainable_prefixes
+        )
+        if self._vision_trainable_prefixes:
+            self._enable_vision_prefix_only_training(
+                model,
+                self._vision_trainable_prefixes,
             )
 
         self._connector_warmup_active = False
@@ -314,6 +332,62 @@ class PretrainTrainer(Trainer):
         total = sum(count for _name, count in active_params)
         print_rank_0(
             "Stage 1 connector prefix-only training: "
+            f"prefixes={prefixes}, {len(active_params)} active tensor(s), "
+            f"{total:,} parameter(s), {frozen_tensors} frozen tensor(s)"
+        )
+
+    def _enable_connector_frozen_training(self, model) -> None:
+        frozen_tensors = 0
+        frozen_params = 0
+        for name, param in model.named_parameters():
+            if not self._is_connector_param_name(name):
+                continue
+            param.requires_grad = False
+            frozen_tensors += 1
+            frozen_params += param.numel()
+
+        print_rank_0(
+            "Stage 1 connector frozen by connector_trainable_prefixes sentinel: "
+            f"{frozen_tensors} tensor(s), {frozen_params:,} parameter(s)"
+        )
+
+    def _enable_vision_prefix_only_training(
+        self,
+        model,
+        prefixes: Tuple[str, ...],
+    ) -> None:
+        """Unfreeze only explicitly selected vision tower parameters."""
+        image_encoder = getattr(model, "image_encoder", None)
+        if image_encoder is None:
+            raise ValueError("vision_trainable_prefixes requires model.image_encoder")
+
+        active_params = []
+        frozen_tensors = 0
+        for local_name, param in image_encoder.named_parameters():
+            full_name = f"image_encoder.{local_name}"
+            keep_trainable = self._matches_trainable_prefix(full_name, prefixes) or (
+                self._matches_trainable_prefix(local_name, prefixes)
+            )
+            param.requires_grad = keep_trainable
+            if keep_trainable:
+                active_params.append((full_name, param.numel()))
+            else:
+                frozen_tensors += 1
+
+        if not active_params:
+            raise ValueError(
+                "vision_trainable_prefixes was requested, but no image encoder "
+                f"parameters matched prefixes={prefixes}"
+            )
+
+        if hasattr(image_encoder, "model"):
+            image_encoder.model.train()
+        else:
+            image_encoder.train()
+
+        total = sum(count for _name, count in active_params)
+        print_rank_0(
+            "Stage 1 vision prefix-only training: "
             f"prefixes={prefixes}, {len(active_params)} active tensor(s), "
             f"{total:,} parameter(s), {frozen_tensors} frozen tensor(s)"
         )
@@ -745,6 +819,16 @@ class PretrainTrainer(Trainer):
         if isinstance(prefixes, str):
             prefixes = prefixes.replace(" ", ",").split(",")
         return tuple(str(prefix).strip() for prefix in prefixes if str(prefix).strip())
+
+    @staticmethod
+    def _is_freeze_prefix_sentinel(prefixes: Tuple[str, ...]) -> bool:
+        return len(prefixes) == 1 and prefixes[0].lower() in {
+            "__none__",
+            "none",
+            "freeze",
+            "frozen",
+            "off",
+        }
 
     @staticmethod
     def _matches_trainable_prefix(name: str, prefixes: Tuple[str, ...]) -> bool:
