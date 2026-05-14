@@ -16,13 +16,21 @@ app = modal.App("anymal-repo-smoke")
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 REMOTE_PROJECT_DIR = "/root/anymal"
 
+def _ignore_modal_mount(path: Path) -> bool:
+    return ".git" in path.parts
+
 base_image = (
     modal.Image.debian_slim(python_version="3.10")
     .apt_install("git")
     .pip_install("pytest>=7.4.0")
 )
 
-image = base_image.add_local_dir(PROJECT_DIR, remote_path=REMOTE_PROJECT_DIR, copy=False)
+image = base_image.add_local_dir(
+    PROJECT_DIR,
+    remote_path=REMOTE_PROJECT_DIR,
+    copy=False,
+    ignore=_ignore_modal_mount,
+)
 
 torch_image = base_image.pip_install(
     "torch>=2.0.0",
@@ -30,7 +38,12 @@ torch_image = base_image.pip_install(
     "transformers>=4.53.0,<5.0.0",
     "Pillow>=10.0.0",
     "tqdm>=4.66.0",
-).add_local_dir(PROJECT_DIR, remote_path=REMOTE_PROJECT_DIR, copy=False)
+).add_local_dir(
+    PROJECT_DIR,
+    remote_path=REMOTE_PROJECT_DIR,
+    copy=False,
+    ignore=_ignore_modal_mount,
+)
 
 
 def _run(cmd: list[str]) -> dict:

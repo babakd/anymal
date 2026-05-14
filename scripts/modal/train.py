@@ -27,8 +27,24 @@ app = modal.App("anymal-training")
 # Create a volume to persist model weights between runs
 volume = modal.Volume.from_name("anymal-checkpoints", create_if_missing=True)
 
-# Get the local project directory
-PROJECT_DIR = Path(__file__).resolve().parents[2]
+# Get the local project directory. Modal may import this file as /root/train.py
+# when the entrypoint is invoked directly, so do not assume scripts/modal depth.
+def _resolve_project_dir() -> Path:
+    current = Path(__file__).resolve()
+    candidates = []
+    if len(current.parents) > 2:
+        candidates.append(current.parents[2])
+    candidates.extend([current.parent, Path.cwd()])
+    for candidate in candidates:
+        if (candidate / "models").exists() and (candidate / "training").exists():
+            return candidate
+    return current.parent
+
+
+PROJECT_DIR = _resolve_project_dir()
+
+def _ignore_modal_mount(path: Path) -> bool:
+    return ".git" in path.parts
 
 # Define the container image with all dependencies + local code
 # Layer order optimized: stable layers first (apt, pip), then local code mounted at runtime
@@ -54,7 +70,12 @@ image = (
         "huggingface_hub>=0.19.0",
     )
     # Mount local code - changes frequently but won't invalidate pip cache
-    .add_local_dir(PROJECT_DIR, remote_path="/root/anymal", copy=False)
+    .add_local_dir(
+        PROJECT_DIR,
+        remote_path="/root/anymal",
+        copy=False,
+        ignore=_ignore_modal_mount,
+    )
 )
 
 
@@ -475,6 +496,17 @@ def _normalize_v3_visual_cross_attention_mode(value=None) -> str:
     )
 
 
+def _normalize_v3_spatial_residual_mode(value=None) -> str:
+    text = str(value or "none").strip().lower().replace("-", "_")
+    if text in {"", "none", "off", "false", "0"}:
+        return "none"
+    if text in {"on", "true", "1", "separable", "separable_table"}:
+        return "separable_table"
+    raise ValueError(
+        "--v3-spatial-residual-mode must be one of: none, separable_table"
+    )
+
+
 def _parse_v3_visual_cross_attention_layers(value=None):
     if value is None:
         return None
@@ -506,6 +538,10 @@ def _checkpoint_matches_run_config(
     v3_query_conditioned_patch_selector_hidden_dim: int = None,
     v3_query_conditioned_patch_selector_max_residual: float = None,
     v3_query_conditioned_patch_selector_normalize_mean: bool = None,
+    v3_spatial_residual_mode: str = None,
+    v3_spatial_residual_hidden_dim: int = None,
+    v3_spatial_residual_grid_size: int = None,
+    v3_spatial_residual_gate_init: float = None,
     v3_visual_cross_attention_mode: str = None,
     v3_visual_cross_attention_layers: str = None,
     v3_visual_cross_attention_num_heads: int = None,
@@ -593,6 +629,14 @@ def _checkpoint_matches_run_config(
             "query_conditioned_patch_selector_hidden_dim": v3_query_conditioned_patch_selector_hidden_dim,
             "query_conditioned_patch_selector_max_residual": v3_query_conditioned_patch_selector_max_residual,
             "query_conditioned_patch_selector_normalize_mean": v3_query_conditioned_patch_selector_normalize_mean,
+            "spatial_residual_mode": (
+                _normalize_v3_spatial_residual_mode(v3_spatial_residual_mode)
+                if v3_spatial_residual_mode is not None
+                else None
+            ),
+            "spatial_residual_hidden_dim": v3_spatial_residual_hidden_dim,
+            "spatial_residual_grid_size": v3_spatial_residual_grid_size,
+            "spatial_residual_gate_init": v3_spatial_residual_gate_init,
             "visual_cross_attention_mode": (
                 _normalize_v3_visual_cross_attention_mode(v3_visual_cross_attention_mode)
                 if v3_visual_cross_attention_mode is not None
@@ -684,6 +728,10 @@ def _auto_discover_pretrain_checkpoint(
     v3_query_conditioned_patch_selector_hidden_dim: int = None,
     v3_query_conditioned_patch_selector_max_residual: float = None,
     v3_query_conditioned_patch_selector_normalize_mean: bool = None,
+    v3_spatial_residual_mode: str = None,
+    v3_spatial_residual_hidden_dim: int = None,
+    v3_spatial_residual_grid_size: int = None,
+    v3_spatial_residual_gate_init: float = None,
     v3_visual_cross_attention_mode: str = None,
     v3_visual_cross_attention_layers: str = None,
     v3_visual_cross_attention_num_heads: int = None,
@@ -727,6 +775,10 @@ def _auto_discover_pretrain_checkpoint(
             v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
             v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
             v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+            v3_spatial_residual_mode=v3_spatial_residual_mode,
+            v3_spatial_residual_hidden_dim=v3_spatial_residual_hidden_dim,
+            v3_spatial_residual_grid_size=v3_spatial_residual_grid_size,
+            v3_spatial_residual_gate_init=v3_spatial_residual_gate_init,
             v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
             v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
             v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
@@ -1098,6 +1150,7 @@ class Trainer:
         dataset: str = "instruct_150k",
         run_name: str = None,
         pretrain_image_tokens: int = None,
+        vision_image_size: int = None,
         projector_warmup_steps: int = None,
         freeze_connector: bool = False,
         finetune_loss_scale: float = 1.0,
@@ -1133,6 +1186,10 @@ class Trainer:
         v3_query_conditioned_patch_selector_hidden_dim: int = 256,
         v3_query_conditioned_patch_selector_max_residual: float = 0.25,
         v3_query_conditioned_patch_selector_normalize_mean: bool = True,
+        v3_spatial_residual_mode: str = "none",
+        v3_spatial_residual_hidden_dim: int = 128,
+        v3_spatial_residual_grid_size: int = 32,
+        v3_spatial_residual_gate_init: float = 1e-4,
         v3_visual_cross_attention_mode: str = "none",
         v3_visual_cross_attention_layers: str = None,
         v3_visual_cross_attention_num_heads: int = 16,
@@ -1271,6 +1328,7 @@ class Trainer:
                 contrastive_lambda=contrastive_lambda,
                 contrastive_margin=contrastive_margin,
                 pretrain_image_tokens=pretrain_image_tokens,
+                vision_image_size=vision_image_size,
                 v3_connector_type=v3_connector_type,
                 v3_connector_output_scale=v3_connector_output_scale,
                 v3_connector_output_gate_init=v3_connector_output_gate_init,
@@ -1286,9 +1344,14 @@ class Trainer:
                 v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
                 v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
                 v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+                v3_spatial_residual_mode=v3_spatial_residual_mode,
+                v3_spatial_residual_hidden_dim=v3_spatial_residual_hidden_dim,
+                v3_spatial_residual_grid_size=v3_spatial_residual_grid_size,
+                v3_spatial_residual_gate_init=v3_spatial_residual_gate_init,
                 v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
                 v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
                 v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
+                v3_visual_cross_attention_adapter_dim=v3_visual_cross_attention_adapter_dim,
                 v3_visual_cross_attention_gate_init=v3_visual_cross_attention_gate_init,
                 v3_visual_cross_attention_dropout=v3_visual_cross_attention_dropout,
                 v3_visual_cross_attention_freeze_connector=v3_visual_cross_attention_freeze_connector,
@@ -1332,6 +1395,7 @@ class Trainer:
                 pretrain_checkpoint=pretrain_checkpoint,
                 output_dir=pretrain_output_dir,
                 pretrain_image_tokens=effective_pretrain_image_tokens,
+                vision_image_size=vision_image_size,
                 dataset=dataset,
                 v3_connector_type=v3_connector_type,
                 v3_connector_output_scale=v3_connector_output_scale,
@@ -1348,9 +1412,14 @@ class Trainer:
                 v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
                 v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
                 v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+                v3_spatial_residual_mode=v3_spatial_residual_mode,
+                v3_spatial_residual_hidden_dim=v3_spatial_residual_hidden_dim,
+                v3_spatial_residual_grid_size=v3_spatial_residual_grid_size,
+                v3_spatial_residual_gate_init=v3_spatial_residual_gate_init,
                 v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
                 v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
                 v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
+                v3_visual_cross_attention_adapter_dim=v3_visual_cross_attention_adapter_dim,
                 v3_visual_cross_attention_gate_init=v3_visual_cross_attention_gate_init,
                 v3_visual_cross_attention_dropout=v3_visual_cross_attention_dropout,
                 v3_visual_cross_attention_freeze_connector=v3_visual_cross_attention_freeze_connector,
@@ -1609,6 +1678,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                   contrastive_lambda=0.1,
                   contrastive_margin=0.5,
                   pretrain_image_tokens=None,
+                  vision_image_size=None,
                   llm_backbone=None,
                   v3_connector_type=V3_DEFAULT_CONNECTOR_TYPE,
                   v3_connector_output_scale=None,
@@ -1625,6 +1695,10 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                   v3_query_conditioned_patch_selector_hidden_dim=256,
                   v3_query_conditioned_patch_selector_max_residual=0.25,
                   v3_query_conditioned_patch_selector_normalize_mean=True,
+                  v3_spatial_residual_mode="none",
+                  v3_spatial_residual_hidden_dim=128,
+                  v3_spatial_residual_grid_size=32,
+                  v3_spatial_residual_gate_init=1e-4,
                   v3_visual_cross_attention_mode="none",
                   v3_visual_cross_attention_layers=None,
                   v3_visual_cross_attention_num_heads=16,
@@ -1686,6 +1760,10 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
             v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
             v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
             v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+            v3_spatial_residual_mode=v3_spatial_residual_mode,
+            v3_spatial_residual_hidden_dim=v3_spatial_residual_hidden_dim,
+            v3_spatial_residual_grid_size=v3_spatial_residual_grid_size,
+            v3_spatial_residual_gate_init=v3_spatial_residual_gate_init,
             v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
             v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
             v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
@@ -1717,6 +1795,8 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         from model_metadata import read_model_metadata
 
         meta = read_model_metadata(v3_metadata_checkpoint) or {}
+        if vision_image_size is None and meta.get("vision_image_size") is not None:
+            vision_image_size = int(meta["vision_image_size"])
         if v3_connector_output_scale is None:
             v3_connector_output_scale = meta.get("connector_output_scale")
         if v3_connector_output_gate_init is None:
@@ -1779,6 +1859,17 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                 meta["query_conditioned_patch_selector_normalize_mean"]
             )
         if (
+            v3_spatial_residual_mode in {None, "none"}
+            and meta.get("spatial_residual_mode") is not None
+        ):
+            v3_spatial_residual_mode = meta["spatial_residual_mode"]
+        if meta.get("spatial_residual_hidden_dim") is not None:
+            v3_spatial_residual_hidden_dim = meta["spatial_residual_hidden_dim"]
+        if meta.get("spatial_residual_grid_size") is not None:
+            v3_spatial_residual_grid_size = meta["spatial_residual_grid_size"]
+        if meta.get("spatial_residual_gate_init") is not None:
+            v3_spatial_residual_gate_init = meta["spatial_residual_gate_init"]
+        if (
             v3_visual_cross_attention_mode in {None, "none"}
             and meta.get("visual_cross_attention_mode") is not None
         ):
@@ -1808,6 +1899,9 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         v3_query_conditioned_patch_selector_mode = _normalize_v3_query_patch_selector_mode(
             v3_query_conditioned_patch_selector_mode
         )
+        v3_spatial_residual_mode = _normalize_v3_spatial_residual_mode(
+            v3_spatial_residual_mode
+        )
         v3_visual_cross_attention_mode = _normalize_v3_visual_cross_attention_mode(
             v3_visual_cross_attention_mode
         )
@@ -1818,6 +1912,8 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         from model_metadata import read_model_metadata
 
         meta = read_model_metadata(pretrain_checkpoint) or {}
+        if vision_image_size is None and meta.get("vision_image_size") is not None:
+            vision_image_size = int(meta["vision_image_size"])
         if v4_global_image_tokens is None:
             v4_global_image_tokens = meta.get("num_global_image_tokens")
         if v4_local_image_tokens is None:
@@ -1865,6 +1961,9 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
             "use_flash_attention": False,  # Skip flash-attn, use SDPA instead
         }
     }
+    resolved_vision_image_size = int(vision_image_size or 384)
+    if resolved_vision_image_size <= 0:
+        raise ValueError(f"vision_image_size must be > 0, got {vision_image_size}")
     if arch_key == "anymal_v1":
         model_cfg["model"].update(
             {
@@ -1897,7 +1996,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         dataset_policy = "fixed"
         dataset_min_tokens = 384
         dataset_max_tokens = 384
-        dataset_image_size = 384
+        dataset_image_size = resolved_vision_image_size
         dataset_vision_type = "siglip2"
         dataset_vision_model = "google/siglip2-so400m-patch14-384"
         dataset_max_length = 2304
@@ -1907,6 +2006,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
             {
                 "vision_encoder_type": "siglip2",
                 "vision_model_name": "google/siglip2-so400m-patch14-384",
+                "vision_image_size": resolved_vision_image_size,
                 "connector_type": resolved_v3_connector_type,
                 "num_image_tokens": 128,
                 "connector_layers": 6,
@@ -1960,6 +2060,10 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
                 "query_conditioned_patch_selector_normalize_mean": bool(
                     v3_query_conditioned_patch_selector_normalize_mean
                 ),
+                "spatial_residual_mode": v3_spatial_residual_mode,
+                "spatial_residual_hidden_dim": int(v3_spatial_residual_hidden_dim),
+                "spatial_residual_grid_size": int(v3_spatial_residual_grid_size),
+                "spatial_residual_gate_init": float(v3_spatial_residual_gate_init),
                 "visual_cross_attention_mode": v3_visual_cross_attention_mode,
                 "visual_cross_attention_layers": v3_visual_cross_attention_layers,
                 "visual_cross_attention_num_heads": int(
@@ -1984,7 +2088,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         dataset_policy = "fixed"
         dataset_min_tokens = 128
         dataset_max_tokens = 128
-        dataset_image_size = 384
+        dataset_image_size = resolved_vision_image_size
         dataset_vision_type = "siglip2"
         dataset_vision_model = "google/siglip2-so400m-patch14-384"
         dataset_max_length = 1536
@@ -2007,6 +2111,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
             {
                 "vision_encoder_type": "siglip2",
                 "vision_model_name": "google/siglip2-so400m-patch14-384",
+                "vision_image_size": resolved_vision_image_size,
                 "connector_type": resolved_v4_connector_type,
                 "num_global_image_tokens": v4_global_tokens,
                 "num_local_image_tokens": v4_local_tokens,
@@ -2044,7 +2149,7 @@ def run_finetune(llama_path, architecture, max_steps, learning_rate, batch_size,
         dataset_policy = "fixed"
         dataset_min_tokens = v4_total_tokens
         dataset_max_tokens = v4_total_tokens
-        dataset_image_size = 384
+        dataset_image_size = resolved_vision_image_size
         dataset_vision_type = "siglip2"
         dataset_vision_model = "google/siglip2-so400m-patch14-384"
         dataset_max_length = v4_total_tokens + 1408
@@ -2248,10 +2353,12 @@ def run_pretrain(
     output_dir="/checkpoints/pretrain-output",
     run_name=None,
     pretrain_image_tokens=None,
+    vision_image_size=None,
     llm_backbone=None,
     dataset="llava_pretrain",
     connector_warmup_steps=0,
     connector_trainable_prefixes="",
+    vision_trainable_prefixes="",
     contrastive_answer_suppression=False,
     contrastive_lambda=0.1,
     contrastive_margin=0.5,
@@ -2277,6 +2384,10 @@ def run_pretrain(
     v3_query_conditioned_patch_selector_hidden_dim=256,
     v3_query_conditioned_patch_selector_max_residual=0.25,
     v3_query_conditioned_patch_selector_normalize_mean=True,
+    v3_spatial_residual_mode="none",
+    v3_spatial_residual_hidden_dim=128,
+    v3_spatial_residual_grid_size=32,
+    v3_spatial_residual_gate_init=1e-4,
     v3_visual_cross_attention_mode="none",
     v3_visual_cross_attention_layers=None,
     v3_visual_cross_attention_num_heads=16,
@@ -2325,6 +2436,8 @@ def run_pretrain(
         from model_metadata import read_model_metadata
 
         meta = read_model_metadata(pretrain_checkpoint or resume_checkpoint) or {}
+        if vision_image_size is None and meta.get("vision_image_size") is not None:
+            vision_image_size = int(meta["vision_image_size"])
         if v3_connector_output_scale is None:
             v3_connector_output_scale = meta.get("connector_output_scale")
         if v3_connector_output_gate_init is None:
@@ -2387,6 +2500,17 @@ def run_pretrain(
                 meta["query_conditioned_patch_selector_normalize_mean"]
             )
         if (
+            v3_spatial_residual_mode in {None, "none"}
+            and meta.get("spatial_residual_mode") is not None
+        ):
+            v3_spatial_residual_mode = meta["spatial_residual_mode"]
+        if meta.get("spatial_residual_hidden_dim") is not None:
+            v3_spatial_residual_hidden_dim = meta["spatial_residual_hidden_dim"]
+        if meta.get("spatial_residual_grid_size") is not None:
+            v3_spatial_residual_grid_size = meta["spatial_residual_grid_size"]
+        if meta.get("spatial_residual_gate_init") is not None:
+            v3_spatial_residual_gate_init = meta["spatial_residual_gate_init"]
+        if (
             v3_visual_cross_attention_mode in {None, "none"}
             and meta.get("visual_cross_attention_mode") is not None
         ):
@@ -2417,6 +2541,9 @@ def run_pretrain(
         v3_query_conditioned_patch_selector_mode = _normalize_v3_query_patch_selector_mode(
             v3_query_conditioned_patch_selector_mode
         )
+        v3_spatial_residual_mode = _normalize_v3_spatial_residual_mode(
+            v3_spatial_residual_mode
+        )
         v3_visual_cross_attention_mode = _normalize_v3_visual_cross_attention_mode(
             v3_visual_cross_attention_mode
         )
@@ -2427,6 +2554,8 @@ def run_pretrain(
         from model_metadata import read_model_metadata
 
         meta = read_model_metadata(pretrain_checkpoint or resume_checkpoint) or {}
+        if vision_image_size is None and meta.get("vision_image_size") is not None:
+            vision_image_size = int(meta["vision_image_size"])
         if v4_global_image_tokens is None:
             v4_global_image_tokens = meta.get("num_global_image_tokens")
         if v4_local_image_tokens is None:
@@ -2466,10 +2595,19 @@ def run_pretrain(
             "cache_dir": "/checkpoints/hf_cache",
             "use_qlora": False,  # No LoRA for Stage 1
             "use_lora": False,
-            "gradient_checkpointing": True,
+            "gradient_checkpointing": not (
+                arch_key == "anymal_v3"
+                and _normalize_v3_visual_cross_attention_mode(
+                    v3_visual_cross_attention_mode
+                )
+                != "none"
+            ),
             "use_flash_attention": False,  # Skip flash-attn, use SDPA instead
         }
     }
+    resolved_vision_image_size = int(vision_image_size or 384)
+    if resolved_vision_image_size <= 0:
+        raise ValueError(f"vision_image_size must be > 0, got {vision_image_size}")
     if arch_key == "anymal_v1":
         model_cfg["model"].update(
             {
@@ -2501,7 +2639,7 @@ def run_pretrain(
         )
         insert_placeholders = True
         pretrain_max_length = pretrain_num_image_tokens + 384
-        pretrain_image_size = 384
+        pretrain_image_size = resolved_vision_image_size
         pretrain_vision_type = "siglip2"
         pretrain_vision_model = "google/siglip2-so400m-patch14-384"
     elif arch_key == "anymal_v3":
@@ -2513,6 +2651,7 @@ def run_pretrain(
             {
                 "vision_encoder_type": "siglip2",
                 "vision_model_name": "google/siglip2-so400m-patch14-384",
+                "vision_image_size": resolved_vision_image_size,
                 "connector_type": resolved_v3_connector_type,
                 "num_image_tokens": pretrain_num_image_tokens,
                 "connector_layers": 6,
@@ -2566,6 +2705,10 @@ def run_pretrain(
                 "query_conditioned_patch_selector_normalize_mean": bool(
                     v3_query_conditioned_patch_selector_normalize_mean
                 ),
+                "spatial_residual_mode": v3_spatial_residual_mode,
+                "spatial_residual_hidden_dim": int(v3_spatial_residual_hidden_dim),
+                "spatial_residual_grid_size": int(v3_spatial_residual_grid_size),
+                "spatial_residual_gate_init": float(v3_spatial_residual_gate_init),
                 "visual_cross_attention_mode": v3_visual_cross_attention_mode,
                 "visual_cross_attention_layers": v3_visual_cross_attention_layers,
                 "visual_cross_attention_num_heads": int(
@@ -2588,7 +2731,7 @@ def run_pretrain(
         )
         insert_placeholders = True
         pretrain_max_length = pretrain_num_image_tokens + 384
-        pretrain_image_size = 384
+        pretrain_image_size = resolved_vision_image_size
         pretrain_vision_type = "siglip2"
         pretrain_vision_model = "google/siglip2-so400m-patch14-384"
     else:
@@ -2610,6 +2753,7 @@ def run_pretrain(
             {
                 "vision_encoder_type": "siglip2",
                 "vision_model_name": "google/siglip2-so400m-patch14-384",
+                "vision_image_size": resolved_vision_image_size,
                 "connector_type": resolved_v4_connector_type,
                 "num_global_image_tokens": v4_global_tokens,
                 "num_local_image_tokens": v4_local_tokens,
@@ -2649,7 +2793,7 @@ def run_pretrain(
             )
         insert_placeholders = True
         pretrain_max_length = pretrain_num_image_tokens + 384
-        pretrain_image_size = 384
+        pretrain_image_size = resolved_vision_image_size
         pretrain_vision_type = "siglip2"
         pretrain_vision_model = "google/siglip2-so400m-patch14-384"
 
@@ -2663,6 +2807,7 @@ def run_pretrain(
 
     if pretrain_checkpoint:
         from model_metadata import (
+            read_model_metadata,
             validate_checkpoint_architecture,
             validate_checkpoint_metadata_values,
         )
@@ -2672,6 +2817,7 @@ def run_pretrain(
             checkpoint_dir=pretrain_checkpoint,
             expected_architecture=arch_key,
         )
+        checkpoint_meta = read_model_metadata(pretrain_checkpoint) or {}
         expected_values = {}
         if arch_key in {"anymal_v3", "anymal_v4"}:
             expected_values = {
@@ -2700,8 +2846,56 @@ def run_pretrain(
                         "patch_position_feature_scale",
                         None,
                     )
+                if (
+                    v3_spatial_residual_mode not in {None, "none"}
+                    and "spatial_residual_mode" in checkpoint_meta
+                ):
+                    expected_values["spatial_residual_mode"] = getattr(
+                        model,
+                        "spatial_residual_mode",
+                        None,
+                    )
+                    if "spatial_residual_hidden_dim" in checkpoint_meta:
+                        expected_values["spatial_residual_hidden_dim"] = getattr(
+                            model,
+                            "spatial_residual_hidden_dim",
+                            None,
+                        )
+                    if "spatial_residual_grid_size" in checkpoint_meta:
+                        expected_values["spatial_residual_grid_size"] = getattr(
+                            model,
+                            "spatial_residual_grid_size",
+                            None,
+                        )
+                    if "spatial_residual_gate_init" in checkpoint_meta:
+                        expected_values["spatial_residual_gate_init"] = getattr(
+                            model,
+                            "spatial_residual_gate_init",
+                            None,
+                        )
             if expected_llm_backbone != CURRENT_LLAMA3_BACKBONE:
-                expected_values["llm_backbone"] = expected_llm_backbone
+                checkpoint_llm_backbone = checkpoint_meta.get("llm_backbone")
+                checkpoint_llm_model = checkpoint_meta.get("llm_model_name")
+                if checkpoint_llm_backbone is not None:
+                    expected_values["llm_backbone"] = expected_llm_backbone
+                elif checkpoint_llm_model is not None:
+                    found_llm_backbone = _metadata_llm_backbone(checkpoint_llm_model)
+                    if found_llm_backbone != expected_llm_backbone:
+                        raise RuntimeError(
+                            "Checkpoint decoder metadata mismatch for "
+                            f"{pretrain_checkpoint}: llm_model_name="
+                            f"{checkpoint_llm_model!r} resolves to "
+                            f"{found_llm_backbone!r}, expected "
+                            f"{expected_llm_backbone!r}."
+                        )
+                else:
+                    print(
+                        "WARNING: pretrain checkpoint has no decoder metadata; "
+                        "cannot verify llm_backbone compatibility for "
+                        f"{pretrain_checkpoint}. New V4 checkpoints save this "
+                        "metadata, but this legacy checkpoint is being loaded "
+                        "for backward-compatible V12 continuation."
+                    )
             if arch_key == "anymal_v4":
                 expected_values.update(
                     {
@@ -2765,6 +2959,11 @@ def run_pretrain(
             != "none"
         ):
             allowed_missing_prefixes.add("query_patch_selector.")
+        if (
+            arch_key == "anymal_v3"
+            and _normalize_v3_spatial_residual_mode(v3_spatial_residual_mode) != "none"
+        ):
+            allowed_missing_prefixes.add("v3_spatial_residual_branch.")
         if arch_key == "anymal_v3" and (allowed_missing or allowed_missing_prefixes):
             incompatible = model.projector.load_state_dict(projector_state, strict=False)
             missing = set(incompatible.missing_keys)
@@ -2797,8 +2996,13 @@ def run_pretrain(
                 map_location="cpu",
                 allow_missing=True,
             )
+        if hasattr(model, "load_vision_adapter"):
+            model.load_vision_adapter(pretrain_checkpoint, map_location="cpu")
 
-    if dataset == "v10_qwen_gqa_contrastive_stage1b":
+    if dataset in {
+        "v10_qwen_gqa_contrastive_stage1b",
+        "v12_qwen_gqa_spatial_contrastive_stage1b",
+    }:
         contrastive_answer_suppression = True
 
     # Diagnose model (rank 0 only)
@@ -2832,6 +3036,9 @@ def run_pretrain(
         "v9_qwen_gqa_stage1b",
         "v10_qwen_gqa_antishuffle_stage1b",
         "v10_qwen_gqa_contrastive_stage1b",
+        "v12_qwen_v3_error_slice_stage1b",
+        "v12_qwen_gqa_spatial_focus_stage1b",
+        "v12_qwen_gqa_spatial_contrastive_stage1b",
     }:
         grounding_dataset_name = dataset
         dataset = load_finetune_dataset(
@@ -2929,6 +3136,7 @@ def run_pretrain(
         ),
         connector_warmup_steps=int(connector_warmup_steps or 0),
         connector_trainable_prefixes=connector_trainable_prefixes or (),
+        vision_trainable_prefixes=vision_trainable_prefixes or (),
         connector_scale_only_training=(
             arch_key == "anymal_v3"
             and str(v3_connector_trainable_scale_mode or "none").strip().lower()
@@ -4073,7 +4281,118 @@ def load_finetune_dataset(
         volume.commit()
         return output_path, vqa_image_dir
 
-    def _gqa_direct_answer_path(split="train_balanced", max_samples=10000):
+    def _gqa_focus_match(question, answer="", focus="all"):
+        focus = str(focus or "all").strip().lower()
+        if focus in {"", "all", "none"}:
+            return True
+        q = f" {' '.join(str(question or '').lower().split())} "
+        answer_text = " ".join(str(answer or "").lower().split())
+        if focus.startswith("v3_error_") and answer_text in {"yes", "no"}:
+            return False
+        if focus in {
+            "spatial",
+            "spatial_relation",
+            "relation",
+            "left_right",
+            "v3_error_spatial_non_yn",
+            "v3_error_spatial_left_right",
+        }:
+            spatial_terms = (
+                " left ",
+                " right ",
+                " above ",
+                " below ",
+                " underneath ",
+                " under ",
+                " over ",
+                " behind ",
+                " in front of ",
+                " front of ",
+                " next to ",
+                " beside ",
+                " near ",
+                " between ",
+                " around ",
+                " side ",
+                " where ",
+                " on top of ",
+                " at the top ",
+                " at the bottom ",
+                " to the left ",
+                " to the right ",
+            )
+            relation_terms = (
+                " standing on ",
+                " sitting on ",
+                " lying on ",
+                " holding ",
+                " wearing ",
+                " looking at ",
+                " facing ",
+                " carrying ",
+                " touching ",
+                " covering ",
+                " parked ",
+            )
+            return any(term in q for term in spatial_terms + relation_terms)
+        if focus in {"object_attribute", "v3_error_object_attribute_non_yn"}:
+            object_attribute_terms = (
+                " what color ",
+                " what kind ",
+                " what type ",
+                " what animal ",
+                " what object ",
+                " what item ",
+                " what is the ",
+                " what are the ",
+                " which ",
+                " who ",
+                " whose ",
+                " color ",
+                " material ",
+                " wearing ",
+                " made of ",
+            )
+            count_terms = (" how many ", " number of ", " count ")
+            return (
+                any(term in q for term in object_attribute_terms)
+                and not any(term in q for term in count_terms)
+            )
+        if focus in {"logical_color", "v3_error_logic_color_non_yn"}:
+            logic_color_terms = (
+                " color ",
+                " same ",
+                " different ",
+                " more ",
+                " less ",
+                " larger ",
+                " smaller ",
+                " taller ",
+                " shorter ",
+                " closest ",
+                " closer ",
+                " farthest ",
+                " farther ",
+                " shape ",
+                " pattern ",
+                " striped ",
+                " wooden ",
+                " metal ",
+                " made of ",
+            )
+            return any(term in q for term in logic_color_terms)
+        raise ValueError(f"Unsupported GQA focus: {focus}")
+
+    def _distributed_backend():
+        try:
+            import torch.distributed as dist
+        except Exception:
+            return None
+        if not dist.is_available() or not dist.is_initialized():
+            return None
+        return dist
+
+    def _gqa_direct_answer_path(split="train_balanced", max_samples=10000, focus="all"):
         """Build GQA direct-answer instruction data for V9 compositional grounding."""
         from io import BytesIO
 
@@ -4085,11 +4404,28 @@ def load_finetune_dataset(
         os.makedirs(gqa_dir, exist_ok=True)
         os.makedirs(gqa_image_dir, exist_ok=True)
         safe_split = str(split).replace("/", "_")
-        output_path = (
-            f"/checkpoints/gqa_data/"
-            f"v9_qwen_gqa_{safe_split}_{int(max_samples)}.json"
-        )
+        safe_focus = str(focus or "all").strip().lower().replace("/", "_")
+        if safe_focus in {"", "all", "none"}:
+            output_path = (
+                f"/checkpoints/gqa_data/"
+                f"v9_qwen_gqa_{safe_split}_{int(max_samples)}.json"
+            )
+        else:
+            output_path = (
+                f"/checkpoints/gqa_data/"
+                f"v12_qwen_gqa_{safe_focus}_{safe_split}_{int(max_samples)}.json"
+            )
+        dist = _distributed_backend()
+        if dist is not None and dist.get_rank() != 0:
+            dist.barrier()
+            if not os.path.exists(output_path):
+                raise RuntimeError(
+                    f"Rank 0 did not materialize focused GQA data at {output_path}"
+                )
+            return output_path, gqa_image_dir
         if os.path.exists(output_path):
+            if dist is not None:
+                dist.barrier()
             return output_path, gqa_image_dir
 
         dataset_id = "Mineru/GQA"
@@ -4128,11 +4464,17 @@ def load_finetune_dataset(
         cached = 0
         written = 0
         skipped_missing_fields = 0
+        skipped_focus = 0
         for source_idx, row in enumerate(rows):
             if len(samples) >= int(max_samples):
                 break
             if not row.get("question") or not row.get("answer") or not row.get("question_id") or not row.get("image"):
                 skipped_missing_fields += 1
+                continue
+            question = " ".join(str(row["question"]).split())
+            answer = " ".join(str(row["answer"]).split())
+            if not _gqa_focus_match(question, answer, focus=focus):
+                skipped_focus += 1
                 continue
             image_id = str(row["question_id"])
             filename = _safe_image_filename(image_id)
@@ -4148,8 +4490,6 @@ def load_finetune_dataset(
                         f"images_written={written}; images_cached={cached}"
                     )
                     volume.commit()
-            question = " ".join(str(row["question"]).split())
-            answer = " ".join(str(row["answer"]).split())
             if _has_reserved_chat_markers(question) or _has_reserved_chat_markers(answer):
                 continue
             samples.append(
@@ -4174,31 +4514,52 @@ def load_finetune_dataset(
             _json.dump(samples, f)
         print(
             f"Built {len(samples)} GQA direct-answer samples from {dataset_id}/{split_name} "
+            f"focus={safe_focus} "
             f"at {output_path}; images_written={written}; images_cached={cached}; "
-            f"skipped_missing_fields={skipped_missing_fields}"
+            f"skipped_missing_fields={skipped_missing_fields}; skipped_focus={skipped_focus}"
         )
         volume.commit()
+        if dist is not None:
+            dist.barrier()
         return output_path, gqa_image_dir
 
-    def _gqa_contrastive_answer_suppression_path(split="train_balanced", max_samples=10000):
+    def _gqa_contrastive_answer_suppression_path(split="train_balanced", max_samples=10000, focus="all"):
         """Build GQA positives paired with shuffled, same-answer, and blank negatives."""
         from PIL import Image
 
         safe_split = str(split).replace("/", "_")
-        output_path = (
-            "/checkpoints/gqa_data/"
-            f"v10_qwen_gqa_contrastive_{safe_split}_{int(max_samples)}.json"
-        )
+        safe_focus = str(focus or "all").strip().lower().replace("/", "_")
+        if safe_focus in {"", "all", "none"}:
+            output_path = (
+                "/checkpoints/gqa_data/"
+                f"v10_qwen_gqa_contrastive_{safe_split}_{int(max_samples)}.json"
+            )
+        else:
+            output_path = (
+                "/checkpoints/gqa_data/"
+                f"v12_qwen_gqa_contrastive_{safe_focus}_{safe_split}_{int(max_samples)}.json"
+            )
         gqa_path, gqa_image_dir = _gqa_direct_answer_path(
             split=split,
             max_samples=max_samples,
+            focus=focus,
         )
         blank_filename = "anymal_blank_gray_384.jpg"
         blank_path = os.path.join(gqa_image_dir, blank_filename)
         if not os.path.exists(blank_path):
             Image.new("RGB", (384, 384), color=(128, 128, 128)).save(blank_path)
             volume.commit()
+        dist = _distributed_backend()
+        if dist is not None and dist.get_rank() != 0:
+            dist.barrier()
+            if not os.path.exists(output_path):
+                raise RuntimeError(
+                    f"Rank 0 did not materialize GQA contrastive data at {output_path}"
+                )
+            return output_path, gqa_image_dir
         if os.path.exists(output_path):
+            if dist is not None:
+                dist.barrier()
             return output_path, gqa_image_dir
 
         with open(gqa_path, "r") as f:
@@ -4275,9 +4636,12 @@ def load_finetune_dataset(
         with open(output_path, "w") as f:
             _json.dump(samples, f)
         print(
-            f"Built {len(samples)} GQA contrastive answer-suppression samples at {output_path}"
+            f"Built {len(samples)} GQA contrastive answer-suppression samples "
+            f"focus={safe_focus} at {output_path}"
         )
         volume.commit()
+        if dist is not None:
+            dist.barrier()
         return output_path, gqa_image_dir
 
     def _coco_absence_pope_style_path(max_samples=10000):
@@ -4637,12 +5001,44 @@ def load_finetune_dataset(
         print(f"Loaded {len(ds)} {dataset} instruction samples")
         return ds
 
+    if dataset == "v12_qwen_gqa_spatial_contrastive_stage1b":
+        calibration_prompt = (
+            "Answer with only the final answer. Do not include role labels, "
+            "explanations, or the word assistant. End after the answer."
+        )
+        contrastive_path, gqa_image_dir = _gqa_contrastive_answer_suppression_path(
+            split="train_balanced",
+            max_samples=10000,
+            focus="spatial_relation",
+        )
+        ds = create_instruction_dataset(
+            data_path=contrastive_path,
+            image_dir=gqa_image_dir,
+            tokenizer=tokenizer,
+            image_size=image_size,
+            max_length=max_length,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+            system_prompt=calibration_prompt,
+            use_augmentation=False,
+            image_augmentation_mode="none",
+            filter_to_available_images=True,
+        )
+        print(f"Loaded {len(ds)} {dataset} instruction samples")
+        return ds
+
     if dataset in {
         "v9_qwen_controlaware_stage2",
         "v9_qwen_gqa_preserving_stage2",
         "v9_qwen_controlaware_stage1b",
         "v9_qwen_gqa_stage1b",
         "v10_qwen_gqa_antishuffle_stage1b",
+        "v12_qwen_v3_error_slice_stage1b",
+        "v12_qwen_gqa_spatial_focus_stage1b",
     }:
         calibration_prompt = (
             "Answer with only the final answer. Do not include role labels, "
@@ -4684,6 +5080,55 @@ def load_finetune_dataset(
             split="train_balanced",
             max_samples=10000,
         )
+        gqa_spatial_path = None
+        gqa_spatial_image_dir = None
+        gqa_v3err_spatial_path = None
+        gqa_v3err_spatial_image_dir = None
+        gqa_v3err_object_path = None
+        gqa_v3err_object_image_dir = None
+        gqa_v3err_logic_path = None
+        gqa_v3err_logic_image_dir = None
+
+        def _get_gqa_spatial_path():
+            nonlocal gqa_spatial_path, gqa_spatial_image_dir
+            if gqa_spatial_path is None:
+                gqa_spatial_path, gqa_spatial_image_dir = _gqa_direct_answer_path(
+                    split="train_balanced",
+                    max_samples=15000,
+                    focus="spatial_relation",
+                )
+            return gqa_spatial_path, gqa_spatial_image_dir
+
+        def _get_gqa_v3err_spatial_path():
+            nonlocal gqa_v3err_spatial_path, gqa_v3err_spatial_image_dir
+            if gqa_v3err_spatial_path is None:
+                gqa_v3err_spatial_path, gqa_v3err_spatial_image_dir = _gqa_direct_answer_path(
+                    split="train_balanced",
+                    max_samples=20000,
+                    focus="v3_error_spatial_non_yn",
+                )
+            return gqa_v3err_spatial_path, gqa_v3err_spatial_image_dir
+
+        def _get_gqa_v3err_object_path():
+            nonlocal gqa_v3err_object_path, gqa_v3err_object_image_dir
+            if gqa_v3err_object_path is None:
+                gqa_v3err_object_path, gqa_v3err_object_image_dir = _gqa_direct_answer_path(
+                    split="train_balanced",
+                    max_samples=12000,
+                    focus="v3_error_object_attribute_non_yn",
+                )
+            return gqa_v3err_object_path, gqa_v3err_object_image_dir
+
+        def _get_gqa_v3err_logic_path():
+            nonlocal gqa_v3err_logic_path, gqa_v3err_logic_image_dir
+            if gqa_v3err_logic_path is None:
+                gqa_v3err_logic_path, gqa_v3err_logic_image_dir = _gqa_direct_answer_path(
+                    split="train_balanced",
+                    max_samples=10000,
+                    focus="v3_error_logic_color_non_yn",
+                )
+            return gqa_v3err_logic_path, gqa_v3err_logic_image_dir
+
         pope_presence_path = None
         pope_absence_path = None
 
@@ -4875,6 +5320,95 @@ def load_finetune_dataset(
                     {
                         "name": "coco_pope_style_absence",
                         "weight": 0.025,
+                        "data_path": _get_pope_absence_path(),
+                        "system_prompt": pope_prompt,
+                        "use_augmentation": False,
+                    },
+                ]
+            )
+        elif dataset == "v12_qwen_v3_error_slice_stage1b":
+            v3err_spatial_path, v3err_spatial_image_dir = _get_gqa_v3err_spatial_path()
+            v3err_object_path, v3err_object_image_dir = _get_gqa_v3err_object_path()
+            v3err_logic_path, v3err_logic_image_dir = _get_gqa_v3err_logic_path()
+            mixture_sources = [
+                {
+                    "name": "gqa_v3_error_spatial_left_right_non_yn",
+                    "weight": 0.45,
+                    "data_path": v3err_spatial_path,
+                    "image_dir": v3err_spatial_image_dir,
+                    "system_prompt": calibration_prompt,
+                    "use_augmentation": False,
+                },
+                {
+                    "name": "gqa_v3_error_object_attribute_non_yn",
+                    "weight": 0.20,
+                    "data_path": v3err_object_path,
+                    "image_dir": v3err_object_image_dir,
+                    "system_prompt": calibration_prompt,
+                    "use_augmentation": False,
+                },
+                {
+                    "name": "gqa_v3_error_logic_color_non_yn",
+                    "weight": 0.15,
+                    "data_path": v3err_logic_path,
+                    "image_dir": v3err_logic_image_dir,
+                    "system_prompt": calibration_prompt,
+                    "use_augmentation": False,
+                },
+                {
+                    "name": "gqa_direct_answer_replay",
+                    "weight": 0.10,
+                    "data_path": gqa_path,
+                    "image_dir": gqa_image_dir,
+                    "system_prompt": calibration_prompt,
+                    "use_augmentation": False,
+                },
+                {
+                    "name": "coco_pope_style_presence",
+                    "weight": 0.05,
+                    "data_path": _get_pope_presence_path(),
+                    "system_prompt": pope_prompt,
+                    "use_augmentation": False,
+                },
+                {
+                    "name": "coco_pope_style_absence",
+                    "weight": 0.05,
+                    "data_path": _get_pope_absence_path(),
+                    "system_prompt": pope_prompt,
+                    "use_augmentation": False,
+                },
+            ]
+        elif dataset == "v12_qwen_gqa_spatial_focus_stage1b":
+            gqa_spatial_path, gqa_spatial_image_dir = _get_gqa_spatial_path()
+            mixture_sources = _v3_grounding_sources(0.30)
+            mixture_sources.extend(
+                [
+                    {
+                        "name": "gqa_spatial_relation_direct_answer",
+                        "weight": 0.45,
+                        "data_path": gqa_spatial_path,
+                        "image_dir": gqa_spatial_image_dir,
+                        "system_prompt": calibration_prompt,
+                        "use_augmentation": False,
+                    },
+                    {
+                        "name": "gqa_direct_answer_replay",
+                        "weight": 0.15,
+                        "data_path": gqa_path,
+                        "image_dir": gqa_image_dir,
+                        "system_prompt": calibration_prompt,
+                        "use_augmentation": False,
+                    },
+                    {
+                        "name": "coco_pope_style_presence",
+                        "weight": 0.05,
+                        "data_path": _get_pope_presence_path(),
+                        "system_prompt": pope_prompt,
+                        "use_augmentation": False,
+                    },
+                    {
+                        "name": "coco_pope_style_absence",
+                        "weight": 0.05,
                         "data_path": _get_pope_absence_path(),
                         "system_prompt": pope_prompt,
                         "use_augmentation": False,
@@ -5756,9 +6290,11 @@ def _pretrain_worker(local_rank, world_size, config):
             output_dir=config["output_dir"],
             run_name=config.get("run_name"),
             pretrain_image_tokens=config.get("pretrain_image_tokens"),
+            vision_image_size=config.get("vision_image_size"),
             dataset=config.get("dataset", "llava_pretrain"),
             connector_warmup_steps=config.get("connector_warmup_steps", 0),
             connector_trainable_prefixes=config.get("connector_trainable_prefixes", ""),
+            vision_trainable_prefixes=config.get("vision_trainable_prefixes", ""),
             contrastive_answer_suppression=config.get(
                 "contrastive_answer_suppression",
                 False,
@@ -5822,6 +6358,22 @@ def _pretrain_worker(local_rank, world_size, config):
                 "v3_query_conditioned_patch_selector_normalize_mean",
                 True,
             ),
+            v3_spatial_residual_mode=config.get(
+                "v3_spatial_residual_mode",
+                "none",
+            ),
+            v3_spatial_residual_hidden_dim=config.get(
+                "v3_spatial_residual_hidden_dim",
+                128,
+            ),
+            v3_spatial_residual_grid_size=config.get(
+                "v3_spatial_residual_grid_size",
+                32,
+            ),
+            v3_spatial_residual_gate_init=config.get(
+                "v3_spatial_residual_gate_init",
+                1e-4,
+            ),
             v3_visual_cross_attention_mode=config.get(
                 "v3_visual_cross_attention_mode",
                 "none",
@@ -5878,9 +6430,11 @@ def _run_pretrain_distributed(
     pretrain_checkpoint=None,
     run_name=None,
     pretrain_image_tokens=None,
+    vision_image_size=None,
     dataset="llava_pretrain",
     connector_warmup_steps=0,
     connector_trainable_prefixes="",
+    vision_trainable_prefixes="",
     contrastive_answer_suppression=False,
     contrastive_lambda=0.1,
     contrastive_margin=0.5,
@@ -5906,6 +6460,10 @@ def _run_pretrain_distributed(
     v3_query_conditioned_patch_selector_hidden_dim=256,
     v3_query_conditioned_patch_selector_max_residual=0.25,
     v3_query_conditioned_patch_selector_normalize_mean=True,
+    v3_spatial_residual_mode="none",
+    v3_spatial_residual_hidden_dim=128,
+    v3_spatial_residual_grid_size=32,
+    v3_spatial_residual_gate_init=1e-4,
     v3_visual_cross_attention_mode="none",
     v3_visual_cross_attention_layers=None,
     v3_visual_cross_attention_num_heads=16,
@@ -5971,9 +6529,11 @@ def _run_pretrain_distributed(
         "output_dir": pretrain_output_dir,
         "run_name": run_name,
         "pretrain_image_tokens": pretrain_image_tokens,
+        "vision_image_size": vision_image_size,
         "dataset": dataset,
         "connector_warmup_steps": connector_warmup_steps,
         "connector_trainable_prefixes": connector_trainable_prefixes,
+        "vision_trainable_prefixes": vision_trainable_prefixes,
         "contrastive_answer_suppression": contrastive_answer_suppression,
         "contrastive_lambda": contrastive_lambda,
         "contrastive_margin": contrastive_margin,
@@ -5999,6 +6559,10 @@ def _run_pretrain_distributed(
         "v3_query_conditioned_patch_selector_hidden_dim": v3_query_conditioned_patch_selector_hidden_dim,
         "v3_query_conditioned_patch_selector_max_residual": v3_query_conditioned_patch_selector_max_residual,
         "v3_query_conditioned_patch_selector_normalize_mean": v3_query_conditioned_patch_selector_normalize_mean,
+        "v3_spatial_residual_mode": v3_spatial_residual_mode,
+        "v3_spatial_residual_hidden_dim": v3_spatial_residual_hidden_dim,
+        "v3_spatial_residual_grid_size": v3_spatial_residual_grid_size,
+        "v3_spatial_residual_gate_init": v3_spatial_residual_gate_init,
         "v3_visual_cross_attention_mode": v3_visual_cross_attention_mode,
         "v3_visual_cross_attention_layers": v3_visual_cross_attention_layers,
         "v3_visual_cross_attention_num_heads": v3_visual_cross_attention_num_heads,
@@ -6048,9 +6612,11 @@ def pretrain_distributed(
     pretrain_checkpoint=None,
     run_name=None,
     pretrain_image_tokens=None,
+    vision_image_size=None,
     dataset="llava_pretrain",
     connector_warmup_steps=0,
     connector_trainable_prefixes="",
+    vision_trainable_prefixes="",
     contrastive_answer_suppression=False,
     contrastive_lambda=0.1,
     contrastive_margin=0.5,
@@ -6076,6 +6642,10 @@ def pretrain_distributed(
     v3_query_conditioned_patch_selector_hidden_dim=256,
     v3_query_conditioned_patch_selector_max_residual=0.25,
     v3_query_conditioned_patch_selector_normalize_mean=True,
+    v3_spatial_residual_mode="none",
+    v3_spatial_residual_hidden_dim=128,
+    v3_spatial_residual_grid_size=32,
+    v3_spatial_residual_gate_init=1e-4,
     v3_visual_cross_attention_mode="none",
     v3_visual_cross_attention_layers=None,
     v3_visual_cross_attention_num_heads=16,
@@ -6110,9 +6680,11 @@ def pretrain_distributed(
         pretrain_checkpoint=pretrain_checkpoint,
         run_name=run_name,
         pretrain_image_tokens=pretrain_image_tokens,
+        vision_image_size=vision_image_size,
         dataset=dataset,
         connector_warmup_steps=connector_warmup_steps,
         connector_trainable_prefixes=connector_trainable_prefixes,
+        vision_trainable_prefixes=vision_trainable_prefixes,
         contrastive_answer_suppression=contrastive_answer_suppression,
         contrastive_lambda=contrastive_lambda,
         contrastive_margin=contrastive_margin,
@@ -6138,6 +6710,10 @@ def pretrain_distributed(
         v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
         v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
         v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+        v3_spatial_residual_mode=v3_spatial_residual_mode,
+        v3_spatial_residual_hidden_dim=v3_spatial_residual_hidden_dim,
+        v3_spatial_residual_grid_size=v3_spatial_residual_grid_size,
+        v3_spatial_residual_gate_init=v3_spatial_residual_gate_init,
         v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
         v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
         v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
@@ -6183,9 +6759,11 @@ def pretrain_distributed_h100(
     pretrain_checkpoint=None,
     run_name=None,
     pretrain_image_tokens=None,
+    vision_image_size=None,
     dataset="llava_pretrain",
     connector_warmup_steps=0,
     connector_trainable_prefixes="",
+    vision_trainable_prefixes="",
     contrastive_answer_suppression=False,
     contrastive_lambda=0.1,
     contrastive_margin=0.5,
@@ -6211,6 +6789,10 @@ def pretrain_distributed_h100(
     v3_query_conditioned_patch_selector_hidden_dim=256,
     v3_query_conditioned_patch_selector_max_residual=0.25,
     v3_query_conditioned_patch_selector_normalize_mean=True,
+    v3_spatial_residual_mode="none",
+    v3_spatial_residual_hidden_dim=128,
+    v3_spatial_residual_grid_size=32,
+    v3_spatial_residual_gate_init=1e-4,
     v3_visual_cross_attention_mode="none",
     v3_visual_cross_attention_layers=None,
     v3_visual_cross_attention_num_heads=16,
@@ -6245,9 +6827,11 @@ def pretrain_distributed_h100(
         pretrain_checkpoint=pretrain_checkpoint,
         run_name=run_name,
         pretrain_image_tokens=pretrain_image_tokens,
+        vision_image_size=vision_image_size,
         dataset=dataset,
         connector_warmup_steps=connector_warmup_steps,
         connector_trainable_prefixes=connector_trainable_prefixes,
+        vision_trainable_prefixes=vision_trainable_prefixes,
         contrastive_answer_suppression=contrastive_answer_suppression,
         contrastive_lambda=contrastive_lambda,
         contrastive_margin=contrastive_margin,
@@ -6273,6 +6857,10 @@ def pretrain_distributed_h100(
         v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
         v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
         v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+        v3_spatial_residual_mode=v3_spatial_residual_mode,
+        v3_spatial_residual_hidden_dim=v3_spatial_residual_hidden_dim,
+        v3_spatial_residual_grid_size=v3_spatial_residual_grid_size,
+        v3_spatial_residual_gate_init=v3_spatial_residual_gate_init,
         v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
         v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
         v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
@@ -6450,6 +7038,7 @@ def main(
     run_name: str = None,
     background: bool = False,
     pretrain_image_tokens: int = None,
+    vision_image_size: int = None,
     projector_warmup_steps: int = None,
     freeze_connector: bool = False,
     finetune_loss_scale: float = 1.0,
@@ -6464,6 +7053,7 @@ def main(
     contrastive_margin: float = 0.5,
     connector_warmup_steps: int = 0,
     connector_trainable_prefixes: str = "",
+    vision_trainable_prefixes: str = "",
     pretrain_loss_scale: float = 1.0,
     pretrain_loss_normalization: str = "mean",
     pretrain_loss_normalization_target_tokens: float = 8.0,
@@ -6486,6 +7076,10 @@ def main(
     v3_query_conditioned_patch_selector_hidden_dim: int = 256,
     v3_query_conditioned_patch_selector_max_residual: float = 0.25,
     v3_query_conditioned_patch_selector_normalize_mean: bool = True,
+    v3_spatial_residual_mode: str = "none",
+    v3_spatial_residual_hidden_dim: int = 128,
+    v3_spatial_residual_grid_size: int = 32,
+    v3_spatial_residual_gate_init: float = 1e-4,
     v3_visual_cross_attention_mode: str = "none",
     v3_visual_cross_attention_layers: str = None,
     v3_visual_cross_attention_num_heads: int = 16,
@@ -6562,16 +7156,20 @@ def main(
             "--token-compressor-type must be one of: learned, perceiver, perceiver2, avg"
         )
     if arch_key == "anymal_v3":
-        v3_patch_position_feature_type = _normalize_v3_patch_position_feature_type(
-            v3_patch_position_feature_type,
-            use_2d=v3_use_2d_patch_position_features,
-        )
-        v3_use_2d_patch_position_features = v3_patch_position_feature_type != "none"
+        if v3_patch_position_feature_type is not None or v3_use_2d_patch_position_features:
+            v3_patch_position_feature_type = _normalize_v3_patch_position_feature_type(
+                v3_patch_position_feature_type,
+                use_2d=v3_use_2d_patch_position_features,
+            )
+            v3_use_2d_patch_position_features = v3_patch_position_feature_type != "none"
         v3_query_conditioned_visual_scale_mode = str(
             v3_query_conditioned_visual_scale_mode or "none"
         ).strip().lower()
         v3_query_conditioned_patch_selector_mode = _normalize_v3_query_patch_selector_mode(
             v3_query_conditioned_patch_selector_mode
+        )
+        v3_spatial_residual_mode = _normalize_v3_spatial_residual_mode(
+            v3_spatial_residual_mode
         )
         v3_visual_cross_attention_mode = _normalize_v3_visual_cross_attention_mode(
             v3_visual_cross_attention_mode
@@ -6619,6 +7217,14 @@ def main(
                 f"max_residual={v3_query_conditioned_patch_selector_max_residual}, "
                 f"normalize_mean={v3_query_conditioned_patch_selector_normalize_mean}"
             )
+        print(f"  V3 spatial residual mode: {v3_spatial_residual_mode}")
+        if v3_spatial_residual_mode != "none":
+            print(
+                "  V3 spatial residual branch: "
+                f"hidden={v3_spatial_residual_hidden_dim}, "
+                f"grid={v3_spatial_residual_grid_size}, "
+                f"gate_init={v3_spatial_residual_gate_init}"
+            )
         print(f"  V3 visual cross-attention mode: {v3_visual_cross_attention_mode}")
         if v3_visual_cross_attention_mode != "none":
             print(
@@ -6646,6 +7252,7 @@ def main(
     print(f"  Eval benchmarks: {run_eval_benchmarks}")
     if stage == "pretrain":
         print(f"  Stage 1 image tokens: {pretrain_image_tokens}")
+        print(f"  Vision image size: {vision_image_size or 384}")
     if arch_key == "anymal_v4" and (
         stage == "pretrain"
         or pretrain_image_tokens is not None
@@ -6698,6 +7305,8 @@ def main(
         print(f"  Stage 1 connector warmup steps: {connector_warmup_steps}")
     if stage == "pretrain" and connector_trainable_prefixes:
         print(f"  Stage 1 connector trainable prefixes: {connector_trainable_prefixes}")
+    if stage == "pretrain" and vision_trainable_prefixes:
+        print(f"  Stage 1 vision trainable prefixes: {vision_trainable_prefixes}")
     if stage == "pretrain" and pretrain_loss_scale != 1.0:
         print(f"  Stage 1 loss scale: {pretrain_loss_scale}")
     if stage == "pretrain" and pretrain_connector_rms_regularizer_alpha:
@@ -6773,9 +7382,11 @@ def main(
             pretrain_checkpoint=pretrain_checkpoint,
             run_name=run_name,
             pretrain_image_tokens=pretrain_image_tokens,
+            vision_image_size=vision_image_size,
             dataset=dataset,
             connector_warmup_steps=connector_warmup_steps,
             connector_trainable_prefixes=connector_trainable_prefixes,
+            vision_trainable_prefixes=vision_trainable_prefixes,
             contrastive_answer_suppression=contrastive_answer_suppression,
             contrastive_lambda=contrastive_lambda,
             contrastive_margin=contrastive_margin,
@@ -6801,6 +7412,10 @@ def main(
             v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
             v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
             v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+            v3_spatial_residual_mode=v3_spatial_residual_mode,
+            v3_spatial_residual_hidden_dim=v3_spatial_residual_hidden_dim,
+            v3_spatial_residual_grid_size=v3_spatial_residual_grid_size,
+            v3_spatial_residual_gate_init=v3_spatial_residual_gate_init,
             v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
             v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
             v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,
@@ -6847,6 +7462,7 @@ def main(
             dataset=dataset,
             run_name=run_name,
             pretrain_image_tokens=pretrain_image_tokens,
+            vision_image_size=vision_image_size,
             projector_warmup_steps=projector_warmup_steps,
             freeze_connector=freeze_connector,
             finetune_loss_scale=finetune_loss_scale,
@@ -6874,6 +7490,10 @@ def main(
             v3_query_conditioned_patch_selector_hidden_dim=v3_query_conditioned_patch_selector_hidden_dim,
             v3_query_conditioned_patch_selector_max_residual=v3_query_conditioned_patch_selector_max_residual,
             v3_query_conditioned_patch_selector_normalize_mean=v3_query_conditioned_patch_selector_normalize_mean,
+            v3_spatial_residual_mode=v3_spatial_residual_mode,
+            v3_spatial_residual_hidden_dim=v3_spatial_residual_hidden_dim,
+            v3_spatial_residual_grid_size=v3_spatial_residual_grid_size,
+            v3_spatial_residual_gate_init=v3_spatial_residual_gate_init,
             v3_visual_cross_attention_mode=v3_visual_cross_attention_mode,
             v3_visual_cross_attention_layers=v3_visual_cross_attention_layers,
             v3_visual_cross_attention_num_heads=v3_visual_cross_attention_num_heads,

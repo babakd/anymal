@@ -36,11 +36,135 @@ class AnyMALv3Output:
     attentions: Optional[Tuple[torch.Tensor]] = None
 
 
+class V3SpatialResidualBranch(nn.Module):
+    """Small gated spatial residual over frozen V3 image tokens."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        num_latents: int,
+        hidden_dim: int = 128,
+        grid_size: int = 32,
+        gate_init: float = 1e-4,
+    ):
+        super().__init__()
+        self.input_dim = int(input_dim)
+        self.output_dim = int(output_dim)
+        self.num_latents = int(num_latents)
+        self.hidden_dim = int(hidden_dim)
+        self.grid_size = int(grid_size)
+        if self.input_dim <= 0 or self.output_dim <= 0 or self.num_latents <= 0:
+            raise ValueError("V3 spatial residual dimensions must be positive")
+        if self.hidden_dim <= 0:
+            raise ValueError(f"spatial_residual_hidden_dim must be > 0, got {hidden_dim}")
+        if self.grid_size <= 0:
+            raise ValueError(f"spatial_residual_grid_size must be > 0, got {grid_size}")
+        if not 0.0 < float(gate_init) < 1.0:
+            raise ValueError(
+                "spatial_residual_gate_init must be between 0 and 1, "
+                f"got {gate_init}"
+            )
+
+        self.row_embedding = nn.Parameter(torch.randn(self.grid_size, self.input_dim) * 0.02)
+        self.col_embedding = nn.Parameter(torch.randn(self.grid_size, self.input_dim) * 0.02)
+        self.latent_queries = nn.Parameter(torch.randn(self.num_latents, self.hidden_dim) * 0.02)
+        self.key_proj = nn.Linear(self.input_dim, self.hidden_dim)
+        self.value_proj = nn.Linear(self.input_dim, self.hidden_dim)
+        self.out_proj = nn.Linear(self.hidden_dim, self.output_dim)
+        self.norm = nn.LayerNorm(self.output_dim)
+        self.gate_logit = nn.Parameter(
+            torch.logit(torch.tensor(float(gate_init), dtype=torch.float32))
+        )
+
+    @staticmethod
+    def _infer_square_grid(num_tokens: int) -> Tuple[int, Optional[int], Optional[int]]:
+        side = int(num_tokens ** 0.5)
+        if side * side == num_tokens:
+            return 0, side, side
+        side = int(max(num_tokens - 1, 0) ** 0.5)
+        if side * side == num_tokens - 1:
+            return 1, side, side
+        return 0, None, None
+
+    def gate_value(self) -> float:
+        return float(torch.sigmoid(self.gate_logit.detach().float()).item())
+
+    def _position_features(
+        self,
+        batch_size: int,
+        num_tokens: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        prefix_tokens, height, width = self._infer_square_grid(num_tokens)
+        if height is None or width is None:
+            idx = torch.linspace(
+                0,
+                self.grid_size - 1,
+                num_tokens,
+                device=device,
+                dtype=torch.float32,
+            ).round().long().clamp(0, self.grid_size - 1)
+            positions = self.row_embedding.to(device=device)[idx]
+        else:
+            row_idx = torch.linspace(
+                0,
+                self.grid_size - 1,
+                height,
+                device=device,
+                dtype=torch.float32,
+            ).round().long().clamp(0, self.grid_size - 1)
+            col_idx = torch.linspace(
+                0,
+                self.grid_size - 1,
+                width,
+                device=device,
+                dtype=torch.float32,
+            ).round().long().clamp(0, self.grid_size - 1)
+            rows = self.row_embedding.to(device=device)[row_idx][:, None, :]
+            cols = self.col_embedding.to(device=device)[col_idx][None, :, :]
+            positions = (rows + cols).reshape(height * width, self.input_dim)
+            if prefix_tokens:
+                prefix = torch.zeros(
+                    prefix_tokens,
+                    self.input_dim,
+                    device=device,
+                    dtype=positions.dtype,
+                )
+                positions = torch.cat([prefix, positions], dim=0)
+        return positions.to(dtype=dtype).unsqueeze(0).expand(batch_size, -1, -1)
+
+    def forward(self, vision_features: torch.Tensor) -> torch.Tensor:
+        batch_size, num_tokens, _ = vision_features.shape
+        branch_dtype = self.key_proj.weight.dtype
+        x = vision_features.to(dtype=branch_dtype)
+        x = x + self._position_features(
+            batch_size=batch_size,
+            num_tokens=num_tokens,
+            device=vision_features.device,
+            dtype=branch_dtype,
+        )
+        keys = self.key_proj(x)
+        values = self.value_proj(x)
+        queries = self.latent_queries.to(device=vision_features.device, dtype=branch_dtype)
+        attn = torch.softmax(
+            torch.einsum("lh,bph->blp", queries, keys) / (self.hidden_dim ** 0.5),
+            dim=-1,
+        )
+        pooled = torch.einsum("blp,bph->blh", attn, values)
+        residual = self.norm(self.out_proj(pooled))
+        return residual.to(dtype=vision_features.dtype) * torch.sigmoid(
+            self.gate_logit.to(device=vision_features.device, dtype=vision_features.dtype)
+        )
+
+
 class AnyMALv3(AnyMALv2):
     """AnyMAL v3 multimodal model."""
 
     architecture = "anymal_v3"
     visual_cross_attention_state_file = "visual_cross_attention_adapters.pt"
+    vision_adapter_state_file = "vision_adapter.pt"
 
     def __init__(
         self,
@@ -48,6 +172,7 @@ class AnyMALv3(AnyMALv2):
         llm_backbone: Optional[str] = None,
         vision_encoder_type: str = "siglip2",
         vision_model_name: str = "google/siglip2-so400m-patch14-384",
+        vision_image_size: int = 384,
         connector_type: str = "perceiver_resampler",
         num_image_tokens: int = 128,
         connector_layers: int = 6,
@@ -70,6 +195,10 @@ class AnyMALv3(AnyMALv2):
         query_conditioned_patch_selector_hidden_dim: int = 256,
         query_conditioned_patch_selector_max_residual: float = 0.25,
         query_conditioned_patch_selector_normalize_mean: bool = True,
+        spatial_residual_mode: str = "none",
+        spatial_residual_hidden_dim: int = 128,
+        spatial_residual_grid_size: int = 32,
+        spatial_residual_gate_init: float = 1e-4,
         visual_cross_attention_mode: str = "none",
         visual_cross_attention_layers: Optional[Union[str, List[int], Tuple[int, ...]]] = None,
         visual_cross_attention_num_heads: int = 16,
@@ -96,6 +225,8 @@ class AnyMALv3(AnyMALv2):
 
         if num_image_tokens <= 0:
             raise ValueError(f"num_image_tokens must be > 0, got {num_image_tokens}")
+        if int(vision_image_size) <= 0:
+            raise ValueError(f"vision_image_size must be > 0, got {vision_image_size}")
         if vision_encoder_type != "siglip2":
             raise ValueError(
                 f"Unsupported vision_encoder_type '{vision_encoder_type}'. Expected 'siglip2'."
@@ -115,6 +246,7 @@ class AnyMALv3(AnyMALv2):
         self.freeze_vision = freeze_vision
         self.freeze_llm = freeze_llm
         self.vision_encoder_type = vision_encoder_type
+        self.vision_image_size = int(vision_image_size)
         self.connector_type = connector_type
         self.num_image_tokens = num_image_tokens
         # Compatibility with shared dataset/checkpoint helpers.
@@ -162,6 +294,12 @@ class AnyMALv3(AnyMALv2):
         self.query_conditioned_patch_selector_normalize_mean = bool(
             query_conditioned_patch_selector_normalize_mean
         )
+        self.spatial_residual_mode = self._normalize_spatial_residual_mode(
+            spatial_residual_mode
+        )
+        self.spatial_residual_hidden_dim = int(spatial_residual_hidden_dim)
+        self.spatial_residual_grid_size = int(spatial_residual_grid_size)
+        self.spatial_residual_gate_init = float(spatial_residual_gate_init)
         self.visual_cross_attention_mode = self._normalize_visual_cross_attention_mode(
             visual_cross_attention_mode
         )
@@ -305,6 +443,15 @@ class AnyMALv3(AnyMALv2):
             "query_conditioned_patch_selector_normalize_mean",
             self.query_conditioned_patch_selector_normalize_mean,
         )
+        if self._uses_spatial_residual():
+            self.projector.v3_spatial_residual_branch = V3SpatialResidualBranch(
+                input_dim=vision_dim,
+                output_dim=llm_dim,
+                num_latents=num_image_tokens,
+                hidden_dim=self.spatial_residual_hidden_dim,
+                grid_size=self.spatial_residual_grid_size,
+                gate_init=self.spatial_residual_gate_init,
+            )
         if self._uses_visual_cross_attention():
             self._setup_visual_cross_attention_adapters()
 
@@ -352,6 +499,20 @@ class AnyMALv3(AnyMALv2):
 
     def _uses_visual_cross_attention(self) -> bool:
         return self.visual_cross_attention_mode != "none"
+
+    @staticmethod
+    def _normalize_spatial_residual_mode(value: Optional[str]) -> str:
+        text = str(value or "none").strip().lower().replace("-", "_")
+        if text in {"", "none", "off", "false", "0"}:
+            return "none"
+        if text in {"on", "true", "1", "separable", "separable_table"}:
+            return "separable_table"
+        raise ValueError(
+            "spatial_residual_mode must be one of: none, separable_table"
+        )
+
+    def _uses_spatial_residual(self) -> bool:
+        return self.spatial_residual_mode != "none"
 
     def _resolve_decoder_layers(self):
         candidates = [
@@ -459,11 +620,14 @@ class AnyMALv3(AnyMALv2):
                     f"got {requested.tolist()}."
                 )
 
-        if self.freeze_vision:
+        train_vision = (not self.freeze_vision) or any(
+            param.requires_grad for param in self.image_encoder.parameters()
+        )
+        if train_vision:
+            vision_features = self.image_encoder(images)
+        else:
             with torch.no_grad():
                 vision_features = self.image_encoder(images)
-        else:
-            vision_features = self.image_encoder(images)
 
         projector_dtype = next(self.projector.parameters()).dtype
         if vision_features.dtype != projector_dtype:
@@ -482,6 +646,12 @@ class AnyMALv3(AnyMALv2):
                 vision_features
             )
             image_tokens = self.projector(vision_features)
+        spatial_branch = getattr(self.projector, "v3_spatial_residual_branch", None)
+        if spatial_branch is not None:
+            image_tokens = image_tokens + spatial_branch(vision_features).to(
+                dtype=image_tokens.dtype,
+                device=image_tokens.device,
+            )
         self._last_connector_output_rms_tensor = (
             image_tokens.float().pow(2).mean().sqrt()
         )
@@ -583,6 +753,9 @@ class AnyMALv3(AnyMALv2):
                 }
             )
             metrics.update(self._last_visual_cross_attention_diagnostics)
+        spatial_branch = getattr(self.projector, "v3_spatial_residual_branch", None)
+        if spatial_branch is not None:
+            metrics["train/v3_spatial_residual_gate"] = spatial_branch.gate_value()
         self._last_connector_diagnostics = metrics
 
     def _uses_question_summary(self) -> bool:
@@ -883,6 +1056,65 @@ class AnyMALv3(AnyMALv2):
             strict=strict,
         )
 
+    def save_vision_adapter(self, save_path: str) -> list[str]:
+        """Save trainable vision-tower deltas for opt-in E3-style adapters."""
+        import os
+
+        state_dict = {
+            name: param.detach().cpu()
+            for name, param in self.image_encoder.named_parameters()
+            if param.requires_grad
+        }
+        if not state_dict:
+            return []
+
+        torch.save(
+            {"state_dict": state_dict, "parameter_names": sorted(state_dict)},
+            os.path.join(save_path, self.vision_adapter_state_file),
+        )
+        return sorted(state_dict)
+
+    def load_vision_adapter(
+        self,
+        checkpoint_path: str,
+        map_location="cpu",
+        strict: bool = True,
+    ) -> list[str]:
+        import os
+
+        adapter_path = os.path.join(checkpoint_path, self.vision_adapter_state_file)
+        if not os.path.exists(adapter_path):
+            return []
+
+        payload = torch.load(adapter_path, map_location=map_location)
+        state_dict = payload.get("state_dict", payload)
+        params = dict(self.image_encoder.named_parameters())
+        missing = sorted(set(state_dict) - set(params))
+        if strict and missing:
+            raise RuntimeError(
+                "Vision adapter checkpoint contains unknown parameter(s): "
+                f"{missing}"
+            )
+
+        loaded = []
+        with torch.no_grad():
+            for name, tensor in state_dict.items():
+                param = params.get(name)
+                if param is None:
+                    continue
+                if tuple(param.shape) != tuple(tensor.shape):
+                    raise RuntimeError(
+                        f"Vision adapter shape mismatch for {name}: "
+                        f"checkpoint={tuple(tensor.shape)} model={tuple(param.shape)}"
+                    )
+                param.copy_(tensor.to(device=param.device, dtype=param.dtype))
+                loaded.append(name)
+        print(
+            "Loaded V3 vision adapter parameter(s) from "
+            f"{adapter_path}: {len(loaded)} tensor(s)"
+        )
+        return loaded
+
     def save_pretrained(
         self,
         save_path: str,
@@ -895,6 +1127,7 @@ class AnyMALv3(AnyMALv2):
         os.makedirs(save_path, exist_ok=True)
         torch.save(self.projector.state_dict(), os.path.join(save_path, "projector.pt"))
         self.save_visual_cross_attention_adapters(save_path)
+        vision_adapter_names = self.save_vision_adapter(save_path)
 
         llm_save_path = os.path.join(save_path, "llm")
         llm_saved = False
@@ -912,6 +1145,9 @@ class AnyMALv3(AnyMALv2):
             extra={
                 "vision_encoder_type": self.vision_encoder_type,
                 "vision_tower": "SigLIP2-So400m-384",
+                "vision_image_size": self.vision_image_size,
+                "vision_adapter_saved": bool(vision_adapter_names),
+                "vision_adapter_parameter_names": vision_adapter_names,
                 "connector_type": self.connector_type,
                 "num_image_tokens": self.num_image_tokens,
                 "max_image_tokens": self.max_image_tokens,
@@ -951,6 +1187,15 @@ class AnyMALv3(AnyMALv2):
                     if self.query_conditioned_patch_selector_mode != "none"
                     else None
                 ),
+                "spatial_residual_mode": self.spatial_residual_mode,
+                "spatial_residual_hidden_dim": self.spatial_residual_hidden_dim,
+                "spatial_residual_grid_size": self.spatial_residual_grid_size,
+                "spatial_residual_gate_init": self.spatial_residual_gate_init,
+                "spatial_residual_parameterization": (
+                    "separable_row_col_patch_attention_residual"
+                    if self._uses_spatial_residual()
+                    else None
+                ),
                 "visual_cross_attention_mode": self.visual_cross_attention_mode,
                 "visual_cross_attention_layers": list(self.visual_cross_attention_layers),
                 "visual_cross_attention_num_heads": self.visual_cross_attention_num_heads,
@@ -985,9 +1230,13 @@ class AnyMALv3(AnyMALv2):
                             "pooled_prompt_embedding_bounded_residual_patch_selector"
                             if self.query_conditioned_patch_selector_mode != "none"
                             else (
-                                "decoder_layer_gated_visual_cross_attention"
-                                if self._uses_visual_cross_attention()
-                                else None
+                                "gated_spatial_residual_branch"
+                                if self._uses_spatial_residual()
+                                else (
+                                    "decoder_layer_gated_visual_cross_attention"
+                                    if self._uses_visual_cross_attention()
+                                    else None
+                                )
                             )
                         )
                     )
@@ -1021,6 +1270,8 @@ class AnyMALv3(AnyMALv2):
                 "WARNING: loading AnyMALv3 checkpoint without model_meta.json "
                 f"because allow_missing_model_metadata=True: {save_path}"
             )
+        if "vision_image_size" not in kwargs and meta.get("vision_image_size") is not None:
+            kwargs["vision_image_size"] = int(meta["vision_image_size"])
         if "connector_output_scale" not in kwargs and meta.get("connector_output_scale") is not None:
             kwargs["connector_output_scale"] = float(meta["connector_output_scale"])
         if "connector_output_gate_init" not in kwargs and meta.get("connector_output_gate_init") is not None:
@@ -1162,6 +1413,32 @@ class AnyMALv3(AnyMALv2):
             kwargs["visual_cross_attention_freeze_connector"] = bool(
                 meta["visual_cross_attention_freeze_connector"]
             )
+        if (
+            "spatial_residual_mode" not in kwargs
+            and meta.get("spatial_residual_mode") is not None
+        ):
+            kwargs["spatial_residual_mode"] = meta["spatial_residual_mode"]
+        if (
+            "spatial_residual_hidden_dim" not in kwargs
+            and meta.get("spatial_residual_hidden_dim") is not None
+        ):
+            kwargs["spatial_residual_hidden_dim"] = int(
+                meta["spatial_residual_hidden_dim"]
+            )
+        if (
+            "spatial_residual_grid_size" not in kwargs
+            and meta.get("spatial_residual_grid_size") is not None
+        ):
+            kwargs["spatial_residual_grid_size"] = int(
+                meta["spatial_residual_grid_size"]
+            )
+        if (
+            "spatial_residual_gate_init" not in kwargs
+            and meta.get("spatial_residual_gate_init") is not None
+        ):
+            kwargs["spatial_residual_gate_init"] = float(
+                meta["spatial_residual_gate_init"]
+            )
 
         model = cls(llm_model_name=llm_model_name, **kwargs)
         expected_values = {
@@ -1175,6 +1452,8 @@ class AnyMALv3(AnyMALv2):
             "connector_ff_mult": getattr(model, "connector_ff_mult", None),
             "project_directly_to_llm_dim": getattr(model, "project_directly_to_llm_dim", None),
         }
+        if "vision_image_size" in meta:
+            expected_values["vision_image_size"] = getattr(model, "vision_image_size", None)
         if "connector_output_scale" in meta and not allow_connector_output_scale_override:
             expected_values["connector_output_scale"] = getattr(model, "connector_output_scale", None)
         if "connector_output_gate_init" in meta:
@@ -1303,6 +1582,30 @@ class AnyMALv3(AnyMALv2):
                 "visual_cross_attention_freeze_connector",
                 None,
             )
+        if "spatial_residual_mode" in meta:
+            expected_values["spatial_residual_mode"] = getattr(
+                model,
+                "spatial_residual_mode",
+                None,
+            )
+        if "spatial_residual_hidden_dim" in meta:
+            expected_values["spatial_residual_hidden_dim"] = getattr(
+                model,
+                "spatial_residual_hidden_dim",
+                None,
+            )
+        if "spatial_residual_grid_size" in meta:
+            expected_values["spatial_residual_grid_size"] = getattr(
+                model,
+                "spatial_residual_grid_size",
+                None,
+            )
+        if "spatial_residual_gate_init" in meta:
+            expected_values["spatial_residual_gate_init"] = getattr(
+                model,
+                "spatial_residual_gate_init",
+                None,
+            )
         if "llm_backbone" in meta or getattr(model, "llm_backbone", None) != CURRENT_LLAMA3_BACKBONE:
             expected_values["llm_backbone"] = getattr(model, "llm_backbone", None)
 
@@ -1327,6 +1630,8 @@ class AnyMALv3(AnyMALv2):
                 allowed_missing_prefixes.add("query_visual_scale.")
             if getattr(model.projector, "query_patch_selector", None) is not None:
                 allowed_missing_prefixes.add("query_patch_selector.")
+            if getattr(model.projector, "v3_spatial_residual_branch", None) is not None:
+                allowed_missing_prefixes.add("v3_spatial_residual_branch.")
             if allowed_missing or allowed_missing_prefixes:
                 incompatible = model.projector.load_state_dict(
                     projector_state,
@@ -1360,6 +1665,8 @@ class AnyMALv3(AnyMALv2):
                 model.projector.load_state_dict(projector_state)
         else:
             raise FileNotFoundError(f"Missing V3 connector weights: {projector_path}")
+
+        model.load_vision_adapter(save_path, strict=True)
 
         llm_path = os.path.join(save_path, "llm")
         if os.path.exists(llm_path):

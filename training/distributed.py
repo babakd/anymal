@@ -37,6 +37,22 @@ from typing import Optional, Tuple
 from contextlib import contextmanager
 
 
+def _distributed_barrier():
+    """Barrier with an explicit CUDA device for NCCL to avoid device guessing."""
+    if not dist.is_initialized():
+        return
+    barrier_kwargs = {}
+    try:
+        if dist.get_backend() == "nccl" and torch.cuda.is_available():
+            barrier_kwargs["device_ids"] = [torch.cuda.current_device()]
+    except Exception:
+        barrier_kwargs = {}
+    try:
+        dist.barrier(**barrier_kwargs)
+    except TypeError:
+        dist.barrier()
+
+
 def setup_distributed(
     backend: str = "nccl",
     init_method: str = "env://",
@@ -84,7 +100,7 @@ def setup_distributed(
     torch.cuda.set_device(local_rank)
 
     # Synchronize all processes
-    dist.barrier()
+    _distributed_barrier()
 
     if rank == 0:
         print(f"Initialized distributed training: {world_size} GPUs")
@@ -126,7 +142,7 @@ def get_world_size() -> int:
 def synchronize():
     """Synchronize all processes."""
     if dist.is_initialized():
-        dist.barrier()
+        _distributed_barrier()
 
 
 def reduce_tensor(

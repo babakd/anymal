@@ -12,6 +12,7 @@ import json
 import os
 import random
 import sys
+import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -38,6 +39,9 @@ PROJECT_DIR = _resolve_project_dir()
 if os.path.exists(REMOTE_PROJECT_DIR) and REMOTE_PROJECT_DIR not in sys.path:
     sys.path.insert(0, REMOTE_PROJECT_DIR)
 
+def _ignore_modal_mount(path: Path) -> bool:
+    return ".git" in path.parts
+
 volume = modal.Volume.from_name("anymal-checkpoints", create_if_missing=True)
 image = (
     modal.Image.debian_slim(python_version="3.10")
@@ -60,7 +64,12 @@ image = (
         "huggingface_hub>=0.19.0",
         "einops>=0.7.0",
     )
-    .add_local_dir(PROJECT_DIR, remote_path=REMOTE_PROJECT_DIR, copy=False)
+    .add_local_dir(
+        PROJECT_DIR,
+        remote_path=REMOTE_PROJECT_DIR,
+        copy=False,
+        ignore=_ignore_modal_mount,
+    )
 )
 
 app = modal.App("anymal-gqa-checkpoint-eval")
@@ -75,6 +84,10 @@ GQA_QUESTIONS_URL = "https://downloads.cs.stanford.edu/nlp/data/gqa/questions1.2
 VG_IMAGE_URLS = (
     "https://cs.stanford.edu/people/rak248/VG_100K_2/{image_id}.jpg",
     "https://cs.stanford.edu/people/rak248/VG_100K/{image_id}.jpg",
+)
+TRUSTED_GQA_SYSTEM_PROMPT = (
+    "Answer with only the final answer. Do not include role labels, "
+    "explanations, or the word assistant. End after the answer."
 )
 
 
@@ -442,6 +455,7 @@ def _build_gqa_dataloader(
     batch_size: int,
     prompt_style: str,
     system_prompt: str | None,
+    vision_image_size: int | None = None,
 ):
     import torch.nn.functional as F
     from torch.utils.data import DataLoader
@@ -449,10 +463,11 @@ def _build_gqa_dataloader(
     from data.data_utils import get_image_transform, get_vision_transform
 
     if architecture in {"v2", "v3", "v4"}:
+        resolved_image_size = int(vision_image_size or 384)
         transform = get_vision_transform(
             vision_encoder_type="siglip2",
             vision_model_name="google/siglip2-so400m-patch14-384",
-            image_size=384,
+            image_size=resolved_image_size,
             is_train=False,
             use_augmentation=False,
         )
@@ -521,7 +536,11 @@ def _build_gqa_dataloader(
     }
     image_transform_meta = {
         "name": "none",
-        "base_transform": "siglip2_384" if architecture in {"v2", "v3", "v4"} else "clip_224",
+        "base_transform": (
+            f"siglip2_{int(vision_image_size or 384)}"
+            if architecture in {"v2", "v3", "v4"}
+            else "clip_224"
+        ),
         "control_uses_wrong_images": False,
         "control_seed": None,
     }
@@ -542,6 +561,15 @@ def _load_model(run: dict, device, llm_backbone=None, connector_output_scale_ove
     )
 
     meta = read_model_metadata(run["checkpoint"]) or {}
+    print(
+        "[gqa_eval] Loading model metadata: "
+        f"architecture={meta.get('architecture') or run['architecture']} "
+        f"llm={meta.get('llm_backbone') or llm_backbone} "
+        f"tokens={meta.get('num_image_tokens')} "
+        f"vxattn={meta.get('visual_cross_attention_mode')} "
+        f"vxattn_dim={meta.get('visual_cross_attention_adapter_dim')}",
+        flush=True,
+    )
     llm_path = _ensure_eval_llm_path(
         _resolve_eval_llm_path(meta, llm_backbone),
         model_meta=meta,
@@ -552,6 +580,8 @@ def _load_model(run: dict, device, llm_backbone=None, connector_output_scale_ove
     elif run["architecture"] == "v2":
         model = _load_v2_model(run["checkpoint"], llm_path, device)
     elif run["architecture"] == "v3":
+        print("[gqa_eval] Instantiating AnyMALv3.from_pretrained...", flush=True)
+        load_start = time.monotonic()
         connector_output_scale = (
             float(connector_output_scale_override)
             if connector_output_scale_override is not None
@@ -562,6 +592,7 @@ def _load_model(run: dict, device, llm_backbone=None, connector_output_scale_ove
             llm_model_name=llm_path,
             vision_encoder_type="siglip2",
             vision_model_name="google/siglip2-so400m-patch14-384",
+            vision_image_size=int(meta.get("vision_image_size") or 384),
             connector_type=meta.get("connector_type", "perceiver_resampler"),
             num_image_tokens=int(meta.get("num_image_tokens", 128)),
             connector_layers=int(meta.get("connector_layers", 6)),
@@ -585,10 +616,23 @@ def _load_model(run: dict, device, llm_backbone=None, connector_output_scale_ove
             llm_device_map="auto",
             llm_torch_dtype=torch.bfloat16,
         )
+        print(
+            f"[gqa_eval] AnyMALv3.from_pretrained finished in {time.monotonic() - load_start:.1f}s",
+            flush=True,
+        )
         model.eval()
+        move_start = time.monotonic()
         model.image_encoder.to(device)
         model.projector.to(device)
+        if getattr(model, "visual_cross_attention_adapters", None) is not None:
+            model.visual_cross_attention_adapters.to(device)
+        print(
+            f"[gqa_eval] AnyMALv3 vision/projector move finished in {time.monotonic() - move_start:.1f}s",
+            flush=True,
+        )
     elif run["architecture"] == "v4":
+        print("[gqa_eval] Instantiating AnyMALv4.from_pretrained...", flush=True)
+        load_start = time.monotonic()
         connector_output_scale = (
             float(connector_output_scale_override)
             if connector_output_scale_override is not None
@@ -609,6 +653,7 @@ def _load_model(run: dict, device, llm_backbone=None, connector_output_scale_ove
             llm_model_name=llm_path,
             vision_encoder_type="siglip2",
             vision_model_name="google/siglip2-so400m-patch14-384",
+            vision_image_size=int(meta.get("vision_image_size") or 384),
             connector_type=connector_type,
             num_global_image_tokens=int(meta.get("num_global_image_tokens", 64)),
             num_local_image_tokens=int(meta.get("num_local_image_tokens", 64)),
@@ -620,6 +665,7 @@ def _load_model(run: dict, device, llm_backbone=None, connector_output_scale_ove
                 int(meta["connector_hidden_dim"]) if meta.get("connector_hidden_dim") is not None else None
             ),
             connector_output_scale=connector_output_scale,
+            allow_connector_output_scale_override=connector_output_scale_override is not None,
             connector_output_gate_init=(
                 float(meta["connector_output_gate_init"])
                 if meta.get("connector_output_gate_init") is not None
@@ -637,9 +683,18 @@ def _load_model(run: dict, device, llm_backbone=None, connector_output_scale_ove
             llm_torch_dtype=torch.bfloat16,
             **deepstack_kwargs,
         )
+        print(
+            f"[gqa_eval] AnyMALv4.from_pretrained finished in {time.monotonic() - load_start:.1f}s",
+            flush=True,
+        )
         model.eval()
+        move_start = time.monotonic()
         model.image_encoder.to(device)
         model.projector.to(device)
+        print(
+            f"[gqa_eval] AnyMALv4 vision/projector move finished in {time.monotonic() - move_start:.1f}s",
+            flush=True,
+        )
     else:
         raise ValueError(f"Unknown architecture: {run['architecture']}")
     return model, meta
@@ -662,13 +717,14 @@ def evaluate_gqa(
     batch_size=8,
     image_dir=DEFAULT_IMAGE_DIR,
     prompt_style="training_chat",
-    system_prompt=None,
+    system_prompt=TRUSTED_GQA_SYSTEM_PROMPT,
     prediction_samples=0,
     remote_output_path=None,
     train_sources=None,
     eval_schema_version="v6",
     llm_backbone=CURRENT_LLAMA3_BACKBONE,
     connector_output_scale_override=None,
+    vision_image_size_override=None,
 ):
     import torch
 
@@ -701,12 +757,18 @@ def evaluate_gqa(
         candidate_architecture=candidate_architecture,
         include_baselines=False,
     ):
-        print(f"Evaluating GQA {gqa_split}: {run['label']} from {run['checkpoint']}")
+        print(f"Evaluating GQA {gqa_split}: {run['label']} from {run['checkpoint']}", flush=True)
         model, run_model_meta = _load_model(
             run,
             device,
             llm_backbone=llm_backbone,
             connector_output_scale_override=connector_output_scale_override,
+        )
+        print("[gqa_eval] Model loaded; building dataloader", flush=True)
+        vision_image_size = (
+            int(vision_image_size_override)
+            if vision_image_size_override is not None
+            else int(run_model_meta.get("vision_image_size") or getattr(model, "vision_image_size", 384))
         )
         dataloader, dataset_meta, image_transform_meta = _build_gqa_dataloader(
             model=model,
@@ -715,7 +777,9 @@ def evaluate_gqa(
             prompt_style=str(prompt_style),
             records=records,
             system_prompt=system_prompt,
+            vision_image_size=vision_image_size,
         )
+        print("[gqa_eval] Dataloader ready; starting VQA evaluator", flush=True)
         evaluator = VQAEvaluator(model, device=device, max_new_tokens=16)
         prediction_output = f"/tmp/{run['key']}_gqa_predictions.json"
         hygiene_metrics = evaluator.evaluate(dataloader, output_file=prediction_output)
@@ -763,6 +827,7 @@ def evaluate_gqa(
             "deepstack_num_feature_levels",
             "deepstack_hidden_state_indices",
             "vision_feature_layers",
+            "vision_image_size",
         }
         result_entry = {
             **run,
@@ -784,6 +849,10 @@ def evaluate_gqa(
         if connector_output_scale_override is not None and run["architecture"] in {"v3", "v4"}:
             result_entry["connector_meta"]["eval_connector_output_scale_override"] = float(
                 connector_output_scale_override
+            )
+        if vision_image_size_override is not None and run["architecture"] in {"v2", "v3", "v4"}:
+            result_entry["connector_meta"]["eval_vision_image_size_override"] = int(
+                vision_image_size_override
             )
         if int(prediction_samples or 0) > 0:
             result_entry["prediction_samples"] = predictions[: int(prediction_samples)]
@@ -812,6 +881,11 @@ def evaluate_gqa(
             if connector_output_scale_override is None
             else float(connector_output_scale_override)
         ),
+        "vision_image_size_override": (
+            None
+            if vision_image_size_override is None
+            else int(vision_image_size_override)
+        ),
         "runs": results,
     }
     if remote_output_path:
@@ -834,7 +908,7 @@ def main(
     batch_size: int = 8,
     image_dir: str = DEFAULT_IMAGE_DIR,
     prompt_style: str = "training_chat",
-    system_prompt: str = None,
+    system_prompt: str = TRUSTED_GQA_SYSTEM_PROMPT,
     prediction_samples: int = 0,
     output: str = "gqa_checkpoint_eval.json",
     remote_output_path: str = None,
@@ -842,6 +916,7 @@ def main(
     eval_schema_version: str = "v6",
     llm_backbone: str = CURRENT_LLAMA3_BACKBONE,
     connector_output_scale_override: float = None,
+    vision_image_size_override: int = None,
     background: bool = False,
 ):
     call = evaluate_gqa.spawn(
@@ -861,6 +936,7 @@ def main(
         eval_schema_version=eval_schema_version,
         llm_backbone=llm_backbone,
         connector_output_scale_override=connector_output_scale_override,
+        vision_image_size_override=vision_image_size_override,
     )
     if background:
         print(f"Spawned background GQA eval: {call}")

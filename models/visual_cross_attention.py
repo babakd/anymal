@@ -75,11 +75,13 @@ class GatedVisualCrossAttentionAdapter(nn.Module):
                 f"got {hidden_states.shape[-1]}"
             )
 
+        adapter_dtype = self.hidden_norm.weight.dtype
+        adapter_hidden = hidden_states.to(dtype=adapter_dtype)
         visual_memory = visual_memory.to(
             device=hidden_states.device,
-            dtype=hidden_states.dtype,
+            dtype=adapter_dtype,
         )
-        query = self._split_heads(self.q_proj(self.hidden_norm(hidden_states)))
+        query = self._split_heads(self.q_proj(self.hidden_norm(adapter_hidden)))
         key = self._split_heads(self.k_proj(self.visual_norm(visual_memory)))
         value = self._split_heads(self.v_proj(self.visual_norm(visual_memory)))
         attn = F.scaled_dot_product_attention(
@@ -94,8 +96,11 @@ class GatedVisualCrossAttentionAdapter(nn.Module):
             hidden_states.shape[1],
             self.adapter_dim,
         )
-        residual = self.o_proj(attn)
-        return hidden_states + self.gate.to(dtype=residual.dtype) * residual
+        residual = self.o_proj(attn).to(dtype=hidden_states.dtype)
+        return hidden_states + self.gate.to(
+            device=hidden_states.device,
+            dtype=hidden_states.dtype,
+        ) * residual
 
     def gate_value(self) -> float:
         return float(self.gate.detach().float().item())

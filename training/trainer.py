@@ -777,6 +777,11 @@ class Trainer:
                 map_location=self.device,
                 allow_missing=False,
             )
+        if hasattr(self.unwrapped_model, "load_vision_adapter"):
+            self.unwrapped_model.load_vision_adapter(
+                checkpoint_dir,
+                map_location=self.device,
+            )
 
         compressor_path = _os.path.join(checkpoint_dir, "token_compressor.pt")
         if _os.path.exists(compressor_path) and hasattr(self.unwrapped_model, "token_compressor"):
@@ -802,8 +807,19 @@ class Trainer:
         state = torch.load(trainer_state_path, map_location="cpu", weights_only=False)
 
         self.optimizer.load_state_dict(state["optimizer"])
-        self.scheduler.load_state_dict(state["scheduler"])
-        self.global_step = state["global_step"]
+        saved_global_step = int(state.get("global_step", 0))
+        try:
+            self.scheduler.load_state_dict(state["scheduler"])
+        except (KeyError, RuntimeError, ValueError) as exc:
+            print_rank_0(
+                "  WARNING: Could not restore LR scheduler state; "
+                f"continuing with a freshly initialized scheduler at step {saved_global_step}. "
+                f"Reason: {exc}"
+            )
+            self.scheduler.last_epoch = saved_global_step
+            if hasattr(self.scheduler, "_step_count"):
+                self.scheduler._step_count = saved_global_step + 1
+        self.global_step = saved_global_step
         self.epoch = state["epoch"]
 
         if self.scaler is not None and "scaler" in state:

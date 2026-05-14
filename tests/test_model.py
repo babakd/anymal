@@ -402,6 +402,68 @@ class TestPerceiverResampler:
         assert torch.all(weights <= 1.25)
         assert not torch.equal(weights[0], weights[1])
 
+    def test_v3_spatial_residual_branch_has_nonzero_gate_gradients(self):
+        from models.anymal_v3 import V3SpatialResidualBranch
+
+        torch.manual_seed(23)
+        branch = V3SpatialResidualBranch(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            hidden_dim=6,
+            grid_size=4,
+            gate_init=1e-4,
+        )
+        x = torch.randn(2, 17, 8)
+        out = branch(x)
+        loss = out.square().sum()
+        loss.backward()
+
+        assert out.shape == (2, 4, 16)
+        assert 0.0 < branch.gate_value() < 1e-3
+        assert branch.gate_logit.grad is not None
+        assert branch.gate_logit.grad.abs().item() > 0
+        assert branch.row_embedding.grad is not None
+        assert branch.row_embedding.grad.abs().sum().item() > 0
+
+    def test_v3_spatial_residual_branch_can_warm_start_from_old_projector(self):
+        from models.anymal_v3 import V3SpatialResidualBranch
+        from models.projectors.perceiver_resampler import PerceiverResampler
+
+        torch.manual_seed(24)
+        base = PerceiverResampler(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+        )
+        spatial = PerceiverResampler(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            num_layers=1,
+            num_heads=4,
+            ff_mult=2,
+        )
+        spatial.v3_spatial_residual_branch = V3SpatialResidualBranch(
+            input_dim=8,
+            output_dim=16,
+            num_latents=4,
+            hidden_dim=6,
+            grid_size=4,
+            gate_init=1e-4,
+        )
+        incompatible = spatial.load_state_dict(base.state_dict(), strict=False)
+
+        assert incompatible.unexpected_keys == []
+        assert incompatible.missing_keys
+        assert all(
+            key.startswith("v3_spatial_residual_branch.")
+            for key in incompatible.missing_keys
+        )
+
     def test_question_conditioned_output_shape(self):
         """Question-conditioned resampler preserves the fixed visual-token contract."""
         from models.projectors.perceiver_resampler import QuestionConditionedPerceiverResampler
