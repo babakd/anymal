@@ -79,7 +79,7 @@ class FinetuneConfig(TrainerConfig):
     loss_scale: float = 1.0
 
     # Optional V9 answer-suppression objective. When enabled, batches must
-    # include negative_images shaped [B, K, 3, H, W].
+    # include negative_images shaped [B, K, 3, H, W] or [B, K, V, 3, H, W].
     contrastive_answer_suppression: bool = False
     contrastive_lambda: float = 0.1
     contrastive_margin: float = 0.5
@@ -271,6 +271,18 @@ class FinetuneTrainer(Trainer):
         else:
             print_rank_0(f"WARNING: No projector weights found at {projector_path}")
 
+        if hasattr(model, "load_visual_cross_attention_adapters"):
+            model.load_visual_cross_attention_adapters(
+                checkpoint_path,
+                map_location="cpu",
+                allow_missing=False,
+            )
+        if hasattr(model, "load_vision_adapter"):
+            model.load_vision_adapter(
+                checkpoint_path,
+                map_location="cpu",
+            )
+
         compressor_path = os.path.join(checkpoint_path, "token_compressor.pt")
         if hasattr(model, "token_compressor") and os.path.exists(compressor_path):
             print_rank_0(f"Loading token compressor from {compressor_path}")
@@ -444,9 +456,10 @@ class FinetuneTrainer(Trainer):
                         "contrastive_answer_suppression=True requires "
                         "negative_images in every batch"
                     )
-                if negative_images.ndim != 5:
+                if negative_images.ndim not in {5, 6}:
                     raise ValueError(
-                        "negative_images must have shape [B, K, 3, H, W], "
+                        "negative_images must have shape [B, K, 3, H, W] or "
+                        "[B, K, V, 3, H, W], "
                         f"got {list(negative_images.shape)}"
                     )
                 logp_pos = self._answer_logp_from_logits(outputs.logits, labels)
@@ -511,7 +524,11 @@ class FinetuneTrainer(Trainer):
 
     @staticmethod
     def _is_adapter_param_name(name: str) -> bool:
-        return "projector" in name or "token_compressor" in name
+        return (
+            "projector" in name
+            or "token_compressor" in name
+            or "visual_cross_attention_adapters" in name
+        )
 
     def _set_adapter_requires_grad(self, model, requires_grad: bool) -> None:
         for name, param in model.named_parameters():

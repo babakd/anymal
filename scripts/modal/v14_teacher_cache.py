@@ -1,0 +1,301 @@
+"""Build V14 cached V11 teacher answer-token distributions on Modal."""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+import modal
+
+
+REMOTE_PROJECT_DIR = "/root/anymal"
+
+
+def _resolve_project_dir() -> Path:
+    current = Path(__file__).resolve()
+    if len(current.parents) >= 3:
+        return current.parents[2]
+    cwd = Path.cwd()
+    if (cwd / "models").exists() and (cwd / "training").exists():
+        return cwd
+    return current.parent
+
+
+PROJECT_DIR = _resolve_project_dir()
+
+
+def _ignore_modal_mount(path: Path) -> bool:
+    return ".git" in path.parts
+
+
+volume = modal.Volume.from_name("anymal-checkpoints", create_if_missing=True)
+image = (
+    modal.Image.debian_slim(python_version="3.10")
+    .apt_install("git")
+    .pip_install(
+        "torch>=2.0.0",
+        "torchvision>=0.15.0",
+        "transformers>=4.53.0,<5.0.0",
+        "accelerate>=0.25.0",
+        "peft>=0.7.0",
+        "bitsandbytes>=0.41.0",
+        "open_clip_torch>=2.23.0",
+        "timm>=0.9.0",
+        "pillow>=10.0.0",
+        "pyyaml>=6.0",
+        "requests>=2.31.0",
+        "tqdm>=4.66.0",
+        "datasets>=2.19.0",
+        "sentencepiece>=0.1.99",
+        "huggingface_hub>=0.19.0",
+        "einops>=0.7.0",
+    )
+    .add_local_dir(
+        PROJECT_DIR,
+        remote_path=REMOTE_PROJECT_DIR,
+        copy=False,
+        ignore=_ignore_modal_mount,
+    )
+)
+
+app = modal.App("anymal-v14-teacher-cache")
+
+
+def _selected_answer_rows(logits, labels):
+    shift_logits = logits[:, :-1, :]
+    shift_labels = labels[:, 1:]
+    rows = []
+    for row_logits, row_labels in zip(shift_logits, shift_labels):
+        mask = row_labels != -100
+        rows.append((row_logits[mask], row_labels[mask], mask.nonzero(as_tuple=True)[0]))
+    return rows
+
+
+@app.function(
+    image=image,
+    gpu="H100",
+    timeout=24 * 60 * 60,
+    volumes={"/checkpoints": volume},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def build_v14_teacher_cache(
+    *,
+    dataset: str,
+    output_path: str,
+    teacher_checkpoint: str,
+    llm_backbone: str = "Qwen/Qwen3-8B",
+    teacher_image_tokens: int = 128,
+    max_entries: int = 0,
+    batch_size: int = 4,
+    top_k: int = 128,
+    split: str = "train",
+) -> dict[str, Any]:
+    import torch
+    from torch.utils.data import DataLoader
+    from tqdm import tqdm
+
+    sys.path.insert(0, REMOTE_PROJECT_DIR)
+    from data import ImageTextCollator
+    from data.dataset_splitter import deterministic_train_val_split
+    from evaluation.checkpoint_eval.vqa_checkpoint_eval import (
+        _ensure_eval_llm_path,
+        _resolve_eval_llm_path,
+    )
+    from model_metadata import read_model_metadata
+    from models.anymal_v3 import AnyMALv3
+    from scripts.modal.train import load_finetune_dataset
+
+    if int(top_k) <= 0:
+        raise ValueError(f"top_k must be > 0, got {top_k}")
+    if int(teacher_image_tokens) <= 0:
+        raise ValueError(
+            f"teacher_image_tokens must be > 0, got {teacher_image_tokens}"
+        )
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    teacher_meta = read_model_metadata(teacher_checkpoint) or {}
+    llm_path = _ensure_eval_llm_path(
+        _resolve_eval_llm_path(teacher_meta, llm_backbone),
+        model_meta=teacher_meta,
+        llm_backbone=llm_backbone,
+    )
+    print(
+        "Loading V11 teacher for cache: "
+        f"checkpoint={teacher_checkpoint}, llm={llm_path}, top_k={top_k}",
+        flush=True,
+    )
+    model = AnyMALv3.from_pretrained(
+        teacher_checkpoint,
+        llm_model_name=llm_path,
+        vision_encoder_type="siglip2",
+        vision_model_name="google/siglip2-so400m-patch14-384",
+        vision_image_size=int(teacher_meta.get("vision_image_size") or 384),
+        connector_type=teacher_meta.get("connector_type", "perceiver_resampler"),
+        num_image_tokens=int(teacher_meta.get("num_image_tokens", teacher_image_tokens)),
+        connector_layers=int(teacher_meta.get("connector_layers", 6)),
+        connector_heads=int(teacher_meta.get("connector_heads", 16)),
+        connector_ff_mult=int(teacher_meta.get("connector_ff_mult", 4)),
+        connector_output_scale=float(teacher_meta.get("connector_output_scale", 1.0)),
+        connector_output_gate_init=teacher_meta.get("connector_output_gate_init"),
+        project_directly_to_llm_dim=bool(
+            teacher_meta.get("project_directly_to_llm_dim", True)
+        ),
+        use_qlora=True,
+        use_lora=False,
+        lora_r=64,
+        lora_alpha=16,
+        gradient_checkpointing=False,
+        use_flash_attention=False,
+        llm_device_map="auto",
+        llm_torch_dtype=torch.bfloat16,
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.image_encoder.to(device)
+    model.projector.to(device)
+    if hasattr(model, "visual_cross_attention_adapters"):
+        model.visual_cross_attention_adapters.to(device)
+    model.eval()
+
+    max_length = int(teacher_image_tokens) + 384
+    dataset_obj = load_finetune_dataset(
+        model.tokenizer,
+        dataset=dataset,
+        num_image_tokens=int(teacher_image_tokens),
+        image_token_policy="fixed",
+        min_image_tokens=int(teacher_image_tokens),
+        max_image_tokens=int(teacher_image_tokens),
+        image_size=int(teacher_meta.get("vision_image_size") or 384),
+        max_length=max_length,
+        vision_encoder_type="siglip2",
+        vision_model_name="google/siglip2-so400m-patch14-384",
+        image_view_mode="single",
+    )
+    train_dataset, val_dataset = deterministic_train_val_split(
+        dataset_obj,
+        val_fraction=0.05,
+    )
+    selected_dataset = val_dataset if str(split).lower() == "val" else train_dataset
+    collator = ImageTextCollator(tokenizer=model.tokenizer, max_length=max_length)
+    loader = DataLoader(
+        selected_dataset,
+        batch_size=int(batch_size),
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True,
+        collate_fn=collator,
+        drop_last=False,
+    )
+
+    entries = {}
+    total_answer_tokens = 0
+    total_remainder = 0.0
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Caching V11 teacher"):
+            if int(max_entries or 0) > 0 and len(entries) >= int(max_entries):
+                break
+            sample_ids = [str(x) for x in batch["sample_id"]]
+            images = batch["images"].to(device, non_blocking=True)
+            input_ids = batch["input_ids"].to(device, non_blocking=True)
+            attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+            labels = batch["labels"].to(device, non_blocking=True)
+            outputs = model(
+                images=images,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=None,
+            )
+            answer_rows = _selected_answer_rows(outputs.logits, labels)
+            for row_idx, (answer_logits, answer_labels, positions) in enumerate(answer_rows):
+                if int(max_entries or 0) > 0 and len(entries) >= int(max_entries):
+                    break
+                if answer_logits.numel() == 0:
+                    continue
+                probs = torch.softmax(answer_logits.float(), dim=-1)
+                top_probs, top_ids = torch.topk(probs, k=int(top_k), dim=-1)
+                remainder = (1.0 - top_probs.sum(dim=-1)).clamp_min(0.0)
+                greedy_ids = top_ids[:, 0].detach().cpu()
+                key = sample_ids[row_idx]
+                entries[key] = {
+                    "labels": answer_labels.detach().cpu().to(torch.long),
+                    "answer_token_positions": positions.detach().cpu().to(torch.long),
+                    "topk_ids": top_ids.detach().cpu().to(torch.int32),
+                    "topk_probs": top_probs.detach().cpu().to(torch.float16),
+                    "remainder_probs": remainder.detach().cpu().to(torch.float32),
+                    "teacher_greedy_token_ids": greedy_ids.to(torch.int32),
+                    "teacher_greedy_answer": model.tokenizer.decode(
+                        greedy_ids.tolist(),
+                        skip_special_tokens=True,
+                    ).strip(),
+                    "sample_id": key,
+                    "image_ref": batch.get("image_ref", [""] * len(sample_ids))[row_idx],
+                    "question": batch.get("question_text", [""] * len(sample_ids))[row_idx],
+                    "answer": batch.get("answer_text", [""] * len(sample_ids))[row_idx],
+                    "mixture_source": batch.get(
+                        "mixture_source",
+                        [""] * len(sample_ids),
+                    )[row_idx],
+                }
+                total_answer_tokens += int(answer_labels.numel())
+                total_remainder += float(remainder.detach().mean().item())
+
+    payload = {
+        "schema": "v14_teacher_kl_topk_v1",
+        "dataset": dataset,
+        "split": split,
+        "teacher_checkpoint": teacher_checkpoint,
+        "teacher_checkpoint_metadata": teacher_meta,
+        "teacher_image_tokens": int(teacher_image_tokens),
+        "top_k": int(top_k),
+        "entries_count": len(entries),
+        "answer_tokens": int(total_answer_tokens),
+        "mean_remainder_prob_per_entry": (
+            total_remainder / max(len(entries), 1)
+        ),
+        "prompt_template_metadata": {
+            "chat_template_family": getattr(model, "chat_template_family", None),
+            "image_placeholder_token": getattr(model, "image_placeholder_token", None),
+            "image_placeholder_count": int(teacher_image_tokens),
+        },
+        "entries": entries,
+    }
+    tmp_path = output_path + ".tmp"
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, output_path)
+    volume.commit()
+    result = {
+        "output_path": output_path,
+        "entries": len(entries),
+        "answer_tokens": int(total_answer_tokens),
+        "top_k": int(top_k),
+    }
+    print(result, flush=True)
+    return result
+
+
+@app.local_entrypoint()
+def main(
+    dataset: str = "v14_qwen_imitation_replay_stage1b",
+    output_path: str = "/checkpoints/v14_qwen/v14_v11_teacher_topk128_train.pt",
+    teacher_checkpoint: str = "/checkpoints/pretrain-output/v11-qwen3-c1-posscale000-scale1125/checkpoint-posscale000-scale1125",
+    llm_backbone: str = "Qwen/Qwen3-8B",
+    teacher_image_tokens: int = 128,
+    max_entries: int = 0,
+    batch_size: int = 4,
+    top_k: int = 128,
+    split: str = "train",
+):
+    print(
+        build_v14_teacher_cache.remote(
+            dataset=dataset,
+            output_path=output_path,
+            teacher_checkpoint=teacher_checkpoint,
+            llm_backbone=llm_backbone,
+            teacher_image_tokens=teacher_image_tokens,
+            max_entries=max_entries,
+            batch_size=batch_size,
+            top_k=top_k,
+            split=split,
+        )
+    )

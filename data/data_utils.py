@@ -137,6 +137,78 @@ def get_siglip_image_transform(
     ])
 
 
+class AnyResImageTransform:
+    """Deterministic global-plus-local crop pack for AnyRes-lite experiments."""
+
+    def __init__(
+        self,
+        base_transform: Callable[[Image.Image], torch.Tensor],
+        num_views: int = 3,
+        local_crop_scale: float = 0.75,
+        crop_mode: str = "global_two_crops",
+    ):
+        self.base_transform = base_transform
+        self.num_views = int(num_views)
+        self.local_crop_scale = float(local_crop_scale)
+        self.crop_mode = str(crop_mode or "global_two_crops")
+        if self.num_views <= 0:
+            raise ValueError(f"num_views must be > 0, got {num_views}")
+        if not 0.1 <= self.local_crop_scale <= 1.0:
+            raise ValueError(
+                "local_crop_scale must be in [0.1, 1.0], "
+                f"got {local_crop_scale}"
+            )
+
+    @staticmethod
+    def _clamp_crop_box(
+        center_x: float,
+        center_y: float,
+        side: int,
+        width: int,
+        height: int,
+    ) -> Tuple[int, int, int, int]:
+        side = max(1, min(int(side), int(width), int(height)))
+        left = int(round(center_x - side / 2.0))
+        top = int(round(center_y - side / 2.0))
+        left = max(0, min(left, int(width) - side))
+        top = max(0, min(top, int(height) - side))
+        return left, top, left + side, top + side
+
+    def _local_crop_centers(self, width: int, height: int) -> List[Tuple[float, float]]:
+        if width >= height * 1.05:
+            return [(0.33 * width, 0.50 * height), (0.67 * width, 0.50 * height)]
+        if height >= width * 1.05:
+            return [(0.50 * width, 0.33 * height), (0.50 * width, 0.67 * height)]
+        return [(0.35 * width, 0.35 * height), (0.65 * width, 0.65 * height)]
+
+    def _make_local_crops(self, image: Image.Image) -> List[Image.Image]:
+        width, height = image.size
+        side = int(round(min(width, height) * self.local_crop_scale))
+        centers = self._local_crop_centers(width, height)
+        crops = []
+        for center_x, center_y in centers:
+            crops.append(
+                image.crop(
+                    self._clamp_crop_box(center_x, center_y, side, width, height)
+                )
+            )
+        while len(crops) < max(0, self.num_views - 1):
+            crops.append(crops[-1] if crops else image)
+        return crops[: max(0, self.num_views - 1)]
+
+    def __call__(self, image: Image.Image) -> torch.Tensor:
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        views = [self.base_transform(image)]
+        for crop in self._make_local_crops(image):
+            views.append(self.base_transform(crop))
+        if len(views) > self.num_views:
+            views = views[: self.num_views]
+        while len(views) < self.num_views:
+            views.append(views[-1].clone())
+        return torch.stack(views, dim=0)
+
+
 def get_vision_transform(
     vision_encoder_type: str = "clip",
     vision_model_name: Optional[str] = None,
@@ -144,10 +216,31 @@ def get_vision_transform(
     is_train: bool = True,
     use_augmentation: bool = True,
     image_augmentation_mode: str = "none",
+    image_view_mode: str = "single",
 ) -> transforms.Compose:
     """Route image preprocessing by vision tower family."""
     encoder = str(vision_encoder_type or "clip").lower()
+    view_mode = str(image_view_mode or "single").strip().lower().replace("-", "_")
     if encoder in {"siglip", "siglip2"}:
+        if view_mode in {"anyres", "anyres_global_two_crops", "global_two_crops"}:
+            base_transform = get_siglip_image_transform(
+                model_name=vision_model_name or "google/siglip2-so400m-patch14-384",
+                image_size=image_size,
+                is_train=False,
+                use_augmentation=False,
+                image_augmentation_mode="none",
+            )
+            return AnyResImageTransform(
+                base_transform=base_transform,
+                num_views=3,
+                local_crop_scale=0.75,
+                crop_mode="global_two_crops",
+            )
+        if view_mode not in {"single", "none", ""}:
+            raise ValueError(
+                "image_view_mode for SigLIP must be one of: single, "
+                "anyres_global_two_crops"
+            )
         return get_siglip_image_transform(
             model_name=vision_model_name or "google/siglip2-so400m-patch14-384",
             image_size=image_size,
@@ -155,6 +248,8 @@ def get_vision_transform(
             use_augmentation=use_augmentation,
             image_augmentation_mode=image_augmentation_mode,
         )
+    if view_mode not in {"single", "none", ""}:
+        raise ValueError("AnyRes image_view_mode is only supported for SigLIP/SigLIP2")
     return get_image_transform(
         image_size=image_size or 224,
         is_train=is_train,
@@ -520,6 +615,16 @@ def collate_fn(
     result["attention_mask"] = torch.stack(padded_masks)
     if padded_labels:
         result["labels"] = torch.stack(padded_labels)
+    for meta_key in (
+        "sample_id",
+        "image_ref",
+        "question_text",
+        "answer_text",
+        "mixture_source",
+        "source_local_index",
+    ):
+        if any(meta_key in sample for sample in batch):
+            result[meta_key] = [sample.get(meta_key) for sample in batch]
 
     return result
 

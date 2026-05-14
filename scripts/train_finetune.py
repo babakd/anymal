@@ -217,6 +217,10 @@ def main():
         max_image_tokens=config["model"].get("max_image_tokens"),
         vision_encoder_type="siglip2" if architecture in {"anymal_v2", "anymal_v3", "anymal_v4"} else "clip",
         vision_model_name=config["model"].get("vision_model_name"),
+        image_view_mode=config["data"].get(
+            "image_view_mode",
+            getattr(model, "image_view_mode", "single"),
+        ),
         system_prompt=config["data"].get("system_prompt"),
         filter_to_available_images=config["data"].get("filter_to_available_images", False),
         mixture_config=mixture_config,
@@ -316,6 +320,10 @@ def main():
                 max_image_tokens=config["model"].get("max_image_tokens"),
                 vision_encoder_type="siglip2" if architecture in {"anymal_v2", "anymal_v3", "anymal_v4"} else "clip",
                 vision_model_name=config["model"].get("vision_model_name"),
+                image_view_mode=config["data"].get(
+                    "image_view_mode",
+                    getattr(model, "image_view_mode", "single"),
+                ),
                 system_prompt=config["data"].get("system_prompt"),
                 filter_to_available_images=config["data"].get("filter_to_available_images", False),
             )

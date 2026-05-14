@@ -9,16 +9,23 @@ V3 stack:
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import math
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .anymal_v2 import AnyMALv2
 from .encoders import SigLIP2Encoder
 from .llm import LlamaWrapper, canonicalize_llm_backbone
 from .llm.backbone import CURRENT_LLAMA3_BACKBONE
-from .projectors import PerceiverResampler, QuestionConditionedPerceiverResampler
+from .projectors import (
+    AnyResMLPProjector,
+    PerceiverResampler,
+    QuestionConditionedPerceiverResampler,
+    SpatialGridProjector,
+)
 from .visual_cross_attention import GatedVisualCrossAttentionAdapter
 from model_metadata import (
     read_model_metadata,
@@ -159,6 +166,143 @@ class V3SpatialResidualBranch(nn.Module):
         )
 
 
+class V3SpatialTailBranch(nn.Module):
+    """Spatial patch-token tail appended after a warm-started V3 prefix."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        num_tail_tokens: int,
+        hidden_dim: Optional[int] = None,
+        output_scale: float = 1.0,
+        gate_init: float = 1e-4,
+        use_2d_position_features: bool = True,
+    ):
+        super().__init__()
+        self.input_dim = int(input_dim)
+        self.output_dim = int(output_dim)
+        self.num_tail_tokens = int(num_tail_tokens)
+        self.hidden_dim = int(hidden_dim or output_dim)
+        self.output_scale = float(output_scale)
+        self.use_2d_position_features = bool(use_2d_position_features)
+        if self.input_dim <= 0 or self.output_dim <= 0 or self.num_tail_tokens <= 0:
+            raise ValueError("V3 spatial tail dimensions must be positive")
+        if self.hidden_dim <= 0:
+            raise ValueError(f"spatial_tail_hidden_dim must be > 0, got {hidden_dim}")
+        if self.output_scale <= 0:
+            raise ValueError(f"spatial_tail_output_scale must be > 0, got {output_scale}")
+        if not 0.0 <= float(gate_init) < 1.0:
+            raise ValueError(
+                "spatial_tail_gate_init must be in [0, 1), "
+                f"got {gate_init}"
+            )
+
+        self.input_norm = nn.LayerNorm(self.input_dim)
+        self.input_proj = nn.Linear(self.input_dim, self.hidden_dim)
+        self.output_proj = nn.Linear(self.hidden_dim, self.output_dim)
+        self.output_norm = nn.LayerNorm(self.output_dim)
+        if self.use_2d_position_features:
+            self.position_mlp = nn.Sequential(
+                nn.Linear(2, self.input_dim),
+                nn.GELU(),
+                nn.Linear(self.input_dim, self.input_dim),
+            )
+            nn.init.zeros_(self.position_mlp[-1].weight)
+            nn.init.zeros_(self.position_mlp[-1].bias)
+        else:
+            self.position_mlp = None
+        if float(gate_init) == 0.0:
+            gate_logit = torch.tensor(-20.0, dtype=torch.float32)
+        else:
+            gate_logit = torch.logit(torch.tensor(float(gate_init), dtype=torch.float32))
+        self.gate_logit = nn.Parameter(gate_logit)
+        self._last_tail_rms = None
+
+    @staticmethod
+    def _infer_square_grid(num_tokens: int) -> Tuple[int, Optional[int], Optional[int]]:
+        side = int(math.isqrt(num_tokens))
+        if side * side == num_tokens:
+            return 0, side, side
+        side = int(math.isqrt(max(num_tokens - 1, 0)))
+        if side * side == num_tokens - 1:
+            return 1, side, side
+        return 0, None, None
+
+    @staticmethod
+    def _target_grid(num_tokens: int) -> Tuple[int, int]:
+        root = max(1, int(math.isqrt(num_tokens)))
+        for height in range(root, 0, -1):
+            if num_tokens % height == 0:
+                return height, num_tokens // height
+        height = max(1, root)
+        width = max(1, int(math.ceil(num_tokens / height)))
+        return height, width
+
+    def gate_value(self) -> float:
+        return float(torch.sigmoid(self.gate_logit.detach().float()).item())
+
+    def _pool_vision_tokens(self, vision_features: torch.Tensor) -> torch.Tensor:
+        batch_size, num_tokens, channels = vision_features.shape
+        prefix_tokens, height, width = self._infer_square_grid(num_tokens)
+        target_h, target_w = self._target_grid(self.num_tail_tokens)
+        if height is not None and width is not None:
+            patches = vision_features[:, prefix_tokens:, :]
+            patches = patches.reshape(batch_size, height, width, channels)
+            patches = patches.permute(0, 3, 1, 2)
+            pooled = F.adaptive_avg_pool2d(patches, output_size=(target_h, target_w))
+            pooled = pooled.permute(0, 2, 3, 1).reshape(batch_size, -1, channels)
+        else:
+            x = vision_features.transpose(1, 2)
+            pooled = F.interpolate(
+                x,
+                size=self.num_tail_tokens,
+                mode="linear",
+                align_corners=True,
+            ).transpose(1, 2)
+
+        if pooled.shape[1] > self.num_tail_tokens:
+            pooled = pooled[:, : self.num_tail_tokens, :]
+        elif pooled.shape[1] < self.num_tail_tokens:
+            pad = pooled[:, -1:, :].expand(
+                batch_size,
+                self.num_tail_tokens - pooled.shape[1],
+                channels,
+            )
+            pooled = torch.cat([pooled, pad], dim=1)
+        return pooled
+
+    def _position_features(self, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        if self.position_mlp is None:
+            raise RuntimeError("Position features requested without position_mlp")
+        target_h, target_w = self._target_grid(self.num_tail_tokens)
+        ys = torch.linspace(-1.0, 1.0, target_h, device=device, dtype=dtype)
+        xs = torch.linspace(-1.0, 1.0, target_w, device=device, dtype=dtype)
+        yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+        coords = torch.stack([xx.reshape(-1), yy.reshape(-1)], dim=-1)
+        coords = coords[: self.num_tail_tokens]
+        mlp_dtype = next(self.position_mlp.parameters()).dtype
+        features = self.position_mlp(coords.to(dtype=mlp_dtype))
+        return features.to(device=device, dtype=dtype).unsqueeze(0)
+
+    def forward(self, vision_features: torch.Tensor) -> torch.Tensor:
+        branch_dtype = self.input_proj.weight.dtype
+        pooled = self._pool_vision_tokens(vision_features).to(dtype=branch_dtype)
+        if self.position_mlp is not None:
+            pooled = pooled + self._position_features(
+                device=vision_features.device,
+                dtype=branch_dtype,
+            )
+        hidden = F.gelu(self.input_proj(self.input_norm(pooled)))
+        tail = self.output_norm(self.output_proj(hidden))
+        multiplier = self.output_scale * torch.sigmoid(
+            self.gate_logit.to(device=vision_features.device, dtype=tail.dtype)
+        )
+        tail = tail * multiplier
+        self._last_tail_rms = tail.detach().float().pow(2).mean().sqrt()
+        return tail.to(dtype=vision_features.dtype)
+
+
 class AnyMALv3(AnyMALv2):
     """AnyMAL v3 multimodal model."""
 
@@ -199,6 +343,15 @@ class AnyMALv3(AnyMALv2):
         spatial_residual_hidden_dim: int = 128,
         spatial_residual_grid_size: int = 32,
         spatial_residual_gate_init: float = 1e-4,
+        spatial_tail_mode: str = "none",
+        spatial_tail_tokens: int = 0,
+        spatial_tail_hidden_dim: Optional[int] = None,
+        spatial_tail_output_scale: float = 1.0,
+        spatial_tail_gate_init: float = 1e-4,
+        spatial_tail_use_2d_position_features: bool = True,
+        anyres_tokens_per_view: Optional[Union[str, List[int], Tuple[int, ...]]] = None,
+        anyres_crop_mode: str = "global_two_crops",
+        anyres_use_view_embeddings: bool = True,
         visual_cross_attention_mode: str = "none",
         visual_cross_attention_layers: Optional[Union[str, List[int], Tuple[int, ...]]] = None,
         visual_cross_attention_num_heads: int = 16,
@@ -232,8 +385,10 @@ class AnyMALv3(AnyMALv2):
                 f"Unsupported vision_encoder_type '{vision_encoder_type}'. Expected 'siglip2'."
             )
         supported_connectors = {
+            "mlp_anyres_projector",
             "perceiver_resampler",
             "question_conditioned_perceiver_resampler",
+            "spatial_grid_projector",
         }
         if connector_type not in supported_connectors:
             raise ValueError(
@@ -248,10 +403,42 @@ class AnyMALv3(AnyMALv2):
         self.vision_encoder_type = vision_encoder_type
         self.vision_image_size = int(vision_image_size)
         self.connector_type = connector_type
-        self.num_image_tokens = num_image_tokens
+        self.spatial_tail_mode = self._normalize_spatial_tail_mode(spatial_tail_mode)
+        self.spatial_tail_tokens = (
+            int(spatial_tail_tokens) if self.spatial_tail_mode != "none" else 0
+        )
+        if self.spatial_tail_mode != "none" and self.spatial_tail_tokens <= 0:
+            raise ValueError(
+                "spatial_tail_tokens must be > 0 when spatial_tail_mode is enabled"
+            )
+        if self.spatial_tail_tokens >= int(num_image_tokens):
+            raise ValueError(
+                "spatial_tail_tokens must be smaller than num_image_tokens so the "
+                "warm-started V3 prefix remains non-empty"
+            )
+        if self.spatial_tail_mode != "none" and connector_type == "spatial_grid_projector":
+            raise ValueError(
+                "spatial_tail_mode is a Track 2 hybrid option and cannot be "
+                "combined with connector_type='spatial_grid_projector'"
+            )
+        if self.spatial_tail_mode != "none" and connector_type == "mlp_anyres_projector":
+            raise ValueError(
+                "spatial_tail_mode is a Track 2 hybrid option and cannot be "
+                "combined with connector_type='mlp_anyres_projector'"
+            )
+        if (
+            self._normalize_spatial_residual_mode(spatial_residual_mode) != "none"
+            and connector_type == "mlp_anyres_projector"
+        ):
+            raise ValueError(
+                "spatial_residual_mode cannot be combined with "
+                "connector_type='mlp_anyres_projector'"
+            )
+        self.v3_base_image_tokens = int(num_image_tokens) - self.spatial_tail_tokens
+        self.num_image_tokens = int(num_image_tokens)
         # Compatibility with shared dataset/checkpoint helpers.
-        self.max_image_tokens = num_image_tokens
-        self.min_image_tokens = num_image_tokens
+        self.max_image_tokens = self.num_image_tokens
+        self.min_image_tokens = self.num_image_tokens
         self.connector_layers = connector_layers
         self.connector_heads = connector_heads
         self.connector_ff_mult = connector_ff_mult
@@ -300,6 +487,40 @@ class AnyMALv3(AnyMALv2):
         self.spatial_residual_hidden_dim = int(spatial_residual_hidden_dim)
         self.spatial_residual_grid_size = int(spatial_residual_grid_size)
         self.spatial_residual_gate_init = float(spatial_residual_gate_init)
+        self.spatial_tail_hidden_dim = (
+            None if spatial_tail_hidden_dim is None else int(spatial_tail_hidden_dim)
+        )
+        self.spatial_tail_output_scale = float(spatial_tail_output_scale)
+        self.spatial_tail_gate_init = float(spatial_tail_gate_init)
+        self.spatial_tail_use_2d_position_features = bool(
+            spatial_tail_use_2d_position_features
+        )
+        self.anyres_tokens_per_view = (
+            self._resolve_anyres_tokens_per_view(
+                anyres_tokens_per_view,
+                total_tokens=self.v3_base_image_tokens,
+            )
+            if self.connector_type == "mlp_anyres_projector"
+            else None
+        )
+        self.anyres_num_views = (
+            len(self.anyres_tokens_per_view)
+            if self.anyres_tokens_per_view is not None
+            else None
+        )
+        self.anyres_crop_mode = str(anyres_crop_mode or "global_two_crops")
+        self.anyres_use_view_embeddings = bool(anyres_use_view_embeddings)
+        self.image_view_mode = (
+            "anyres_global_two_crops"
+            if self.connector_type == "mlp_anyres_projector"
+            else "single"
+        )
+        if self._uses_spatial_tail():
+            self.spatial_tail_grid_height, self.spatial_tail_grid_width = (
+                V3SpatialTailBranch._target_grid(self.spatial_tail_tokens)
+            )
+        else:
+            self.spatial_tail_grid_height, self.spatial_tail_grid_width = (None, None)
         self.visual_cross_attention_mode = self._normalize_visual_cross_attention_mode(
             visual_cross_attention_mode
         )
@@ -345,39 +566,89 @@ class AnyMALv3(AnyMALv2):
 
         vision_dim = self.image_encoder.get_output_dim()
         llm_dim = self.llm.hidden_size
-        projector_cls = (
-            QuestionConditionedPerceiverResampler
-            if connector_type == "question_conditioned_perceiver_resampler"
-            else PerceiverResampler
-        )
-        projector_kwargs = {}
-        if connector_type == "question_conditioned_perceiver_resampler":
-            projector_kwargs["condition_dim"] = llm_dim
-        self.projector = projector_cls(
-            input_dim=vision_dim,
-            output_dim=llm_dim,
-            num_latents=num_image_tokens,
-            num_layers=connector_layers,
-            num_heads=connector_heads,
-            ff_mult=connector_ff_mult,
-            output_scale=self.connector_output_scale,
-            output_gate_init=self.connector_output_gate_init,
-            trainable_scale_mode=self.connector_trainable_scale_mode,
-            use_2d_patch_position_features=self.use_2d_patch_position_features,
-            patch_position_feature_type=self.patch_position_feature_type,
-            patch_position_grid_size=self.patch_position_grid_size,
-            patch_position_mlp_hidden_dim=self.patch_position_mlp_hidden_dim,
-            patch_position_feature_scale=self.patch_position_feature_scale,
-            query_conditioned_visual_scale_mode=self.query_conditioned_visual_scale_mode,
-            query_conditioned_visual_scale_min=self.query_conditioned_visual_scale_min,
-            query_conditioned_visual_scale_max=self.query_conditioned_visual_scale_max,
-            query_conditioned_visual_scale_init=self.query_conditioned_visual_scale_init,
-            query_conditioned_patch_selector_mode=self.query_conditioned_patch_selector_mode,
-            query_conditioned_patch_selector_hidden_dim=self.query_conditioned_patch_selector_hidden_dim,
-            query_conditioned_patch_selector_max_residual=self.query_conditioned_patch_selector_max_residual,
-            query_conditioned_patch_selector_normalize_mean=self.query_conditioned_patch_selector_normalize_mean,
-            **projector_kwargs,
-        )
+        if connector_type == "mlp_anyres_projector":
+            if self.query_conditioned_visual_scale_mode != "none":
+                raise ValueError(
+                    "mlp_anyres_projector does not support "
+                    "query_conditioned_visual_scale_mode yet"
+                )
+            if self.query_conditioned_patch_selector_mode != "none":
+                raise ValueError(
+                    "mlp_anyres_projector does not support "
+                    "query_conditioned_patch_selector_mode yet"
+                )
+            self.projector = AnyResMLPProjector(
+                input_dim=vision_dim,
+                output_dim=llm_dim,
+                tokens_per_view=self.anyres_tokens_per_view,
+                output_scale=self.connector_output_scale,
+                output_gate_init=self.connector_output_gate_init,
+                trainable_scale_mode=self.connector_trainable_scale_mode,
+                use_2d_patch_position_features=self.use_2d_patch_position_features,
+                patch_position_feature_type=self.patch_position_feature_type,
+                patch_position_grid_size=self.patch_position_grid_size,
+                patch_position_mlp_hidden_dim=self.patch_position_mlp_hidden_dim,
+                patch_position_feature_scale=self.patch_position_feature_scale,
+                use_view_embeddings=self.anyres_use_view_embeddings,
+            )
+        elif connector_type == "spatial_grid_projector":
+            if self.query_conditioned_visual_scale_mode != "none":
+                raise ValueError(
+                    "spatial_grid_projector does not support "
+                    "query_conditioned_visual_scale_mode yet"
+                )
+            if self.query_conditioned_patch_selector_mode != "none":
+                raise ValueError(
+                    "spatial_grid_projector does not support "
+                    "query_conditioned_patch_selector_mode yet"
+                )
+            self.projector = SpatialGridProjector(
+                input_dim=vision_dim,
+                output_dim=llm_dim,
+                num_grid_tokens=self.v3_base_image_tokens,
+                output_scale=self.connector_output_scale,
+                output_gate_init=self.connector_output_gate_init,
+                trainable_scale_mode=self.connector_trainable_scale_mode,
+                use_2d_patch_position_features=self.use_2d_patch_position_features,
+                patch_position_feature_type=self.patch_position_feature_type,
+                patch_position_grid_size=self.patch_position_grid_size,
+                patch_position_mlp_hidden_dim=self.patch_position_mlp_hidden_dim,
+                patch_position_feature_scale=self.patch_position_feature_scale,
+            )
+        else:
+            projector_cls = (
+                QuestionConditionedPerceiverResampler
+                if connector_type == "question_conditioned_perceiver_resampler"
+                else PerceiverResampler
+            )
+            projector_kwargs = {}
+            if connector_type == "question_conditioned_perceiver_resampler":
+                projector_kwargs["condition_dim"] = llm_dim
+            self.projector = projector_cls(
+                input_dim=vision_dim,
+                output_dim=llm_dim,
+                num_latents=self.v3_base_image_tokens,
+                num_layers=connector_layers,
+                num_heads=connector_heads,
+                ff_mult=connector_ff_mult,
+                output_scale=self.connector_output_scale,
+                output_gate_init=self.connector_output_gate_init,
+                trainable_scale_mode=self.connector_trainable_scale_mode,
+                use_2d_patch_position_features=self.use_2d_patch_position_features,
+                patch_position_feature_type=self.patch_position_feature_type,
+                patch_position_grid_size=self.patch_position_grid_size,
+                patch_position_mlp_hidden_dim=self.patch_position_mlp_hidden_dim,
+                patch_position_feature_scale=self.patch_position_feature_scale,
+                query_conditioned_visual_scale_mode=self.query_conditioned_visual_scale_mode,
+                query_conditioned_visual_scale_min=self.query_conditioned_visual_scale_min,
+                query_conditioned_visual_scale_max=self.query_conditioned_visual_scale_max,
+                query_conditioned_visual_scale_init=self.query_conditioned_visual_scale_init,
+                query_conditioned_patch_selector_mode=self.query_conditioned_patch_selector_mode,
+                query_conditioned_patch_selector_hidden_dim=self.query_conditioned_patch_selector_hidden_dim,
+                query_conditioned_patch_selector_max_residual=self.query_conditioned_patch_selector_max_residual,
+                query_conditioned_patch_selector_normalize_mean=self.query_conditioned_patch_selector_normalize_mean,
+                **projector_kwargs,
+            )
         self.connector_trainable_scale_mode = getattr(
             self.projector,
             "trainable_scale_mode",
@@ -443,14 +714,52 @@ class AnyMALv3(AnyMALv2):
             "query_conditioned_patch_selector_normalize_mean",
             self.query_conditioned_patch_selector_normalize_mean,
         )
+        self.spatial_grid_tokens = (
+            self.v3_base_image_tokens
+            if self.connector_type == "spatial_grid_projector"
+            else None
+        )
+        self.spatial_grid_height = getattr(self.projector, "grid_height", None)
+        self.spatial_grid_width = getattr(self.projector, "grid_width", None)
+        self.spatial_grid_pooling_mode = getattr(self.projector, "pooling_mode", None)
+        self.spatial_grid_parameterization = (
+            "pooled_siglip_patch_grid_mlp_to_qwen_tokens"
+            if self.connector_type == "spatial_grid_projector"
+            else None
+        )
+        self.anyres_grid_shapes = (
+            [list(shape) for shape in getattr(self.projector, "grid_shapes", [])]
+            if self.connector_type == "mlp_anyres_projector"
+            else None
+        )
+        self.anyres_pooling_mode = (
+            getattr(self.projector, "pooling_mode", None)
+            if self.connector_type == "mlp_anyres_projector"
+            else None
+        )
+        self.anyres_parameterization = (
+            "global_plus_two_local_crop_mlp_pass_through"
+            if self.connector_type == "mlp_anyres_projector"
+            else None
+        )
         if self._uses_spatial_residual():
             self.projector.v3_spatial_residual_branch = V3SpatialResidualBranch(
                 input_dim=vision_dim,
                 output_dim=llm_dim,
-                num_latents=num_image_tokens,
+                num_latents=self.v3_base_image_tokens,
                 hidden_dim=self.spatial_residual_hidden_dim,
                 grid_size=self.spatial_residual_grid_size,
                 gate_init=self.spatial_residual_gate_init,
+            )
+        if self._uses_spatial_tail():
+            self.projector.v3_spatial_tail_branch = V3SpatialTailBranch(
+                input_dim=vision_dim,
+                output_dim=llm_dim,
+                num_tail_tokens=self.spatial_tail_tokens,
+                hidden_dim=self.spatial_tail_hidden_dim,
+                output_scale=self.spatial_tail_output_scale,
+                gate_init=self.spatial_tail_gate_init,
+                use_2d_position_features=self.spatial_tail_use_2d_position_features,
             )
         if self._uses_visual_cross_attention():
             self._setup_visual_cross_attention_adapters()
@@ -513,6 +822,57 @@ class AnyMALv3(AnyMALv2):
 
     def _uses_spatial_residual(self) -> bool:
         return self.spatial_residual_mode != "none"
+
+    @staticmethod
+    def _normalize_spatial_tail_mode(value: Optional[str]) -> str:
+        text = str(value or "none").strip().lower().replace("-", "_")
+        if text in {"", "none", "off", "false", "0"}:
+            return "none"
+        if text in {"on", "true", "1", "grid", "grid_mlp", "pooled_grid_mlp"}:
+            return "pooled_grid_mlp"
+        raise ValueError(
+            "spatial_tail_mode must be one of: none, pooled_grid_mlp"
+        )
+
+    def _uses_spatial_tail(self) -> bool:
+        return self.spatial_tail_mode != "none"
+
+    @staticmethod
+    def _resolve_anyres_tokens_per_view(
+        value: Optional[Union[str, List[int], Tuple[int, ...]]],
+        total_tokens: int,
+    ) -> Tuple[int, ...]:
+        total_tokens = int(total_tokens)
+        if total_tokens <= 0:
+            raise ValueError(f"AnyRes total_tokens must be > 0, got {total_tokens}")
+        if value is None:
+            if total_tokens == 256:
+                tokens = (128, 64, 64)
+            else:
+                global_tokens = max(1, total_tokens // 2)
+                remaining = total_tokens - global_tokens
+                first_local = max(1, remaining // 2)
+                second_local = remaining - first_local
+                if second_local <= 0:
+                    raise ValueError(
+                        "AnyRes default split requires at least 3 tokens; "
+                        f"got total_tokens={total_tokens}"
+                    )
+                tokens = (global_tokens, first_local, second_local)
+        elif isinstance(value, str):
+            parts = [part for part in value.replace(",", " ").split() if part]
+            tokens = tuple(int(part) for part in parts)
+        else:
+            tokens = tuple(int(part) for part in value)
+        if not tokens or any(token <= 0 for token in tokens):
+            raise ValueError(f"AnyRes tokens_per_view must be positive, got {tokens}")
+        if sum(tokens) != total_tokens:
+            raise ValueError(
+                "AnyRes tokens_per_view must sum to num_image_tokens: "
+                f"tokens_per_view={tokens}, total={sum(tokens)}, "
+                f"num_image_tokens={total_tokens}"
+            )
+        return tokens
 
     def _resolve_decoder_layers(self):
         candidates = [
@@ -600,7 +960,7 @@ class AnyMALv3(AnyMALv2):
         question_summary: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.BoolTensor, torch.LongTensor]:
         """
-        Encode images with a fixed-size V3 Perceiver visual prefix.
+        Encode images with a fixed-size V3 visual prefix.
 
         Returns:
             image_tokens: [B, num_image_tokens, llm_dim]
@@ -609,6 +969,34 @@ class AnyMALv3(AnyMALv2):
         """
         if images.dtype != torch.float32:
             images = images.to(torch.float32)
+        if images.ndim == 5:
+            if self.connector_type != "mlp_anyres_projector":
+                raise ValueError(
+                    "Multi-view image tensors [B, V, 3, H, W] are only supported "
+                    "by connector_type='mlp_anyres_projector'"
+                )
+            batch_size, num_views = int(images.shape[0]), int(images.shape[1])
+            if self.anyres_num_views is not None and num_views != int(self.anyres_num_views):
+                raise ValueError(
+                    f"Expected {self.anyres_num_views} AnyRes image views, got {num_views}"
+                )
+            encoder_images = images.reshape(
+                batch_size * num_views,
+                *images.shape[2:],
+            )
+        elif images.ndim == 4:
+            if self.connector_type == "mlp_anyres_projector":
+                raise ValueError(
+                    "mlp_anyres_projector expects image tensors shaped "
+                    "[B, V, 3, H, W]"
+                )
+            batch_size, num_views = int(images.shape[0]), 1
+            encoder_images = images
+        else:
+            raise ValueError(
+                "images must have shape [B, 3, H, W] or [B, V, 3, H, W], "
+                f"got {list(images.shape)}"
+            )
 
         if target_num_tokens is not None:
             requested = target_num_tokens.to(device=images.device, dtype=torch.long)
@@ -624,34 +1012,52 @@ class AnyMALv3(AnyMALv2):
             param.requires_grad for param in self.image_encoder.parameters()
         )
         if train_vision:
-            vision_features = self.image_encoder(images)
+            vision_features = self.image_encoder(encoder_images)
         else:
             with torch.no_grad():
-                vision_features = self.image_encoder(images)
+                vision_features = self.image_encoder(encoder_images)
 
         projector_dtype = next(self.projector.parameters()).dtype
         if vision_features.dtype != projector_dtype:
             vision_features = vision_features.to(projector_dtype)
+        if self.connector_type == "mlp_anyres_projector":
+            vision_features_for_projector = vision_features.reshape(
+                batch_size,
+                num_views,
+                vision_features.shape[1],
+                vision_features.shape[2],
+            )
+            diagnostics_features = vision_features
+        else:
+            vision_features_for_projector = vision_features
+            diagnostics_features = vision_features
 
         if self._uses_question_summary():
             self._last_connector_diagnostics = self._compute_connector_diagnostics(
-                vision_features
+                diagnostics_features
             )
             image_tokens = self.projector(
-                vision_features,
+                vision_features_for_projector,
                 question_summary=question_summary,
             )
         else:
             self._last_connector_diagnostics = self._compute_connector_diagnostics(
-                vision_features
+                diagnostics_features
             )
-            image_tokens = self.projector(vision_features)
+            image_tokens = self.projector(vision_features_for_projector)
         spatial_branch = getattr(self.projector, "v3_spatial_residual_branch", None)
         if spatial_branch is not None:
             image_tokens = image_tokens + spatial_branch(vision_features).to(
                 dtype=image_tokens.dtype,
                 device=image_tokens.device,
             )
+        spatial_tail = getattr(self.projector, "v3_spatial_tail_branch", None)
+        if spatial_tail is not None:
+            tail_tokens = spatial_tail(vision_features).to(
+                dtype=image_tokens.dtype,
+                device=image_tokens.device,
+            )
+            image_tokens = torch.cat([image_tokens, tail_tokens], dim=1)
         self._last_connector_output_rms_tensor = (
             image_tokens.float().pow(2).mean().sqrt()
         )
@@ -756,6 +1162,16 @@ class AnyMALv3(AnyMALv2):
         spatial_branch = getattr(self.projector, "v3_spatial_residual_branch", None)
         if spatial_branch is not None:
             metrics["train/v3_spatial_residual_gate"] = spatial_branch.gate_value()
+        spatial_tail = getattr(self.projector, "v3_spatial_tail_branch", None)
+        if spatial_tail is not None:
+            metrics["train/v3_spatial_tail_gate"] = spatial_tail.gate_value()
+            metrics["train/v3_spatial_tail_tokens"] = float(
+                spatial_tail.num_tail_tokens
+            )
+            tail_rms = getattr(spatial_tail, "_last_tail_rms", None)
+            if tail_rms is not None:
+                metrics["train/v3_spatial_tail_rms"] = float(tail_rms.item())
+            metrics["train/v3_base_image_tokens"] = float(self.v3_base_image_tokens)
         self._last_connector_diagnostics = metrics
 
     def _uses_question_summary(self) -> bool:
@@ -974,7 +1390,7 @@ class AnyMALv3(AnyMALv2):
                     f"{connector_note} + gated visual cross-attention adapters"
                 )
             else:
-                print("Stage 1: Training V3 Perceiver connector only")
+                print(f"Stage 1: Training V3 {self.connector_type} connector only")
         elif stage == 2:
             self.image_encoder.freeze()
             self.llm.freeze_base_model()
@@ -984,11 +1400,11 @@ class AnyMALv3(AnyMALv2):
                 param.requires_grad = self._uses_visual_cross_attention()
             if self._uses_visual_cross_attention():
                 print(
-                    "Stage 2: Training V3 Perceiver connector + LoRA + "
+                    f"Stage 2: Training V3 {self.connector_type} connector + LoRA + "
                     "gated visual cross-attention adapters"
                 )
             else:
-                print("Stage 2: Training V3 Perceiver connector + LoRA")
+                print(f"Stage 2: Training V3 {self.connector_type} connector + LoRA")
         else:
             raise ValueError(f"Unknown stage: {stage}")
 
@@ -1150,6 +1566,7 @@ class AnyMALv3(AnyMALv2):
                 "vision_adapter_parameter_names": vision_adapter_names,
                 "connector_type": self.connector_type,
                 "num_image_tokens": self.num_image_tokens,
+                "v3_base_image_tokens": self.v3_base_image_tokens,
                 "max_image_tokens": self.max_image_tokens,
                 "min_image_tokens": self.min_image_tokens,
                 "image_tokens": self.num_image_tokens,
@@ -1169,6 +1586,41 @@ class AnyMALv3(AnyMALv2):
                 "patch_position_grid_size": self.patch_position_grid_size,
                 "patch_position_mlp_hidden_dim": self.patch_position_mlp_hidden_dim,
                 "patch_position_feature_scale": self.patch_position_feature_scale,
+                "spatial_grid_tokens": self.spatial_grid_tokens,
+                "spatial_grid_height": self.spatial_grid_height,
+                "spatial_grid_width": self.spatial_grid_width,
+                "spatial_grid_pooling_mode": self.spatial_grid_pooling_mode,
+                "spatial_grid_output_norm": (
+                    "per_token_rms"
+                    if self.connector_type == "spatial_grid_projector"
+                    else None
+                ),
+                "spatial_grid_parameterization": self.spatial_grid_parameterization,
+                "anyres_num_views": self.anyres_num_views,
+                "anyres_tokens_per_view": (
+                    list(self.anyres_tokens_per_view)
+                    if self.anyres_tokens_per_view is not None
+                    else None
+                ),
+                "anyres_crop_mode": (
+                    self.anyres_crop_mode
+                    if self.connector_type == "mlp_anyres_projector"
+                    else None
+                ),
+                "anyres_image_view_mode": (
+                    self.image_view_mode
+                    if self.connector_type == "mlp_anyres_projector"
+                    else None
+                ),
+                "image_view_mode": self.image_view_mode,
+                "anyres_use_view_embeddings": (
+                    self.anyres_use_view_embeddings
+                    if self.connector_type == "mlp_anyres_projector"
+                    else None
+                ),
+                "anyres_grid_shapes": self.anyres_grid_shapes,
+                "anyres_pooling_mode": self.anyres_pooling_mode,
+                "anyres_parameterization": self.anyres_parameterization,
                 "query_conditioned_visual_scale_mode": self.query_conditioned_visual_scale_mode,
                 "query_conditioned_visual_scale_min": self.query_conditioned_visual_scale_min,
                 "query_conditioned_visual_scale_max": self.query_conditioned_visual_scale_max,
@@ -1196,6 +1648,24 @@ class AnyMALv3(AnyMALv2):
                     if self._uses_spatial_residual()
                     else None
                 ),
+                "spatial_tail_mode": self.spatial_tail_mode,
+                "spatial_tail_tokens": self.spatial_tail_tokens,
+                "spatial_tail_hidden_dim": self.spatial_tail_hidden_dim,
+                "spatial_tail_output_scale": self.spatial_tail_output_scale,
+                "spatial_tail_gate_init": self.spatial_tail_gate_init,
+                "spatial_tail_use_2d_position_features": self.spatial_tail_use_2d_position_features,
+                "spatial_tail_grid_height": self.spatial_tail_grid_height,
+                "spatial_tail_grid_width": self.spatial_tail_grid_width,
+                "spatial_tail_pooling_mode": (
+                    "adaptive_avg_pool2d_or_linear_interpolate"
+                    if self._uses_spatial_tail()
+                    else None
+                ),
+                "spatial_tail_parameterization": (
+                    "v11_prefix_plus_gated_pooled_siglip_patch_mlp_tail"
+                    if self._uses_spatial_tail()
+                    else None
+                ),
                 "visual_cross_attention_mode": self.visual_cross_attention_mode,
                 "visual_cross_attention_layers": list(self.visual_cross_attention_layers),
                 "visual_cross_attention_num_heads": self.visual_cross_attention_num_heads,
@@ -1217,7 +1687,66 @@ class AnyMALv3(AnyMALv2):
                 "image_placeholder_token": getattr(self, "image_placeholder_token", None),
                 "image_placeholder_token_id": getattr(self, "image_placeholder_token_id", None),
                 "image_placeholder_count": self.num_image_tokens,
-                "stage1_connector_init": "fresh_random",
+                "stage1_connector_init": getattr(
+                    self,
+                    "stage1_connector_init",
+                    "fresh_random",
+                ),
+                "stage1_connector_source_checkpoint": getattr(
+                    self,
+                    "stage1_connector_source_checkpoint",
+                    None,
+                ),
+                "stage1_teacher_kl_mode": getattr(
+                    self,
+                    "stage1_teacher_kl_mode",
+                    None,
+                ),
+                "stage1_teacher_kl_weight": getattr(
+                    self,
+                    "stage1_teacher_kl_weight",
+                    None,
+                ),
+                "stage1_teacher_kl_image_tokens": getattr(
+                    self,
+                    "stage1_teacher_kl_image_tokens",
+                    None,
+                ),
+                "stage1_teacher_kl_temperature": getattr(
+                    self,
+                    "stage1_teacher_kl_temperature",
+                    None,
+                ),
+                "stage1_teacher_kl_direction": getattr(
+                    self,
+                    "stage1_teacher_kl_direction",
+                    None,
+                ),
+                "stage1_teacher_kl_checkpoint": getattr(
+                    self,
+                    "stage1_teacher_kl_checkpoint",
+                    None,
+                ),
+                "stage1_teacher_kl_cache_path": getattr(
+                    self,
+                    "stage1_teacher_kl_cache_path",
+                    None,
+                ),
+                "stage1_teacher_kl_cache_schema": getattr(
+                    self,
+                    "stage1_teacher_kl_cache_schema",
+                    None,
+                ),
+                "stage1_teacher_kl_cache_top_k": getattr(
+                    self,
+                    "stage1_teacher_kl_cache_top_k",
+                    None,
+                ),
+                "stage1_teacher_kl_cache_entries": getattr(
+                    self,
+                    "stage1_teacher_kl_cache_entries",
+                    None,
+                ),
                 "llm_checkpoint_saved": llm_saved,
                 "llm_base_weights_saved": bool(llm_saved and save_llm_base),
                 "question_conditioning": (
@@ -1227,18 +1756,26 @@ class AnyMALv3(AnyMALv2):
                         "pooled_prompt_embedding_bounded_visual_scale"
                         if self.query_conditioned_visual_scale_mode != "none"
                         else (
-                            "pooled_prompt_embedding_bounded_residual_patch_selector"
-                            if self.query_conditioned_patch_selector_mode != "none"
+                        "pooled_prompt_embedding_bounded_residual_patch_selector"
+                        if self.query_conditioned_patch_selector_mode != "none"
+                        else (
+                            "spatial_preserving_compressed_grid"
+                            if self.connector_type == "spatial_grid_projector"
                             else (
                                 "gated_spatial_residual_branch"
                                 if self._uses_spatial_residual()
                                 else (
-                                    "decoder_layer_gated_visual_cross_attention"
-                                    if self._uses_visual_cross_attention()
-                                    else None
+                                    "hybrid_v11_prefix_spatial_tail"
+                                    if self._uses_spatial_tail()
+                                    else (
+                                        "decoder_layer_gated_visual_cross_attention"
+                                        if self._uses_visual_cross_attention()
+                                        else None
+                                    )
                                 )
                             )
                         )
+                    )
                     )
                 ),
             },
@@ -1270,6 +1807,33 @@ class AnyMALv3(AnyMALv2):
                 "WARNING: loading AnyMALv3 checkpoint without model_meta.json "
                 f"because allow_missing_model_metadata=True: {save_path}"
             )
+        if "connector_type" not in kwargs and meta.get("connector_type") is not None:
+            kwargs["connector_type"] = meta["connector_type"]
+        if "num_image_tokens" not in kwargs:
+            meta_image_tokens = (
+                meta.get("num_image_tokens")
+                or meta.get("image_tokens")
+                or meta.get("image_placeholder_count")
+            )
+            if meta_image_tokens is not None:
+                kwargs["num_image_tokens"] = int(meta_image_tokens)
+        if "connector_layers" not in kwargs and meta.get("connector_layers") is not None:
+            kwargs["connector_layers"] = int(meta["connector_layers"])
+        if "connector_heads" not in kwargs and meta.get("connector_heads") is not None:
+            kwargs["connector_heads"] = int(meta["connector_heads"])
+        if "connector_ff_mult" not in kwargs and meta.get("connector_ff_mult") is not None:
+            kwargs["connector_ff_mult"] = int(meta["connector_ff_mult"])
+        if (
+            "project_directly_to_llm_dim" not in kwargs
+            and meta.get("project_directly_to_llm_dim") is not None
+        ):
+            kwargs["project_directly_to_llm_dim"] = bool(
+                meta["project_directly_to_llm_dim"]
+            )
+        if llm_backbone is not None and "llm_backbone" not in kwargs:
+            kwargs["llm_backbone"] = llm_backbone
+        elif "llm_backbone" not in kwargs and meta.get("llm_backbone") is not None:
+            kwargs["llm_backbone"] = meta["llm_backbone"]
         if "vision_image_size" not in kwargs and meta.get("vision_image_size") is not None:
             kwargs["vision_image_size"] = int(meta["vision_image_size"])
         if "connector_output_scale" not in kwargs and meta.get("connector_output_scale") is not None:
@@ -1439,14 +2003,69 @@ class AnyMALv3(AnyMALv2):
             kwargs["spatial_residual_gate_init"] = float(
                 meta["spatial_residual_gate_init"]
             )
+        if (
+            "spatial_tail_mode" not in kwargs
+            and meta.get("spatial_tail_mode") is not None
+        ):
+            kwargs["spatial_tail_mode"] = meta["spatial_tail_mode"]
+        if (
+            "spatial_tail_tokens" not in kwargs
+            and meta.get("spatial_tail_tokens") is not None
+        ):
+            kwargs["spatial_tail_tokens"] = int(meta["spatial_tail_tokens"])
+        if (
+            "spatial_tail_hidden_dim" not in kwargs
+            and meta.get("spatial_tail_hidden_dim") is not None
+        ):
+            kwargs["spatial_tail_hidden_dim"] = int(meta["spatial_tail_hidden_dim"])
+        if (
+            "spatial_tail_output_scale" not in kwargs
+            and meta.get("spatial_tail_output_scale") is not None
+        ):
+            kwargs["spatial_tail_output_scale"] = float(
+                meta["spatial_tail_output_scale"]
+            )
+        if (
+            "spatial_tail_gate_init" not in kwargs
+            and meta.get("spatial_tail_gate_init") is not None
+        ):
+            kwargs["spatial_tail_gate_init"] = float(meta["spatial_tail_gate_init"])
+        if (
+            "spatial_tail_use_2d_position_features" not in kwargs
+            and meta.get("spatial_tail_use_2d_position_features") is not None
+        ):
+            kwargs["spatial_tail_use_2d_position_features"] = bool(
+                meta["spatial_tail_use_2d_position_features"]
+            )
+        if (
+            "anyres_tokens_per_view" not in kwargs
+            and meta.get("anyres_tokens_per_view") is not None
+        ):
+            kwargs["anyres_tokens_per_view"] = meta["anyres_tokens_per_view"]
+        if "anyres_crop_mode" not in kwargs and meta.get("anyres_crop_mode") is not None:
+            kwargs["anyres_crop_mode"] = meta["anyres_crop_mode"]
+        if (
+            "anyres_use_view_embeddings" not in kwargs
+            and meta.get("anyres_use_view_embeddings") is not None
+        ):
+            kwargs["anyres_use_view_embeddings"] = bool(
+                meta["anyres_use_view_embeddings"]
+            )
 
         model = cls(llm_model_name=llm_model_name, **kwargs)
+        checkpoint_spatial_tail_mode = cls._normalize_spatial_tail_mode(
+            meta.get("spatial_tail_mode")
+        )
+        checkpoint_has_spatial_tail = checkpoint_spatial_tail_mode != "none"
+        expected_image_tokens = getattr(model, "num_image_tokens", None)
+        if model._uses_spatial_tail() and not checkpoint_has_spatial_tail:
+            expected_image_tokens = getattr(model, "v3_base_image_tokens", None)
         expected_values = {
             "vision_encoder_type": getattr(model, "vision_encoder_type", None),
             "connector_type": getattr(model, "connector_type", None),
-            "num_image_tokens": getattr(model, "num_image_tokens", None),
-            "max_image_tokens": getattr(model, "max_image_tokens", None),
-            "min_image_tokens": getattr(model, "min_image_tokens", None),
+            "num_image_tokens": expected_image_tokens,
+            "max_image_tokens": expected_image_tokens,
+            "min_image_tokens": expected_image_tokens,
             "connector_layers": getattr(model, "connector_layers", None),
             "connector_heads": getattr(model, "connector_heads", None),
             "connector_ff_mult": getattr(model, "connector_ff_mult", None),
@@ -1492,6 +2111,77 @@ class AnyMALv3(AnyMALv2):
             expected_values["patch_position_feature_scale"] = getattr(
                 model,
                 "patch_position_feature_scale",
+                None,
+            )
+        if "spatial_grid_tokens" in meta:
+            expected_values["spatial_grid_tokens"] = getattr(
+                model,
+                "spatial_grid_tokens",
+                None,
+            )
+        if "spatial_grid_height" in meta:
+            expected_values["spatial_grid_height"] = getattr(
+                model,
+                "spatial_grid_height",
+                None,
+            )
+        if "spatial_grid_width" in meta:
+            expected_values["spatial_grid_width"] = getattr(
+                model,
+                "spatial_grid_width",
+                None,
+            )
+        if "spatial_grid_pooling_mode" in meta:
+            expected_values["spatial_grid_pooling_mode"] = getattr(
+                model,
+                "spatial_grid_pooling_mode",
+                None,
+            )
+        if meta.get("anyres_num_views") is not None:
+            expected_values["anyres_num_views"] = getattr(
+                model,
+                "anyres_num_views",
+                None,
+            )
+        if meta.get("anyres_tokens_per_view") is not None:
+            tokens_per_view = getattr(model, "anyres_tokens_per_view", None)
+            expected_values["anyres_tokens_per_view"] = (
+                list(tokens_per_view) if tokens_per_view is not None else None
+            )
+        if meta.get("anyres_crop_mode") is not None:
+            expected_values["anyres_crop_mode"] = getattr(
+                model,
+                "anyres_crop_mode",
+                None,
+            )
+        if meta.get("anyres_image_view_mode") is not None:
+            expected_values["anyres_image_view_mode"] = getattr(
+                model,
+                "image_view_mode",
+                None,
+            )
+        if "image_view_mode" in meta:
+            expected_values["image_view_mode"] = getattr(
+                model,
+                "image_view_mode",
+                None,
+            )
+        if meta.get("anyres_use_view_embeddings") is not None:
+            expected_values["anyres_use_view_embeddings"] = getattr(
+                model,
+                "anyres_use_view_embeddings",
+                None,
+            )
+        if meta.get("anyres_grid_shapes") is not None:
+            expected_values["anyres_grid_shapes"] = getattr(
+                model,
+                "anyres_grid_shapes",
+                None,
+            )
+        if "anyres_pooling_mode" in meta:
+            expected_values["anyres_pooling_mode"] = getattr(
+                model,
+                "anyres_pooling_mode",
                 None,
             )
         if "query_conditioned_visual_scale_mode" in meta:
@@ -1606,6 +2296,42 @@ class AnyMALv3(AnyMALv2):
                 "spatial_residual_gate_init",
                 None,
             )
+        if "spatial_tail_mode" in meta:
+            expected_values["spatial_tail_mode"] = getattr(
+                model,
+                "spatial_tail_mode",
+                None,
+            )
+        if "spatial_tail_tokens" in meta:
+            expected_values["spatial_tail_tokens"] = getattr(
+                model,
+                "spatial_tail_tokens",
+                None,
+            )
+        if "spatial_tail_hidden_dim" in meta:
+            expected_values["spatial_tail_hidden_dim"] = getattr(
+                model,
+                "spatial_tail_hidden_dim",
+                None,
+            )
+        if "spatial_tail_output_scale" in meta:
+            expected_values["spatial_tail_output_scale"] = getattr(
+                model,
+                "spatial_tail_output_scale",
+                None,
+            )
+        if "spatial_tail_gate_init" in meta:
+            expected_values["spatial_tail_gate_init"] = getattr(
+                model,
+                "spatial_tail_gate_init",
+                None,
+            )
+        if "spatial_tail_use_2d_position_features" in meta:
+            expected_values["spatial_tail_use_2d_position_features"] = getattr(
+                model,
+                "spatial_tail_use_2d_position_features",
+                None,
+            )
         if "llm_backbone" in meta or getattr(model, "llm_backbone", None) != CURRENT_LLAMA3_BACKBONE:
             expected_values["llm_backbone"] = getattr(model, "llm_backbone", None)
 
@@ -1632,6 +2358,8 @@ class AnyMALv3(AnyMALv2):
                 allowed_missing_prefixes.add("query_patch_selector.")
             if getattr(model.projector, "v3_spatial_residual_branch", None) is not None:
                 allowed_missing_prefixes.add("v3_spatial_residual_branch.")
+            if getattr(model.projector, "v3_spatial_tail_branch", None) is not None:
+                allowed_missing_prefixes.add("v3_spatial_tail_branch.")
             if allowed_missing or allowed_missing_prefixes:
                 incompatible = model.projector.load_state_dict(
                     projector_state,

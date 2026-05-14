@@ -98,6 +98,7 @@ class InstructionDataset(Dataset):
         filter_to_available_images: bool = False,
         use_augmentation: bool = False,
         image_augmentation_mode: str = "none",
+        image_view_mode: str = "single",
         chat_template_family: Optional[str] = None,
     ):
         super().__init__()
@@ -112,6 +113,7 @@ class InstructionDataset(Dataset):
         self.max_image_tokens = max_image_tokens
         self.vision_encoder_type = vision_encoder_type
         self.vision_model_name = vision_model_name
+        self.image_view_mode = str(image_view_mode or "single")
         self.system_prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
         self.chat_template_family = chat_template_family
 
@@ -153,6 +155,7 @@ class InstructionDataset(Dataset):
             is_train=(split == "train"),
             use_augmentation=use_augmentation,
             image_augmentation_mode=image_augmentation_mode,
+            image_view_mode=self.image_view_mode,
         )
 
         # Text processor
@@ -244,7 +247,7 @@ class InstructionDataset(Dataset):
 
         Returns:
             Dict containing:
-            - image: Processed image tensor [3, H, W]
+            - image: Processed image tensor [3, H, W] or [V, 3, H, W]
             - input_ids: Token IDs [seq_len]
             - attention_mask: Attention mask [seq_len]
             - labels: Labels for training [seq_len]
@@ -256,6 +259,15 @@ class InstructionDataset(Dataset):
 
         # Get conversations
         conversations = sample["conversations"]
+        question_text = ""
+        answer_text = ""
+        for turn in conversations:
+            role = turn.get("from", turn.get("role", ""))
+            content = str(turn.get("value", turn.get("content", "")))
+            if not question_text and role in ["human", "user"]:
+                question_text = content
+            elif not answer_text and role in ["gpt", "assistant"]:
+                answer_text = content
 
         # Format conversation for training. Segment-wise encoding is used so
         # role masks do not depend on tokenizer offset mappings around the
@@ -277,6 +289,10 @@ class InstructionDataset(Dataset):
             "attention_mask": encoding["attention_mask"],
             "labels": encoding["labels"],
             "num_image_tokens": torch.tensor(num_image_tokens, dtype=torch.long),
+            "sample_id": str(sample.get("id", idx)),
+            "image_ref": str(sample.get("image", "")),
+            "question_text": question_text,
+            "answer_text": answer_text,
         }
         negative_images = sample.get("negative_images") or []
         if negative_images:
@@ -337,7 +353,11 @@ class InstructionDataset(Dataset):
             raw = torch.rand(3, self.image_size, self.image_size, generator=generator)
         else:
             raw = torch.rand(3, self.image_size, self.image_size)
-        return clip_normalize(raw)
+        image_tensor = clip_normalize(raw)
+        num_views = int(getattr(self.transform, "num_views", 1) or 1)
+        if num_views > 1:
+            return torch.stack([image_tensor.clone() for _ in range(num_views)])
+        return image_tensor
 
     def _format_conversation(
         self,
@@ -663,6 +683,9 @@ class InstructionDatasetSimple(Dataset):
         tokenizer,
         image_size: int = 224,
         max_length: int = 2048,
+        vision_encoder_type: str = "clip",
+        vision_model_name: Optional[str] = None,
+        image_view_mode: str = "single",
     ):
         super().__init__()
 
@@ -670,9 +693,12 @@ class InstructionDatasetSimple(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
 
-        self.transform = get_image_transform(
+        self.transform = get_vision_transform(
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
             image_size=image_size,
             is_train=True,
+            image_view_mode=image_view_mode,
         )
 
         # Load data
@@ -799,20 +825,29 @@ class InstructionMixtureDataset(Dataset):
         return self._length
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        def _with_source_metadata(source_idx: int, local_idx: int) -> Dict[str, Any]:
+            item = dict(self.datasets[source_idx][local_idx])
+            source_name = str(self.source_names[source_idx])
+            base_id = item.get("sample_id", local_idx)
+            item["sample_id"] = f"{source_name}:{int(local_idx)}:{base_id}"
+            item["mixture_source"] = source_name
+            item["source_local_index"] = int(local_idx)
+            return item
+
         if self.strategy == "balanced":
             source_idx = idx % len(self.datasets)
             local_idx = (idx // len(self.datasets)) % len(self.datasets[source_idx])
-            return self.datasets[source_idx][local_idx]
+            return _with_source_metadata(source_idx, local_idx)
 
         if self.strategy == "weighted":
             source_idx = self._weighted_cycle[idx % len(self._weighted_cycle)]
             local_idx = (idx // len(self._weighted_cycle)) % len(self.datasets[source_idx])
-            return self.datasets[source_idx][local_idx]
+            return _with_source_metadata(source_idx, local_idx)
 
         for source_idx, end in enumerate(self._cumulative_lengths):
             start = 0 if source_idx == 0 else self._cumulative_lengths[source_idx - 1]
             if idx < end:
-                return self.datasets[source_idx][idx - start]
+                return _with_source_metadata(source_idx, idx - start)
 
         raise IndexError(idx)
 
@@ -851,6 +886,7 @@ def build_instruction_mixture_dataset(
             "filter_to_available_images",
             "use_augmentation",
             "image_augmentation_mode",
+            "image_view_mode",
             "chat_template_family",
         ):
             if key in entry:

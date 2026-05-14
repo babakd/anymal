@@ -1014,6 +1014,14 @@ class Trainer:
         parts = [f"[step {self.global_step}]", loss_str, lr_str]
         if gn_str:
             parts.append(gn_str)
+        for key, label, precision in (
+            ("train/raw_loss", "raw", ".4f"),
+            ("train/teacher_kl_loss", "kl", ".4f"),
+            ("train/teacher_kl_answer_tokens", "kl_tokens", ".0f"),
+            ("train/v3_spatial_tail_gate", "tail_gate", ".4g"),
+        ):
+            if key in metrics:
+                parts.append(f"{label}={metrics[key]:{precision}}")
         # Component grad norms
         for comp in ["projector", "lora", "other"]:
             key = f"train/grad_norm_{comp}"

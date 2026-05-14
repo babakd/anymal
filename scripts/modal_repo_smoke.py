@@ -17,7 +17,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 REMOTE_PROJECT_DIR = "/root/anymal"
 
 def _ignore_modal_mount(path: Path) -> bool:
-    return ".git" in path.parts
+    return False
 
 base_image = (
     modal.Image.debian_slim(python_version="3.10")

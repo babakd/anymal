@@ -45,6 +45,15 @@ QWEN3_NON_THINKING_TEMPLATE = ChatTemplateSpec(
     assistant_prefill="<think>\n\n</think>\n\n",
 )
 
+QWEN3_THINKING_TEMPLATE = ChatTemplateSpec(
+    family="qwen3_thinking",
+    system_header="<|im_start|>system\n",
+    user_header="<|im_start|>user\n",
+    assistant_header="<|im_start|>assistant\n",
+    end_turn="<|im_end|>\n",
+    assistant_prefill="<think>\n",
+)
+
 
 def get_chat_template_spec(family: Optional[str]) -> ChatTemplateSpec:
     family = str(family or "llama3").strip().lower()
@@ -52,6 +61,8 @@ def get_chat_template_spec(family: Optional[str]) -> ChatTemplateSpec:
         family = "qwen3_non_thinking"
     if family == "qwen3_non_thinking":
         return QWEN3_NON_THINKING_TEMPLATE
+    if family in {"qwen3_thinking", "qwen3_think", "qwen3_reasoning"}:
+        return QWEN3_THINKING_TEMPLATE
     if family == "llama3":
         return LLAMA3_TEMPLATE
     raise ValueError(f"Unsupported chat_template_family: {family!r}")

@@ -130,6 +130,7 @@ class LaionDataset(Dataset):
         num_image_tokens: int = 64,
         vision_encoder_type: str = "clip",
         vision_model_name: Optional[str] = None,
+        image_view_mode: str = "single",
         image_dir: Optional[str] = None,
         image_zip_path: Optional[str] = None,
         filter_to_available_images: bool = False,
@@ -150,6 +151,7 @@ class LaionDataset(Dataset):
         self.num_image_tokens = num_image_tokens
         self.vision_encoder_type = vision_encoder_type
         self.vision_model_name = vision_model_name
+        self.image_view_mode = str(image_view_mode or "single")
         self.filter_to_available_images = filter_to_available_images
         self.min_caption_chars = min_caption_chars
         self.deduplicate_captions = deduplicate_captions
@@ -160,6 +162,7 @@ class LaionDataset(Dataset):
             vision_model_name=vision_model_name,
             image_size=image_size,
             is_train=(split == "train"),
+            image_view_mode=self.image_view_mode,
         )
 
         # Set up text processor
@@ -638,6 +641,7 @@ class LaionStreamingDataset(IterableDataset):
         num_image_tokens: int = 64,
         vision_encoder_type: str = "clip",
         vision_model_name: Optional[str] = None,
+        image_view_mode: str = "single",
     ):
         super().__init__()
 
@@ -650,12 +654,14 @@ class LaionStreamingDataset(IterableDataset):
         self.num_image_tokens = num_image_tokens
         self.vision_encoder_type = vision_encoder_type
         self.vision_model_name = vision_model_name
+        self.image_view_mode = str(image_view_mode or "single")
 
         self.transform = get_vision_transform(
             vision_encoder_type=vision_encoder_type,
             vision_model_name=vision_model_name,
             image_size=image_size,
             is_train=True,
+            image_view_mode=self.image_view_mode,
         )
 
         self.text_processor = TextProcessor(
