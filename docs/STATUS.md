@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-05-13
+Last updated: 2026-05-14
 
 ## Current Best Candidate
 
@@ -79,21 +79,39 @@ current ledger:
 | Strict-clean gap | `<= 1.0` | pass on checked evals |
 | Leakage audit | pass | no confirmed leakage; see note above |
 
+## Latest V13 Substrate-Break Note
+
+The V13 Qwen3 substrate-break campaign on 2026-05-14 did not produce a robust
+successor to V11. A no-branch C1 diagnostic underperformed V11, suggesting the
+disabled C1 branch changed the optimization path. Spatial-grid, AnyRes/MLP
+pass-through, V11 spatial-tail, repaired visual cross-attention, Qwen q/v LoRA,
+and a small SigLIP attention/norm adapter all failed to beat V11 on matched GQA
+checks. A lightweight ChartQA val n200 expanded probe also favored V11
+(`6.0` exact match) over the best V13 visual-cross-attention substrate (`5.5`).
+
+The V13 ledger lives at `experiments/v13_qwen/results.md`.
+
 ## Active Direction
 
-The V12 aggressive Qwen3 ceiling search pushed the major planned high-ceiling
+The V12/V13 aggressive Qwen3 searches pushed the major planned high-ceiling
 directions: repaired visual cross-attention, larger image-token budgets,
 controlled V11 continuations, DeepStack/multi-level features, higher-resolution
-eval/training smoke, and vision-side SigLIP adaptation. No branch beat V11 on a
-robust matched check. The best apparent n1000 moves either tied V11 exactly on
-matched n3000 or rediscovered the same V11 basin.
+eval/training smoke, vision-side SigLIP adaptation, spatial-grid substrates,
+AnyRes/pass-through substrates, and V11 spatial-tail hybrids. No branch beat
+V11 on a robust matched check. The best apparent small-slice moves either tied
+V11 on matched larger checks or rediscovered the same V11 basin.
 
 Current operating stance:
 
 - Treat V11 C1-salvage as the Qwen frontier.
 - Treat V9 scale-1.05 as the stable fallback.
-- Do not rerun V12 DeepStack, token-budget, spatial-contrastive, or final-block
-  SigLIP recipes without a new mechanism or diagnostic.
+- Do not rerun V12/V13 DeepStack, token-budget, spatial-grid, AnyRes,
+  spatial-tail, visual-cross-attention, or final-block SigLIP recipes without a
+  new mechanism or diagnostic.
+- The next serious hill should start with a reliable expanded benchmark and data
+  path, especially TextVQA/ChartQA or other OCR/chart/compositional tasks, then
+  use V11 replay KL and controls rather than another connector-only geometry
+  variant.
 - Keep generated eval dumps out of git unless they are curated summaries.
 
 Do not rely on older V3/V4 handoff text as the current state. Those documents

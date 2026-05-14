@@ -1,6 +1,6 @@
 # Latest Experiment Snapshot
 
-Last updated: 2026-05-13
+Last updated: 2026-05-14
 
 This is the quick index for agents who need the current story without reading
 every historical ledger.
@@ -20,11 +20,25 @@ every historical ledger.
 
 Primary ledger:
 
+- `experiments/v13_qwen/results.md`
 - `experiments/v12_qwen/results.md`
 - `experiments/v11_qwen/results.md`
 - `experiments/v9_qwen/results.md`
 - `experiments/v10_qwen/ceiling_results.md`
 - `docs/STATUS.md`
+
+## Latest V13 Substrate-Break Note
+
+The 2026-05-14 V13 substrate-break campaign did not find a robust successor to
+V11. A no-branch C1 diagnostic underperformed V11 on GQA search/confirm, which
+suggests the disabled C1 branch changed the optimization path. Spatial-grid,
+AnyRes/pass-through, V11 spatial-tail, repaired visual cross-attention, Qwen
+q/v LoRA, and a small SigLIP attention/norm adapter all failed to beat V11 on
+matched GQA checks. The best new substrate, repaired visual cross-attention
+with V11 teacher KL, tied V11-like n200 slices but landed at `44.6` GQA n1000
+and `42.433` n3000 versus V11's `44.9` and `42.6`. A new ChartQA val n200
+expanded probe also favored V11, `6.0` exact match versus V13's `5.5`. See
+`experiments/v13_qwen/results.md`.
 
 ## Latest V12 Ceiling Note
 
@@ -75,6 +89,7 @@ pending the GQA-slice decision.
 
 | Campaign | Where to read | Current interpretation |
 | --- | --- | --- |
+| V13 Qwen substrate break | `experiments/v13_qwen/` | No robust successor; connector-only geometry changes appear exhausted for this stack. |
 | V12 Qwen ceiling search | `experiments/v12_qwen/` | No robust successor; V11 remains the frontier after matched n3000 checks. |
 | V11 Qwen frontier | `experiments/v11_qwen/` | Current Qwen frontier and active incumbent. |
 | V10 Qwen ceiling search | `experiments/v10_qwen/` | No promotable successor; superseded by V11 C1-salvage. |
