@@ -73,6 +73,24 @@ def _selected_answer_rows(logits, labels):
     return rows
 
 
+def _teacher_kl_weights(batch: dict[str, Any], batch_size: int) -> list[float]:
+    raw_weights = batch.get("teacher_kl_weight")
+    if raw_weights is None:
+        return [1.0] * int(batch_size)
+    if hasattr(raw_weights, "detach"):
+        values = raw_weights.detach().cpu().view(-1).tolist()
+    else:
+        values = list(raw_weights)
+    if len(values) != int(batch_size):
+        raise ValueError(
+            f"teacher_kl_weight length mismatch: got {len(values)}, expected {batch_size}"
+        )
+    return [
+        1.0 if value is None or value == "" else float(value)
+        for value in values
+    ]
+
+
 @app.function(
     image=image,
     gpu="H100",
@@ -172,11 +190,15 @@ def build_v14_teacher_cache(
         vision_model_name="google/siglip2-so400m-patch14-384",
         image_view_mode="single",
     )
-    train_dataset, val_dataset = deterministic_train_val_split(
-        dataset_obj,
-        val_fraction=0.05,
-    )
-    selected_dataset = val_dataset if str(split).lower() == "val" else train_dataset
+    split_key = str(split or "train").lower()
+    if split_key in {"all", "full", "dataset"}:
+        selected_dataset = dataset_obj
+    else:
+        train_dataset, val_dataset = deterministic_train_val_split(
+            dataset_obj,
+            val_fraction=0.05,
+        )
+        selected_dataset = val_dataset if split_key == "val" else train_dataset
     collator = ImageTextCollator(tokenizer=model.tokenizer, max_length=max_length)
     loader = DataLoader(
         selected_dataset,
@@ -191,11 +213,13 @@ def build_v14_teacher_cache(
     entries = {}
     total_answer_tokens = 0
     total_remainder = 0.0
+    skipped_kl_disabled = 0
     with torch.no_grad():
         for batch in tqdm(loader, desc="Caching V11 teacher"):
             if int(max_entries or 0) > 0 and len(entries) >= int(max_entries):
                 break
             sample_ids = [str(x) for x in batch["sample_id"]]
+            sample_weights = _teacher_kl_weights(batch, len(sample_ids))
             images = batch["images"].to(device, non_blocking=True)
             input_ids = batch["input_ids"].to(device, non_blocking=True)
             attention_mask = batch["attention_mask"].to(device, non_blocking=True)
@@ -210,6 +234,9 @@ def build_v14_teacher_cache(
             for row_idx, (answer_logits, answer_labels, positions) in enumerate(answer_rows):
                 if int(max_entries or 0) > 0 and len(entries) >= int(max_entries):
                     break
+                if float(sample_weights[row_idx]) <= 0.0:
+                    skipped_kl_disabled += 1
+                    continue
                 if answer_logits.numel() == 0:
                     continue
                 probs = torch.softmax(answer_logits.float(), dim=-1)
@@ -236,6 +263,7 @@ def build_v14_teacher_cache(
                         "mixture_source",
                         [""] * len(sample_ids),
                     )[row_idx],
+                    "teacher_kl_weight": float(sample_weights[row_idx]),
                 }
                 total_answer_tokens += int(answer_labels.numel())
                 total_remainder += float(remainder.detach().mean().item())
@@ -250,6 +278,7 @@ def build_v14_teacher_cache(
         "top_k": int(top_k),
         "entries_count": len(entries),
         "answer_tokens": int(total_answer_tokens),
+        "skipped_kl_disabled": int(skipped_kl_disabled),
         "mean_remainder_prob_per_entry": (
             total_remainder / max(len(entries), 1)
         ),
@@ -269,6 +298,7 @@ def build_v14_teacher_cache(
         "entries": len(entries),
         "answer_tokens": int(total_answer_tokens),
         "top_k": int(top_k),
+        "skipped_kl_disabled": int(skipped_kl_disabled),
     }
     print(result, flush=True)
     return result

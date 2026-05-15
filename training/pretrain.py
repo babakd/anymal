@@ -223,6 +223,10 @@ class PretrainTrainer(Trainer):
                 "spatial_grid_projector",
                 "mlp_anyres_projector",
             }
+            supports_cached_teacher = bool(self._teacher_kl_cache_path) and (
+                self._teacher_kl_image_tokens
+                == int(getattr(model, "num_image_tokens", 0) or 0)
+            )
             if self._teacher_kl_image_tokens <= 0:
                 if has_spatial_tail and base_tokens > 0:
                     self._teacher_kl_image_tokens = base_tokens
@@ -232,6 +236,10 @@ class PretrainTrainer(Trainer):
                             self._teacher_kl_checkpoint
                         )
                     )
+                supports_cached_teacher = bool(self._teacher_kl_cache_path) and (
+                    self._teacher_kl_image_tokens
+                    == int(getattr(model, "num_image_tokens", 0) or 0)
+                )
             if self._teacher_kl_image_tokens <= 0:
                 raise ValueError(
                     "teacher_kl_image_tokens must be set when teacher KL is enabled"
@@ -246,6 +254,8 @@ class PretrainTrainer(Trainer):
                 self._teacher_kl_mode = "visual_cross_attention_self"
             elif supports_sidecar_teacher and self._teacher_kl_checkpoint:
                 self._teacher_kl_mode = "sidecar_projector"
+            elif supports_cached_teacher:
+                self._teacher_kl_mode = "cached_answer_tokens"
             else:
                 raise ValueError(
                     "Stage 1 teacher KL supports either V3 spatial-tail students "
@@ -254,7 +264,8 @@ class PretrainTrainer(Trainer):
                     "equal to model.num_image_tokens "
                     "or sidecar-compatible students (spatial_grid_projector or "
                     "mlp_anyres_projector) with teacher_kl_checkpoint set to a V11 "
-                    "Perceiver checkpoint."
+                    "Perceiver checkpoint, or cached answer-token KL with "
+                    "teacher_kl_image_tokens equal to model.num_image_tokens."
                 )
             if self._teacher_kl_cache_path:
                 self._load_teacher_kl_cache()
@@ -1266,6 +1277,31 @@ class PretrainTrainer(Trainer):
         return entries
 
     @staticmethod
+    def _teacher_kl_sample_weights(
+        batch: Dict[str, Any],
+        batch_size: int,
+    ) -> List[float]:
+        raw_weights = batch.get("teacher_kl_weight")
+        if raw_weights is None:
+            return [1.0] * int(batch_size)
+        if isinstance(raw_weights, torch.Tensor):
+            values = raw_weights.detach().cpu().view(-1).tolist()
+        else:
+            values = list(raw_weights)
+        if len(values) != int(batch_size):
+            raise ValueError(
+                "teacher_kl_weight metadata length mismatch: "
+                f"got {len(values)}, expected {batch_size}"
+            )
+        weights = []
+        for value in values:
+            if value is None or value == "":
+                weights.append(1.0)
+            else:
+                weights.append(float(value))
+        return weights
+
+    @staticmethod
     def _cache_tensor(entry: Dict[str, Any], key: str) -> torch.Tensor:
         value = entry.get(key)
         if value is None:
@@ -1280,7 +1316,89 @@ class PretrainTrainer(Trainer):
         student_answer_logits: torch.Tensor,
         student_answer_labels: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        entries = self._cache_entries_for_batch(batch)
+        sample_ids = batch.get("sample_id")
+        if sample_ids is None:
+            raise ValueError(
+                "teacher KL cache requires batch sample_id metadata. "
+                "Use an InstructionDataset/InstructionMixtureDataset source."
+            )
+        labels_for_counts = batch.get("labels")
+        if labels_for_counts is None:
+            raise ValueError("teacher KL cache requires batch labels")
+        answer_counts = [
+            int((row_labels != -100).sum().item())
+            for row_labels in labels_for_counts[:, 1:]
+        ]
+        if sum(answer_counts) != int(student_answer_labels.numel()):
+            raise ValueError(
+                "teacher KL cache answer-token count does not match labels: "
+                f"selected={student_answer_labels.numel()}, counted={sum(answer_counts)}"
+            )
+        sample_weights = self._teacher_kl_sample_weights(
+            batch,
+            batch_size=len(sample_ids),
+        )
+
+        entries = []
+        selected_student_logits = []
+        selected_student_labels = []
+        selected_token_weights = []
+        missing = []
+        inactive_samples = 0
+        cursor = 0
+        for row_idx, (sample_id, answer_count, sample_weight) in enumerate(
+            zip(sample_ids, answer_counts, sample_weights)
+        ):
+            start = cursor
+            end = cursor + int(answer_count)
+            cursor = end
+            if float(sample_weight) <= 0.0:
+                inactive_samples += 1
+                continue
+            key = str(sample_id)
+            entry = self._teacher_kl_cache_entries.get(key)
+            if entry is None:
+                missing.append(key)
+                continue
+            row_logits = student_answer_logits[start:end]
+            row_labels = student_answer_labels[start:end]
+            if row_logits.numel() == 0:
+                continue
+            entries.append(entry)
+            selected_student_logits.append(row_logits)
+            selected_student_labels.append(row_labels)
+            selected_token_weights.append(
+                torch.full(
+                    (row_labels.shape[0],),
+                    float(sample_weight),
+                    device=student_answer_logits.device,
+                    dtype=torch.float32,
+                )
+            )
+        if missing:
+            preview = missing[:5]
+            suffix = "" if len(missing) <= 5 else " ..."
+            raise KeyError(
+                "teacher KL cache is missing active batch sample_id(s): "
+                f"{preview}{suffix}"
+            )
+        if not entries:
+            zero = student_answer_logits.sum() * 0.0
+            return zero, {
+                "train/teacher_kl_loss": 0.0,
+                "train/teacher_kl_weight": float(self._teacher_kl_weight),
+                "train/teacher_kl_answer_tokens": 0.0,
+                "train/teacher_kl_answer_tokens_total": float(
+                    student_answer_labels.numel()
+                ),
+                "train/teacher_kl_temperature": float(self._teacher_kl_temperature),
+                "train/teacher_kl_cache_hits": 0.0,
+                "train/teacher_kl_active_samples": 0.0,
+                "train/teacher_kl_inactive_samples": float(inactive_samples),
+            }
+        student_answer_logits = torch.cat(selected_student_logits, dim=0)
+        student_answer_labels = torch.cat(selected_student_labels, dim=0)
+        token_weights = torch.cat(selected_token_weights, dim=0)
         labels = torch.cat(
             [self._cache_tensor(entry, "labels").long() for entry in entries],
             dim=0,
@@ -1348,7 +1466,10 @@ class PretrainTrainer(Trainer):
                 teacher_remainder.log() - student_remainder.log()
             )
 
-        kl = (kl_terms.sum(dim=-1) + remainder_terms).mean()
+        per_token_kl = kl_terms.sum(dim=-1) + remainder_terms
+        kl = (
+            per_token_kl * token_weights.to(device=per_token_kl.device)
+        ).sum() / token_weights.to(device=per_token_kl.device).sum().clamp_min(1e-12)
         kl = kl * (temperature ** 2)
         student_top1 = student_answer_logits.detach().argmax(dim=-1)
         teacher_top1 = topk_ids[:, 0]
@@ -1357,8 +1478,17 @@ class PretrainTrainer(Trainer):
             "train/teacher_kl_loss": float(kl.detach().item()),
             "train/teacher_kl_weight": float(self._teacher_kl_weight),
             "train/teacher_kl_answer_tokens": float(student_answer_labels.numel()),
+            "train/teacher_kl_answer_tokens_total": float(
+                sum(answer_counts)
+            ),
             "train/teacher_kl_temperature": float(temperature),
             "train/teacher_kl_cache_hits": float(len(entries)),
+            "train/teacher_kl_active_samples": float(len(entries)),
+            "train/teacher_kl_inactive_samples": float(inactive_samples),
+            "train/teacher_kl_mean_sample_weight": float(
+                sum(weight for weight in sample_weights if weight > 0.0)
+                / max(len(entries), 1)
+            ),
             "train/teacher_kl_cache_top_k": float(topk_ids.shape[1]),
             "train/teacher_kl_cache_remainder_mass": float(
                 remainder_probs.detach().mean().item()
@@ -1390,6 +1520,10 @@ class PretrainTrainer(Trainer):
             "answer_text",
             "mixture_source",
             "source_local_index",
+            "teacher_kl_weight",
+            "loss_family",
+            "dataset_family",
+            "sample_weight",
         }
         if self._contrastive_answer_suppression:
             trainer_only.add("negative_images")

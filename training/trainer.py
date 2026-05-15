@@ -91,6 +91,7 @@ class TrainerConfig:
     save_llm_checkpoint: bool = True
     save_llm_base_weights: bool = False
     commit_on_save: bool = False
+    save_checkpoint_steps: tuple = field(default_factory=tuple)
     preserve_checkpoint_steps: tuple = field(default_factory=lambda: (300, 1000, 2000, 3000))
 
     # Logging
@@ -548,7 +549,15 @@ class Trainer:
                 reached_max_steps = bool(
                     self.config.max_steps and self.global_step >= self.config.max_steps
                 )
-                if self.global_step % self.config.save_steps == 0 or reached_max_steps:
+                exact_save_steps = set(
+                    int(step) for step in (self.config.save_checkpoint_steps or ())
+                )
+                periodic_save_due = (
+                    self.config.save_steps
+                    and self.global_step % int(self.config.save_steps) == 0
+                )
+                exact_save_due = self.global_step in exact_save_steps
+                if periodic_save_due or exact_save_due or reached_max_steps:
                     self._save_checkpoint()
 
                 # Check max steps
