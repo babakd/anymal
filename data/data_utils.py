@@ -622,6 +622,10 @@ def collate_fn(
         "answer_text",
         "mixture_source",
         "source_local_index",
+        "teacher_kl_weight",
+        "loss_family",
+        "dataset_family",
+        "sample_weight",
     ):
         if any(meta_key in sample for sample in batch):
             result[meta_key] = [sample.get(meta_key) for sample in batch]
