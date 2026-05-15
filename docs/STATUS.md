@@ -91,6 +91,38 @@ checks. A lightweight ChartQA val n200 expanded probe also favored V11
 
 The V13 ledger lives at `experiments/v13_qwen/results.md`.
 
+## Latest V15 Capability Note
+
+The V15 Qwen3 vision-adaptation campaign on 2026-05-14/15 closed the final
+connector-isolation ablation and tested capability-led adaptation on
+ChartQA/TextVQA with V11 retained as teacher. The 128-token spatial-grid
+no-position connector ablation was negative, so pure connector replacement
+should not remain the main hill.
+
+The best useful signal came from the connector-only balanced data/objective
+branch:
+
+```text
+/checkpoints/pretrain-output/v15-qwen3-balanced-v11-cachekl-lr2e6-3000/checkpoint-3000
+```
+
+It improved TextVQA and ChartQA on n1000 slices but did not beat V11 overall:
+
+```text
+V11 TextVQA n1000:        exact 28.5 / soft 26.47
+V15 TextVQA n1000:        exact 32.3 / soft 29.93
+V11 ChartQA n1000:        7.8
+V15 ChartQA n1000:        9.7
+V11 GQA trusted n1000:    44.9
+V15 GQA n1000:            42.2
+V15 clean VQA n1000:      63.967
+V15 POPE adversarial:     80.000
+```
+
+Vision-only, joint vision+connector, and high-resolution frozen-SigLIP controls
+did not beat the connector-only balanced branch. The V15 ledger lives at
+`experiments/v15_qwen/results.md`.
+
 ## Active Direction
 
 The V12/V13 aggressive Qwen3 searches pushed the major planned high-ceiling
@@ -108,10 +140,10 @@ Current operating stance:
 - Do not rerun V12/V13 DeepStack, token-budget, spatial-grid, AnyRes,
   spatial-tail, visual-cross-attention, or final-block SigLIP recipes without a
   new mechanism or diagnostic.
-- The next serious hill should start with a reliable expanded benchmark and data
-  path, especially TextVQA/ChartQA or other OCR/chart/compositional tasks, then
-  use V11 replay KL and controls rather than another connector-only geometry
-  variant.
+- The next serious hill should continue the V15 data/objective signal only with
+  stronger GQA retention constraints, lower or narrower connector adaptation,
+  and explicit connector-output drift logging. Do not promote V15 checkpoint-3000
+  over V11.
 - Keep generated eval dumps out of git unless they are curated summaries.
 
 Do not rely on older V3/V4 handoff text as the current state. Those documents
