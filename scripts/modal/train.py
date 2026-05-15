@@ -1234,6 +1234,10 @@ class Trainer:
         pretrain_connector_rms_regularizer_alpha: float = 0.0,
         pretrain_connector_rms_regularizer_target: str = "batch_text",
         pretrain_gradient_accumulation_steps: int = 8,
+        pretrain_save_steps: int = None,
+        pretrain_save_checkpoint_steps: str = None,
+        pretrain_save_total_limit: int = 5,
+        pretrain_preserve_checkpoint_steps: str = None,
         pretrain_teacher_kl_weight: float = 0.0,
         pretrain_teacher_kl_image_tokens: int = 0,
         pretrain_teacher_kl_temperature: float = 1.0,
@@ -1527,6 +1531,10 @@ class Trainer:
                 pretrain_connector_rms_regularizer_alpha=pretrain_connector_rms_regularizer_alpha,
                 pretrain_connector_rms_regularizer_target=pretrain_connector_rms_regularizer_target,
                 pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
+                pretrain_save_steps=pretrain_save_steps,
+                pretrain_save_checkpoint_steps=pretrain_save_checkpoint_steps,
+                pretrain_save_total_limit=pretrain_save_total_limit,
+                pretrain_preserve_checkpoint_steps=pretrain_preserve_checkpoint_steps,
                 pretrain_teacher_kl_weight=pretrain_teacher_kl_weight,
                 pretrain_teacher_kl_image_tokens=pretrain_teacher_kl_image_tokens,
                 pretrain_teacher_kl_temperature=pretrain_teacher_kl_temperature,
@@ -2520,6 +2528,9 @@ def run_pretrain(
     pretrain_connector_rms_regularizer_target="batch_text",
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
+    pretrain_save_checkpoint_steps=None,
+    pretrain_save_total_limit=5,
+    pretrain_preserve_checkpoint_steps=None,
     pretrain_teacher_kl_weight=0.0,
     pretrain_teacher_kl_image_tokens=0,
     pretrain_teacher_kl_temperature=1.0,
@@ -3422,7 +3433,17 @@ def run_pretrain(
     # Create trainer config
     eval_steps = max(50, max_steps // 10)
     save_steps = int(pretrain_save_steps or _checkpoint_save_interval(max_steps))
+    save_checkpoint_steps = _parse_checkpoint_step_list(
+        pretrain_save_checkpoint_steps
+    )
+    preserve_checkpoint_steps = _parse_checkpoint_step_list(
+        pretrain_preserve_checkpoint_steps
+    )
     print(f"Stage 1 checkpoint save steps: {save_steps}")
+    if save_checkpoint_steps is not None:
+        print(f"Saving exact Stage 1 checkpoint steps: {save_checkpoint_steps}")
+    if preserve_checkpoint_steps is not None:
+        print(f"Preserving Stage 1 checkpoint steps: {preserve_checkpoint_steps}")
 
     config = PretrainConfig(
         max_steps=max_steps,
@@ -3433,7 +3454,11 @@ def run_pretrain(
         amp_dtype="bfloat16",
         logging_steps=10,
         save_steps=save_steps,
-        save_total_limit=5,
+        save_checkpoint_steps=save_checkpoint_steps or (),
+        save_total_limit=int(pretrain_save_total_limit),
+        preserve_checkpoint_steps=preserve_checkpoint_steps
+        if preserve_checkpoint_steps is not None
+        else (300, 1000, 2000, 3000),
         eval_steps=eval_steps,
         max_eval_batches=200,
         output_dir=output_dir,
@@ -7539,6 +7564,9 @@ def _pretrain_worker(local_rank, world_size, config):
             ),
             pretrain_gradient_accumulation_steps=config.get("pretrain_gradient_accumulation_steps", 8),
             pretrain_save_steps=config.get("pretrain_save_steps"),
+            pretrain_save_checkpoint_steps=config.get("pretrain_save_checkpoint_steps"),
+            pretrain_save_total_limit=config.get("pretrain_save_total_limit", 5),
+            pretrain_preserve_checkpoint_steps=config.get("pretrain_preserve_checkpoint_steps"),
             pretrain_teacher_kl_weight=config.get("pretrain_teacher_kl_weight", 0.0),
             pretrain_teacher_kl_image_tokens=config.get(
                 "pretrain_teacher_kl_image_tokens",
@@ -7707,6 +7735,9 @@ def _run_pretrain_distributed(
     pretrain_connector_rms_regularizer_target="batch_text",
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
+    pretrain_save_checkpoint_steps=None,
+    pretrain_save_total_limit=5,
+    pretrain_preserve_checkpoint_steps=None,
     pretrain_teacher_kl_weight=0.0,
     pretrain_teacher_kl_image_tokens=0,
     pretrain_teacher_kl_temperature=1.0,
@@ -7819,6 +7850,9 @@ def _run_pretrain_distributed(
         "pretrain_connector_rms_regularizer_target": pretrain_connector_rms_regularizer_target,
         "pretrain_gradient_accumulation_steps": pretrain_gradient_accumulation_steps,
         "pretrain_save_steps": pretrain_save_steps,
+        "pretrain_save_checkpoint_steps": pretrain_save_checkpoint_steps,
+        "pretrain_save_total_limit": pretrain_save_total_limit,
+        "pretrain_preserve_checkpoint_steps": pretrain_preserve_checkpoint_steps,
         "pretrain_teacher_kl_weight": pretrain_teacher_kl_weight,
         "pretrain_teacher_kl_image_tokens": pretrain_teacher_kl_image_tokens,
         "pretrain_teacher_kl_temperature": pretrain_teacher_kl_temperature,
@@ -7915,6 +7949,9 @@ def pretrain_distributed(
     pretrain_connector_rms_regularizer_target="batch_text",
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
+    pretrain_save_checkpoint_steps=None,
+    pretrain_save_total_limit=5,
+    pretrain_preserve_checkpoint_steps=None,
     pretrain_teacher_kl_weight=0.0,
     pretrain_teacher_kl_image_tokens=0,
     pretrain_teacher_kl_temperature=1.0,
@@ -7996,6 +8033,9 @@ def pretrain_distributed(
         pretrain_connector_rms_regularizer_target=pretrain_connector_rms_regularizer_target,
         pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
         pretrain_save_steps=pretrain_save_steps,
+        pretrain_save_checkpoint_steps=pretrain_save_checkpoint_steps,
+        pretrain_save_total_limit=pretrain_save_total_limit,
+        pretrain_preserve_checkpoint_steps=pretrain_preserve_checkpoint_steps,
         pretrain_teacher_kl_weight=pretrain_teacher_kl_weight,
         pretrain_teacher_kl_image_tokens=pretrain_teacher_kl_image_tokens,
         pretrain_teacher_kl_temperature=pretrain_teacher_kl_temperature,
@@ -8088,6 +8128,9 @@ def pretrain_distributed_h100(
     pretrain_connector_rms_regularizer_target="batch_text",
     pretrain_gradient_accumulation_steps=8,
     pretrain_save_steps=None,
+    pretrain_save_checkpoint_steps=None,
+    pretrain_save_total_limit=5,
+    pretrain_preserve_checkpoint_steps=None,
     pretrain_teacher_kl_weight=0.0,
     pretrain_teacher_kl_image_tokens=0,
     pretrain_teacher_kl_temperature=1.0,
@@ -8169,6 +8212,9 @@ def pretrain_distributed_h100(
         pretrain_connector_rms_regularizer_target=pretrain_connector_rms_regularizer_target,
         pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
         pretrain_save_steps=pretrain_save_steps,
+        pretrain_save_checkpoint_steps=pretrain_save_checkpoint_steps,
+        pretrain_save_total_limit=pretrain_save_total_limit,
+        pretrain_preserve_checkpoint_steps=pretrain_preserve_checkpoint_steps,
         pretrain_teacher_kl_weight=pretrain_teacher_kl_weight,
         pretrain_teacher_kl_image_tokens=pretrain_teacher_kl_image_tokens,
         pretrain_teacher_kl_temperature=pretrain_teacher_kl_temperature,
@@ -8401,6 +8447,9 @@ def main(
     pretrain_connector_rms_regularizer_target: str = "batch_text",
     pretrain_gradient_accumulation_steps: int = 8,
     pretrain_save_steps: int = None,
+    pretrain_save_checkpoint_steps: str = None,
+    pretrain_save_total_limit: int = 5,
+    pretrain_preserve_checkpoint_steps: str = None,
     pretrain_teacher_kl_weight: float = 0.0,
     pretrain_teacher_kl_image_tokens: int = 0,
     pretrain_teacher_kl_temperature: float = 1.0,
@@ -8714,6 +8763,17 @@ def main(
             "  Stage 1 checkpoint save steps: "
             f"{pretrain_save_steps or _checkpoint_save_interval(max_steps)}"
         )
+        if pretrain_save_checkpoint_steps:
+            print(
+                "  Exact Stage 1 checkpoint saves: "
+                f"{pretrain_save_checkpoint_steps}"
+            )
+        print(f"  Stage 1 save total limit: {pretrain_save_total_limit}")
+        if pretrain_preserve_checkpoint_steps:
+            print(
+                "  Preserve Stage 1 checkpoints: "
+                f"{pretrain_preserve_checkpoint_steps}"
+            )
         if contrastive_answer_suppression:
             print("  Stage 1 contrastive answer suppression: enabled")
             print(f"  Contrastive lambda: {contrastive_lambda}")
@@ -8784,6 +8844,9 @@ def main(
             pretrain_connector_rms_regularizer_target=pretrain_connector_rms_regularizer_target,
             pretrain_gradient_accumulation_steps=pretrain_gradient_accumulation_steps,
             pretrain_save_steps=pretrain_save_steps,
+            pretrain_save_checkpoint_steps=pretrain_save_checkpoint_steps,
+            pretrain_save_total_limit=pretrain_save_total_limit,
+            pretrain_preserve_checkpoint_steps=pretrain_preserve_checkpoint_steps,
             pretrain_teacher_kl_weight=pretrain_teacher_kl_weight,
             pretrain_teacher_kl_image_tokens=pretrain_teacher_kl_image_tokens,
             pretrain_teacher_kl_temperature=pretrain_teacher_kl_temperature,
