@@ -20,12 +20,36 @@ every historical ledger.
 
 Primary ledger:
 
+- `experiments/v15_qwen/results.md`
 - `experiments/v13_qwen/results.md`
 - `experiments/v12_qwen/results.md`
 - `experiments/v11_qwen/results.md`
 - `experiments/v9_qwen/results.md`
 - `experiments/v10_qwen/ceiling_results.md`
 - `docs/STATUS.md`
+
+## Latest V15 Capability Note
+
+The 2026-05-14/15 V15 campaign moved from connector-only geometry search to
+ChartQA/TextVQA capability training with V11 replay KL. The final 128-token
+spatial-grid/no-position connector-isolation ablation was negative, closing
+pure connector replacement as the main hill.
+
+The connector-only balanced branch is useful but not promotable:
+
+| Metric | V11 | V15 balanced checkpoint-3000 |
+| --- | ---: | ---: |
+| TextVQA n1000 | exact 28.5 / soft 26.47 | exact 32.3 / soft 29.93 |
+| ChartQA n1000 | 7.8 | 9.7 |
+| GQA n1000 | 44.9 trusted search | 42.2 |
+| Clean VQA | 65.922 n3000 mean | 63.967 n1000 seed42 |
+| POPE adversarial | 80.100 n1000 | 80.000 n1000 |
+
+Attribution: the gain came from data/objective plus connector adaptation.
+Vision-only, joint vision+connector, and high-resolution frozen-SigLIP controls
+did not beat the connector-only balanced run. Keep V11 as incumbent; the next
+V15-style run should strengthen GQA retention and add explicit connector-output
+drift logging. See `experiments/v15_qwen/results.md`.
 
 ## Latest V13 Substrate-Break Note
 
@@ -89,6 +113,7 @@ pending the GQA-slice decision.
 
 | Campaign | Where to read | Current interpretation |
 | --- | --- | --- |
+| V15 Qwen capability/vision adaptation | `experiments/v15_qwen/` | TextVQA/ChartQA signal from connector-only data recipe, but GQA retention loss prevents promotion. |
 | V13 Qwen substrate break | `experiments/v13_qwen/` | No robust successor; connector-only geometry changes appear exhausted for this stack. |
 | V12 Qwen ceiling search | `experiments/v12_qwen/` | No robust successor; V11 remains the frontier after matched n3000 checks. |
 | V11 Qwen frontier | `experiments/v11_qwen/` | Current Qwen frontier and active incumbent. |
