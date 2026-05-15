@@ -294,6 +294,14 @@ class InstructionDataset(Dataset):
             "question_text": question_text,
             "answer_text": answer_text,
         }
+        for meta_key in (
+            "teacher_kl_weight",
+            "loss_family",
+            "dataset_family",
+            "sample_weight",
+        ):
+            if meta_key in sample:
+                result[meta_key] = sample[meta_key]
         negative_images = sample.get("negative_images") or []
         if negative_images:
             result["negative_images"] = torch.stack(
@@ -765,6 +773,8 @@ class InstructionMixtureDataset(Dataset):
         strategy: str = "balanced",
         source_names: Optional[List[str]] = None,
         source_weights: Optional[List[float]] = None,
+        length: Optional[int] = None,
+        weighted_index_mode: str = "sequential",
     ):
         if not datasets:
             raise ValueError("InstructionMixtureDataset requires at least one dataset")
@@ -776,6 +786,9 @@ class InstructionMixtureDataset(Dataset):
         self.datasets = datasets
         self.strategy = strategy
         self.source_names = source_names or [f"source_{i}" for i in range(len(datasets))]
+        self._weighted_index_mode = str(weighted_index_mode or "sequential").strip().lower()
+        if self._weighted_index_mode not in {"sequential", "hash"}:
+            raise ValueError("weighted_index_mode must be one of ['sequential', 'hash']")
 
         if len(self.source_names) != len(self.datasets):
             raise ValueError("source_names length must match datasets length")
@@ -812,6 +825,10 @@ class InstructionMixtureDataset(Dataset):
             self._length = max(len(dataset) for dataset in datasets) * len(self._weighted_cycle)
         else:
             self._length = total
+        if length is not None:
+            self._length = int(length)
+            if self._length <= 0:
+                raise ValueError(f"InstructionMixtureDataset length must be > 0, got {length}")
 
         sizes = ", ".join(
             f"{name}={len(dataset)}" for name, dataset in zip(self.source_names, self.datasets)
@@ -841,7 +858,15 @@ class InstructionMixtureDataset(Dataset):
 
         if self.strategy == "weighted":
             source_idx = self._weighted_cycle[idx % len(self._weighted_cycle)]
-            local_idx = (idx // len(self._weighted_cycle)) % len(self.datasets[source_idx])
+            stride = idx // len(self._weighted_cycle)
+            if self._weighted_index_mode == "hash":
+                local_idx = (
+                    stride * 1_000_003
+                    + (idx + 1) * 97_531
+                    + (source_idx + 1) * 31_337
+                ) % len(self.datasets[source_idx])
+            else:
+                local_idx = stride % len(self.datasets[source_idx])
             return _with_source_metadata(source_idx, local_idx)
 
         for source_idx, end in enumerate(self._cumulative_lengths):
@@ -914,15 +939,46 @@ def build_instruction_mixture_dataset(
                 rng.shuffle(samples)
             dataset.samples = samples[: int(max_samples)]
 
+        source_metadata = {}
+        for key in (
+            "teacher_kl_weight",
+            "loss_family",
+            "dataset_family",
+            "sample_weight",
+        ):
+            if key in entry:
+                source_metadata[key] = entry[key]
+        extra_metadata = entry.get("sample_metadata", entry.get("metadata", {}))
+        if extra_metadata:
+            if not isinstance(extra_metadata, dict):
+                raise ValueError(
+                    f"Mixture metadata for source {entry.get('name', i)} must be a dict"
+                )
+            source_metadata.update(extra_metadata)
+        if source_metadata:
+            if not hasattr(dataset, "samples"):
+                raise ValueError(
+                    f"Cannot attach source metadata to mixture source {entry.get('name', i)} "
+                    "because the dataset does not expose a samples list."
+                )
+            dataset.samples = [
+                {**sample, **source_metadata}
+                for sample in dataset.samples
+            ]
+
         datasets.append(dataset)
         names.append(entry.get("name", f"source_{i}"))
         weights.append(float(entry.get("weight", 1.0)))
 
+    mixture_length = mixture_config.get("length", mixture_config.get("epoch_length"))
+    weighted_index_mode = mixture_config.get("weighted_index_mode", "sequential")
     return InstructionMixtureDataset(
         datasets=datasets,
         strategy=strategy,
         source_names=names,
         source_weights=weights,
+        length=mixture_length,
+        weighted_index_mode=weighted_index_mode,
     )
 
 

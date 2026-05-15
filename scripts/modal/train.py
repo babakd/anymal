@@ -3299,6 +3299,11 @@ def run_pretrain(
             teacher_kl_mode = "sidecar_projector"
         elif connector_key == "mlp_anyres_projector" and pretrain_teacher_kl_checkpoint:
             teacher_kl_mode = "sidecar_projector"
+        elif (
+            pretrain_teacher_kl_cache_path
+            and teacher_kl_image_tokens == int(getattr(model, "num_image_tokens", 0) or 0)
+        ):
+            teacher_kl_mode = "cached_answer_tokens"
         else:
             teacher_kl_mode = "spatial_tail_self"
         model.stage1_teacher_kl_mode = teacher_kl_mode
@@ -3348,6 +3353,12 @@ def run_pretrain(
         "v12_qwen_gqa_spatial_focus_stage1b",
         "v12_qwen_gqa_spatial_contrastive_stage1b",
         "v14_qwen_imitation_replay_stage1b",
+        "v15_qwen_retention_replay_stage1b",
+        "v15_qwen_balanced_stage1b",
+        "v15_qwen_balanced_notext_stage1b",
+        "v15_qwen_chartqa_stage1b",
+        "v15_qwen_textvqa_stage1b",
+        "v15_qwen_counterfactual_contrastive_stage1b",
     }:
         grounding_dataset_name = dataset
         dataset = load_finetune_dataset(
@@ -3521,9 +3532,15 @@ def load_finetune_dataset(
                     source_idx = dataset._weighted_cycle[
                         idx % len(dataset._weighted_cycle)
                     ]
-                    local_idx = (idx // len(dataset._weighted_cycle)) % len(
-                        dataset.datasets[source_idx]
-                    )
+                    stride = idx // len(dataset._weighted_cycle)
+                    if getattr(dataset, "_weighted_index_mode", "sequential") == "hash":
+                        local_idx = (
+                            stride * 1_000_003
+                            + (idx + 1) * 97_531
+                            + (source_idx + 1) * 31_337
+                        ) % len(dataset.datasets[source_idx])
+                    else:
+                        local_idx = stride % len(dataset.datasets[source_idx])
                 elif strategy == "concat":
                     for source_idx, end in enumerate(dataset._cumulative_lengths):
                         start = (
@@ -5060,6 +5077,278 @@ def load_finetune_dataset(
             dist.barrier()
         return output_path, gqa_image_dir
 
+    def _safe_hf_filename(prefix, split, source_index, image_id=None):
+        raw = f"{prefix}_{split}_{source_index}_{image_id or ''}"
+        safe = "".join(
+            ch if ch.isalnum() or ch in {"_", "-"} else "_"
+            for ch in str(raw)
+        ).strip("_")
+        return f"{safe}.jpg"
+
+    def _hf_image_to_rgb(image_value, fallback_urls=()):
+        from io import BytesIO
+
+        import requests
+        from PIL import Image
+
+        if hasattr(image_value, "convert"):
+            return image_value.convert("RGB")
+        if isinstance(image_value, dict):
+            if image_value.get("bytes"):
+                return Image.open(BytesIO(image_value["bytes"])).convert("RGB")
+            if image_value.get("path") and os.path.exists(image_value["path"]):
+                return Image.open(image_value["path"]).convert("RGB")
+        if isinstance(image_value, str):
+            if os.path.exists(image_value):
+                return Image.open(image_value).convert("RGB")
+            if image_value.startswith(("http://", "https://")):
+                response = requests.get(image_value, timeout=60)
+                response.raise_for_status()
+                return Image.open(BytesIO(response.content)).convert("RGB")
+        for url in fallback_urls:
+            if not url:
+                continue
+            response = requests.get(str(url), timeout=60)
+            response.raise_for_status()
+            return Image.open(BytesIO(response.content)).convert("RGB")
+        raise RuntimeError(
+            f"Unsupported HF image payload type: {type(image_value).__name__}"
+        )
+
+    def _first_nonempty_text(values):
+        for value in values:
+            if isinstance(value, (list, tuple)):
+                nested = _first_nonempty_text(value)
+                if nested:
+                    return nested
+                continue
+            text = " ".join(str(value or "").split())
+            if text:
+                return text
+        return ""
+
+    def _chartqa_instruction_path(split="train", max_samples=20000, seed=1501):
+        from datasets import load_dataset
+
+        chartqa_dir = "/checkpoints/chartqa_data"
+        chartqa_image_dir = "/checkpoints/chartqa_images_hf"
+        os.makedirs(chartqa_dir, exist_ok=True)
+        os.makedirs(chartqa_image_dir, exist_ok=True)
+        safe_split = str(split).replace("/", "_")
+        output_path = (
+            f"{chartqa_dir}/v15_chartqa_{safe_split}_seed{int(seed)}"
+            f"_n{int(max_samples)}.json"
+        )
+        dist = _distributed_backend()
+        if dist is not None and dist.get_rank() != 0:
+            dist.barrier()
+            if not os.path.exists(output_path):
+                raise RuntimeError(
+                    f"Rank 0 did not materialize ChartQA data at {output_path}"
+                )
+            return output_path, chartqa_image_dir
+        if os.path.exists(output_path):
+            if dist is not None:
+                dist.barrier()
+            return output_path, chartqa_image_dir
+
+        dataset_id = "anhdang000/ChartQA-V2"
+        rows = load_dataset(
+            dataset_id,
+            split=str(split),
+            cache_dir="/checkpoints/hf_datasets",
+        )
+        indices = list(range(len(rows)))
+        rng = random.Random(int(seed))
+        rng.shuffle(indices)
+        if int(max_samples) > 0:
+            indices = indices[: int(max_samples)]
+
+        samples = []
+        written = 0
+        cached = 0
+        skipped_reserved_markers = 0
+        for ordinal, source_index in enumerate(indices):
+            row = rows[int(source_index)]
+            question = _first_nonempty_text(
+                [row.get("query"), row.get("question"), row.get("problem")]
+            )
+            answer = _first_nonempty_text(
+                [row.get("label"), row.get("answer"), row.get("answers")]
+            )
+            if not question or not answer:
+                continue
+            if _has_reserved_chat_markers(question) or _has_reserved_chat_markers(answer):
+                skipped_reserved_markers += 1
+                continue
+            image_value = row.get("image")
+            if image_value is None and row.get("images"):
+                image_values = row.get("images")
+                if isinstance(image_values, (list, tuple)) and image_values:
+                    image_value = image_values[0]
+            filename = _safe_hf_filename("chartqa", safe_split, source_index)
+            image_path = os.path.join(chartqa_image_dir, filename)
+            if os.path.exists(image_path):
+                cached += 1
+            else:
+                _hf_image_to_rgb(image_value).save(
+                    image_path,
+                    format="JPEG",
+                    quality=95,
+                )
+                written += 1
+                if written % 1000 == 0:
+                    print(
+                        f"ChartQA cache progress: samples={len(samples)} "
+                        f"images_written={written}; images_cached={cached}"
+                    )
+                    volume.commit()
+            samples.append(
+                {
+                    "id": f"chartqa_{safe_split}_{source_index}",
+                    "image": filename,
+                    "source_dataset": dataset_id,
+                    "source_split": str(split),
+                    "source_index": int(source_index),
+                    "conversations": [
+                        {"from": "human", "value": f"<image>\n{question}"},
+                        {"from": "gpt", "value": answer},
+                    ],
+                }
+            )
+
+        if not samples:
+            raise RuntimeError("ChartQA instruction generation produced no samples.")
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(
+            f"Built {len(samples)} ChartQA instruction samples at {output_path}; "
+            f"images_written={written}; images_cached={cached}; "
+            f"skipped_reserved_markers={skipped_reserved_markers}"
+        )
+        volume.commit()
+        if dist is not None:
+            dist.barrier()
+        return output_path, chartqa_image_dir
+
+    def _textvqa_instruction_path(
+        split="train",
+        max_samples=20000,
+        seed=1502,
+        dataset_id="lmms-lab/textvqa",
+    ):
+        from datasets import load_dataset
+
+        textvqa_dir = "/checkpoints/textvqa_data"
+        textvqa_image_dir = "/checkpoints/textvqa_images_hf"
+        os.makedirs(textvqa_dir, exist_ok=True)
+        os.makedirs(textvqa_image_dir, exist_ok=True)
+        safe_dataset = str(dataset_id).replace("/", "_")
+        safe_split = str(split).replace("/", "_")
+        output_path = (
+            f"{textvqa_dir}/v15_{safe_dataset}_{safe_split}_seed{int(seed)}"
+            f"_n{int(max_samples)}.json"
+        )
+        dist = _distributed_backend()
+        if dist is not None and dist.get_rank() != 0:
+            dist.barrier()
+            if not os.path.exists(output_path):
+                raise RuntimeError(
+                    f"Rank 0 did not materialize TextVQA data at {output_path}"
+                )
+            return output_path, textvqa_image_dir
+        if os.path.exists(output_path):
+            if dist is not None:
+                dist.barrier()
+            return output_path, textvqa_image_dir
+
+        rows = load_dataset(
+            dataset_id,
+            split=str(split),
+            cache_dir="/checkpoints/hf_datasets",
+        )
+        indices = list(range(len(rows)))
+        rng = random.Random(int(seed))
+        rng.shuffle(indices)
+        if int(max_samples) > 0:
+            indices = indices[: int(max_samples)]
+
+        samples = []
+        written = 0
+        cached = 0
+        skipped_image = 0
+        skipped_reserved_markers = 0
+        for source_index in indices:
+            row = rows[int(source_index)]
+            question = _first_nonempty_text([row.get("question"), row.get("query")])
+            answer = _first_nonempty_text(
+                [row.get("answers"), row.get("answer"), row.get("label")]
+            )
+            if not question or not answer:
+                continue
+            if _has_reserved_chat_markers(question) or _has_reserved_chat_markers(answer):
+                skipped_reserved_markers += 1
+                continue
+            image_id = row.get("image_id", row.get("image_path", source_index))
+            filename = _safe_hf_filename("textvqa", safe_split, source_index, image_id)
+            image_path = os.path.join(textvqa_image_dir, filename)
+            if os.path.exists(image_path):
+                cached += 1
+            else:
+                try:
+                    _hf_image_to_rgb(
+                        row.get("image"),
+                        fallback_urls=(
+                            row.get("flickr_300k_url"),
+                            row.get("flickr_original_url"),
+                            row.get("image_url"),
+                        ),
+                    ).save(image_path, format="JPEG", quality=95)
+                    written += 1
+                    if written % 1000 == 0:
+                        print(
+                            f"TextVQA cache progress: samples={len(samples)} "
+                            f"images_written={written}; images_cached={cached}; "
+                            f"skipped_image={skipped_image}"
+                        )
+                        volume.commit()
+                except Exception as exc:
+                    skipped_image += 1
+                    if skipped_image <= 5:
+                        print(
+                            f"Skipping TextVQA row {source_index}; image load failed: {exc}"
+                        )
+                    continue
+            samples.append(
+                {
+                    "id": f"textvqa_{safe_split}_{source_index}_{image_id}",
+                    "image": filename,
+                    "source_dataset": dataset_id,
+                    "source_split": str(split),
+                    "source_index": int(source_index),
+                    "textvqa_image_id": str(image_id),
+                    "conversations": [
+                        {"from": "human", "value": f"<image>\n{question}"},
+                        {"from": "gpt", "value": answer},
+                    ],
+                }
+            )
+
+        if not samples:
+            raise RuntimeError("TextVQA instruction generation produced no samples.")
+        with open(output_path, "w") as f:
+            _json.dump(samples, f)
+        print(
+            f"Built {len(samples)} TextVQA instruction samples at {output_path}; "
+            f"images_written={written}; images_cached={cached}; "
+            f"skipped_image={skipped_image}; "
+            f"skipped_reserved_markers={skipped_reserved_markers}"
+        )
+        volume.commit()
+        if dist is not None:
+            dist.barrier()
+        return output_path, textvqa_image_dir
+
     def _coco_absence_pope_style_path(max_samples=10000):
         """Build POPE-style object absence probes from COCO train2017 instances."""
         output_path = (
@@ -5449,6 +5738,415 @@ def load_finetune_dataset(
             image_augmentation_mode="none",
             filter_to_available_images=True,
         )
+        print(f"Loaded {len(ds)} {dataset} instruction samples")
+        return ds
+
+    def _v15_retention_sources(
+        *,
+        calibration_prompt,
+        pope_prompt,
+        vqa_direct_path,
+        vqa_image_dir,
+        gqa_path,
+        gqa_image_dir,
+        coco_direct_path,
+        short_direct_path,
+        pope_presence_path,
+        pope_absence_path,
+        weighted=False,
+    ):
+        weights = {
+            "vqa_replay_direct": 8.0,
+            "gqa_replay_direct": 8.0,
+            "coco_object_replay": 5.0,
+            "short_llava_replay": 3.0,
+            "pope_presence_replay": 3.0,
+            "pope_absence_replay": 3.0,
+        }
+
+        def _source(entry):
+            entry.update(
+                {
+                    "teacher_kl_weight": 1.0,
+                    "loss_family": "retention_replay",
+                    "dataset_family": "retention",
+                }
+            )
+            if weighted:
+                entry["weight"] = weights[entry["name"]]
+            return entry
+
+        return [
+            _source(
+                {
+                    "name": "vqa_replay_direct",
+                    "data_path": vqa_direct_path,
+                    "image_dir": vqa_image_dir,
+                    "system_prompt": calibration_prompt,
+                    "max_samples": 2000,
+                    "sample_seed": 1401,
+                    "use_augmentation": False,
+                }
+            ),
+            _source(
+                {
+                    "name": "gqa_replay_direct",
+                    "data_path": gqa_path,
+                    "image_dir": gqa_image_dir,
+                    "system_prompt": calibration_prompt,
+                    "max_samples": 2000,
+                    "sample_seed": 1402,
+                    "use_augmentation": False,
+                }
+            ),
+            _source(
+                {
+                    "name": "coco_object_replay",
+                    "data_path": coco_direct_path,
+                    "image_dir": image_dir,
+                    "system_prompt": calibration_prompt,
+                    "max_samples": 1200,
+                    "sample_seed": 1403,
+                    "use_augmentation": False,
+                }
+            ),
+            _source(
+                {
+                    "name": "short_llava_replay",
+                    "data_path": short_direct_path,
+                    "image_dir": image_dir,
+                    "system_prompt": calibration_prompt,
+                    "max_samples": 600,
+                    "sample_seed": 1404,
+                    "use_augmentation": False,
+                }
+            ),
+            _source(
+                {
+                    "name": "pope_presence_replay",
+                    "data_path": pope_presence_path,
+                    "image_dir": image_dir,
+                    "system_prompt": pope_prompt,
+                    "max_samples": 600,
+                    "sample_seed": 1405,
+                    "use_augmentation": False,
+                }
+            ),
+            _source(
+                {
+                    "name": "pope_absence_replay",
+                    "data_path": pope_absence_path,
+                    "image_dir": image_dir,
+                    "system_prompt": pope_prompt,
+                    "max_samples": 600,
+                    "sample_seed": 1406,
+                    "use_augmentation": False,
+                }
+            ),
+        ]
+
+    if dataset in {
+        "v15_qwen_retention_replay_stage1b",
+        "v15_qwen_balanced_stage1b",
+        "v15_qwen_balanced_notext_stage1b",
+        "v15_qwen_chartqa_stage1b",
+        "v15_qwen_textvqa_stage1b",
+        "v15_qwen_counterfactual_contrastive_stage1b",
+    }:
+        calibration_prompt = (
+            "Answer with only the final answer. Do not include role labels, "
+            "explanations, or the word assistant. End after the answer."
+        )
+        control_prompt = (
+            "The image may be blank, corrupted, or mismatched. If the image does "
+            "not contain enough reliable visual evidence, answer: cannot determine."
+        )
+        pope_prompt = "Answer yes or no."
+
+        if dataset == "v15_qwen_chartqa_stage1b":
+            chartqa_path, chartqa_image_dir = _chartqa_instruction_path(
+                split="train",
+                max_samples=20000,
+            )
+            ds = create_instruction_dataset(
+                data_path=chartqa_path,
+                image_dir=chartqa_image_dir,
+                tokenizer=tokenizer,
+                image_size=image_size,
+                max_length=max_length,
+                num_image_tokens=num_image_tokens,
+                image_token_policy=image_token_policy,
+                min_image_tokens=min_image_tokens,
+                max_image_tokens=max_image_tokens,
+                vision_encoder_type=vision_encoder_type,
+                vision_model_name=vision_model_name,
+                image_view_mode=image_view_mode,
+                system_prompt=calibration_prompt,
+                use_augmentation=False,
+                image_augmentation_mode="none",
+                filter_to_available_images=True,
+            )
+            if hasattr(ds, "samples"):
+                ds.samples = [
+                    {
+                        **sample,
+                        "teacher_kl_weight": 0.0,
+                        "loss_family": "chartqa",
+                        "dataset_family": "capability",
+                    }
+                    for sample in ds.samples
+                ]
+            ds = _filter_supervised_samples(ds, dataset)
+            print(f"Loaded {len(ds)} {dataset} instruction samples")
+            return ds
+
+        if dataset == "v15_qwen_textvqa_stage1b":
+            textvqa_path, textvqa_image_dir = _textvqa_instruction_path(
+                split="train",
+                max_samples=20000,
+            )
+            ds = create_instruction_dataset(
+                data_path=textvqa_path,
+                image_dir=textvqa_image_dir,
+                tokenizer=tokenizer,
+                image_size=image_size,
+                max_length=max_length,
+                num_image_tokens=num_image_tokens,
+                image_token_policy=image_token_policy,
+                min_image_tokens=min_image_tokens,
+                max_image_tokens=max_image_tokens,
+                vision_encoder_type=vision_encoder_type,
+                vision_model_name=vision_model_name,
+                image_view_mode=image_view_mode,
+                system_prompt=calibration_prompt,
+                use_augmentation=False,
+                image_augmentation_mode="none",
+                filter_to_available_images=True,
+            )
+            if hasattr(ds, "samples"):
+                ds.samples = [
+                    {
+                        **sample,
+                        "teacher_kl_weight": 0.0,
+                        "loss_family": "textvqa",
+                        "dataset_family": "capability",
+                    }
+                    for sample in ds.samples
+                ]
+            ds = _filter_supervised_samples(ds, dataset)
+            print(f"Loaded {len(ds)} {dataset} instruction samples")
+            return ds
+
+        if dataset == "v15_qwen_counterfactual_contrastive_stage1b":
+            vqa_contrastive_path, vqa_image_dir = _vqa_contrastive_answer_suppression_path(
+                max_samples=40000,
+            )
+            gqa_contrastive_path, gqa_image_dir = _gqa_contrastive_answer_suppression_path(
+                split="train_balanced",
+                max_samples=10000,
+                focus="spatial_relation",
+            )
+            ds = create_instruction_dataset(
+                data_path=None,
+                image_dir=image_dir,
+                tokenizer=tokenizer,
+                mixture_config={
+                    "strategy": "concat",
+                    "datasets": [
+                        {
+                            "name": "vqa_contrastive_answer_suppression",
+                            "data_path": vqa_contrastive_path,
+                            "image_dir": vqa_image_dir,
+                            "system_prompt": calibration_prompt,
+                            "teacher_kl_weight": 0.0,
+                            "loss_family": "contrastive_answer_suppression",
+                            "dataset_family": "counterfactual",
+                            "use_augmentation": False,
+                        },
+                        {
+                            "name": "gqa_spatial_contrastive_answer_suppression",
+                            "data_path": gqa_contrastive_path,
+                            "image_dir": gqa_image_dir,
+                            "system_prompt": calibration_prompt,
+                            "teacher_kl_weight": 0.0,
+                            "loss_family": "contrastive_answer_suppression",
+                            "dataset_family": "counterfactual",
+                            "use_augmentation": False,
+                        },
+                    ],
+                },
+                image_size=image_size,
+                max_length=max_length,
+                num_image_tokens=num_image_tokens,
+                image_token_policy=image_token_policy,
+                min_image_tokens=min_image_tokens,
+                max_image_tokens=max_image_tokens,
+                vision_encoder_type=vision_encoder_type,
+                vision_model_name=vision_model_name,
+                image_view_mode=image_view_mode,
+                use_augmentation=False,
+                image_augmentation_mode="none",
+                filter_to_available_images=True,
+            )
+            ds = _filter_supervised_samples(ds, dataset)
+            print(f"Loaded {len(ds)} {dataset} instruction samples")
+            return ds
+
+        vqa_direct_path, vqa_image_dir = _vqa_train_direct_answer_path(
+            max_samples=150000,
+        )
+        coco_direct_path = _coco_object_direct_answer_path()
+        short_direct_path = _filtered_direct_answer_path()
+        gqa_path, gqa_image_dir = _gqa_direct_answer_path(
+            split="train_balanced",
+            max_samples=10000,
+        )
+        pope_presence_path = _coco_presence_pope_style_path(max_samples=10000)
+        pope_absence_path = _coco_absence_pope_style_path(max_samples=10000)
+        retention_sources = _v15_retention_sources(
+            calibration_prompt=calibration_prompt,
+            pope_prompt=pope_prompt,
+            vqa_direct_path=vqa_direct_path,
+            vqa_image_dir=vqa_image_dir,
+            gqa_path=gqa_path,
+            gqa_image_dir=gqa_image_dir,
+            coco_direct_path=coco_direct_path,
+            short_direct_path=short_direct_path,
+            pope_presence_path=pope_presence_path,
+            pope_absence_path=pope_absence_path,
+            weighted=(dataset != "v15_qwen_retention_replay_stage1b"),
+        )
+        if dataset == "v15_qwen_retention_replay_stage1b":
+            mixture_strategy = "concat"
+            sources = retention_sources
+        else:
+            chartqa_path, chartqa_image_dir = _chartqa_instruction_path(
+                split="train",
+                max_samples=20000,
+            )
+            gqa_spatial_path, gqa_spatial_image_dir = _gqa_direct_answer_path(
+                split="train_balanced",
+                max_samples=15000,
+                focus="spatial_relation",
+            )
+            wrong_path, wrong_image_dir = _vqa_control_counterfactual_path(
+                "wrong_image_same_answer_type",
+                max_samples=20000,
+            )
+            blank_path, blank_image_dir = _vqa_control_counterfactual_path(
+                "blank_image",
+                max_samples=10000,
+            )
+            sources = list(retention_sources)
+            sources.extend(
+                [
+                    {
+                        "name": "chartqa_capability",
+                        "data_path": chartqa_path,
+                        "image_dir": chartqa_image_dir,
+                        "system_prompt": calibration_prompt,
+                        "weight": 25.0 if dataset == "v15_qwen_balanced_stage1b" else 35.0,
+                        "max_samples": 20000,
+                        "sample_seed": 1501,
+                        "teacher_kl_weight": 0.0,
+                        "loss_family": "chartqa",
+                        "dataset_family": "capability",
+                        "use_augmentation": False,
+                    },
+                    {
+                        "name": "gqa_spatial_relation_capability",
+                        "data_path": gqa_spatial_path,
+                        "image_dir": gqa_spatial_image_dir,
+                        "system_prompt": calibration_prompt,
+                        "weight": 15.0 if dataset == "v15_qwen_balanced_stage1b" else 25.0,
+                        "max_samples": 15000,
+                        "sample_seed": 1503,
+                        "teacher_kl_weight": 0.0,
+                        "loss_family": "gqa_spatial_relation",
+                        "dataset_family": "capability",
+                        "use_augmentation": False,
+                    },
+                    {
+                        "name": "vqa_wrong_image_counterfactual_ce",
+                        "data_path": wrong_path,
+                        "image_dir": wrong_image_dir,
+                        "system_prompt": control_prompt,
+                        "weight": 5.0,
+                        "max_samples": 5000,
+                        "sample_seed": 1504,
+                        "teacher_kl_weight": 0.0,
+                        "loss_family": "counterfactual_ce",
+                        "dataset_family": "counterfactual",
+                        "use_augmentation": False,
+                    },
+                    {
+                        "name": "vqa_blank_image_counterfactual_ce",
+                        "data_path": blank_path,
+                        "image_dir": blank_image_dir,
+                        "system_prompt": control_prompt,
+                        "weight": 5.0,
+                        "max_samples": 5000,
+                        "sample_seed": 1505,
+                        "teacher_kl_weight": 0.0,
+                        "loss_family": "counterfactual_ce",
+                        "dataset_family": "counterfactual",
+                        "use_augmentation": False,
+                    },
+                ]
+            )
+            if dataset == "v15_qwen_balanced_stage1b":
+                textvqa_path, textvqa_image_dir = _textvqa_instruction_path(
+                    split="train",
+                    max_samples=20000,
+                )
+                sources.append(
+                    {
+                        "name": "textvqa_capability",
+                        "data_path": textvqa_path,
+                        "image_dir": textvqa_image_dir,
+                        "system_prompt": calibration_prompt,
+                        "weight": 20.0,
+                        "max_samples": 20000,
+                        "sample_seed": 1502,
+                        "teacher_kl_weight": 0.0,
+                        "loss_family": "textvqa",
+                        "dataset_family": "capability",
+                        "use_augmentation": False,
+                    }
+                )
+            mixture_strategy = "weighted"
+
+        mixture_config = {
+            "strategy": mixture_strategy,
+            "datasets": sources,
+        }
+        if mixture_strategy == "weighted":
+            mixture_config.update(
+                {
+                    "epoch_length": 64000,
+                    "weighted_index_mode": "hash",
+                }
+            )
+
+        ds = create_instruction_dataset(
+            data_path=None,
+            image_dir=image_dir,
+            tokenizer=tokenizer,
+            mixture_config=mixture_config,
+            image_size=image_size,
+            max_length=max_length,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+            image_view_mode=image_view_mode,
+            use_augmentation=False,
+            image_augmentation_mode="none",
+            filter_to_available_images=True,
+        )
+        ds = _filter_supervised_samples(ds, dataset)
         print(f"Loaded {len(ds)} {dataset} instruction samples")
         return ds
 
