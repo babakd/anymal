@@ -400,6 +400,7 @@ def _build_vqa_dataloader(
     prompt_style,
     image_perturbation="none",
     system_prompt=None,
+    image_size=None,
 ):
     import random
     import sys
@@ -416,7 +417,7 @@ def _build_vqa_dataloader(
         transform = get_vision_transform(
             vision_encoder_type="siglip2",
             vision_model_name="google/siglip2-so400m-patch14-384",
-            image_size=384,
+            image_size=int(image_size or 384),
             is_train=False,
             use_augmentation=False,
             image_view_mode=getattr(model, "image_view_mode", "single"),
@@ -424,7 +425,11 @@ def _build_vqa_dataloader(
         placeholder_id = getattr(model, "image_placeholder_token_id", None)
         num_image_tokens = getattr(model, "num_image_tokens", 0)
     else:
-        transform = get_image_transform(image_size=224, is_train=False, use_augmentation=False)
+        transform = get_image_transform(
+            image_size=int(image_size or 224),
+            is_train=False,
+            use_augmentation=False,
+        )
         placeholder_id = getattr(model, "image_placeholder_token_id", None)
         num_image_tokens = getattr(model, "num_image_tokens", 0)
     transform = _make_image_transform(transform, image_perturbation)
@@ -528,7 +533,11 @@ def _build_vqa_dataloader(
     }
     image_transform_meta = {
         "name": image_perturbation,
-        "base_transform": "siglip2_384" if architecture in {"v2", "v3", "v4"} else "clip_224",
+        "base_transform": (
+            f"siglip2_{int(image_size or 384)}"
+            if architecture in {"v2", "v3", "v4"}
+            else f"clip_{int(image_size or 224)}"
+        ),
         "image_view_mode": getattr(model, "image_view_mode", "single"),
         "control_uses_wrong_images": bool(control_source_indices is not None),
         "control_seed": int(seed),
