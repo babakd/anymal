@@ -1,0 +1,32 @@
+{
+  "train_sources": [
+    {
+      "source_path": "/checkpoints/textvqa_data/v17_lmms-lab_textvqa_train_majority_seed1502_n20000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/textvqa_images_hf",
+      "unique_hashes": 15773,
+      "checked_refs": 20000,
+      "missing_refs": 0
+    }
+  ],
+  "eval_artifacts": [
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/textvqa_validation_full.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/textvqa_images_hf",
+      "unique_hashes": 3166,
+      "checked_refs": 20000,
+      "missing_refs": 0
+    }
+  ],
+  "total_unique_train_hashes": 15773,
+  "total_unique_eval_hashes": 3166,
+  "pairs": [
+    {
+      "train_source": "/checkpoints/textvqa_data/v17_lmms-lab_textvqa_train_majority_seed1502_n20000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/textvqa_validation_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    }
+  ]
+}

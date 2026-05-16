@@ -1,0 +1,60 @@
+{
+  "train_sources": [
+    {
+      "source_path": "/checkpoints/vqa_data/vqa_train2014_direct_yes_no_balanced_40000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/coco_train2014_vqa",
+      "unique_hashes": 25213,
+      "checked_refs": 60040,
+      "missing_refs": 0
+    },
+    {
+      "source_path": "/checkpoints/vqa_data/vqa_train2014_direct_number_50000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/coco_train2014_vqa",
+      "unique_hashes": 13303,
+      "checked_refs": 20963,
+      "missing_refs": 0
+    },
+    {
+      "source_path": "/checkpoints/vqa_data/vqa_train2014_direct_other_80000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/coco_train2014_vqa",
+      "unique_hashes": 27616,
+      "checked_refs": 79080,
+      "missing_refs": 0
+    }
+  ],
+  "eval_artifacts": [
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/coco_val2014",
+      "unique_hashes": 2316,
+      "checked_refs": 12000,
+      "missing_refs": 0
+    }
+  ],
+  "total_unique_train_hashes": 29996,
+  "total_unique_eval_hashes": 2316,
+  "pairs": [
+    {
+      "train_source": "/checkpoints/vqa_data/vqa_train2014_direct_yes_no_balanced_40000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/vqa_data/vqa_train2014_direct_number_50000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/vqa_data/vqa_train2014_direct_other_80000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    }
+  ]
+}

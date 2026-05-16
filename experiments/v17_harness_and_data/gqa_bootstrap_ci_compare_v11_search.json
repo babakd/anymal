@@ -1,0 +1,22 @@
+{
+  "artifact": "/tmp/v17_fixed_harness_v11_gqa_search_n1000.json",
+  "benchmark": "gqa",
+  "slice": "v11_gqa_search_n1000",
+  "seed": 12345,
+  "n_resamples": 10000,
+  "total": 1000,
+  "correct": 449,
+  "accuracy": 44.9,
+  "old_parametric_binomial_ci95_percent": [
+    41.9,
+    48.0
+  ],
+  "new_nonparametric_item_bootstrap_ci95_percent": [
+    41.699999999999996,
+    48.0
+  ],
+  "old_ci_width_points": 6.1,
+  "new_ci_width_points": 6.3,
+  "new_wider_than_old": true,
+  "note": "Old CI resamples a fitted binomial; new CI resamples the observed per-item correctness vector."
+}

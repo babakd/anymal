@@ -1,0 +1,101 @@
+{
+  "aggregate_commercial_use_allowed": false,
+  "license_counts": {
+    "CC-BY-4.0 / COCO terms": 3,
+    "CC-BY-4.0 / GQA terms": 2,
+    "CC-BY-4.0 / TextVQA terms": 1,
+    "CC-BY-4.0 / VQAv2 terms": 3,
+    "GPL-3.0 / mirror provenance pending": 1,
+    "LLaVA-Instruct mixed upstream": 1
+  },
+  "sources": [
+    {
+      "commercial_use_allowed": true,
+      "dataset_family": "retention",
+      "license": "CC-BY-4.0 / VQAv2 terms",
+      "license_source": "https://visualqa.org/download.html",
+      "loss_family": "retention_replay",
+      "name": "vqa_replay_direct"
+    },
+    {
+      "commercial_use_allowed": true,
+      "dataset_family": "retention",
+      "license": "CC-BY-4.0 / GQA terms",
+      "license_source": "https://cs.stanford.edu/people/dorarad/gqa/about.html",
+      "loss_family": "retention_replay",
+      "name": "gqa_replay_direct"
+    },
+    {
+      "commercial_use_allowed": true,
+      "dataset_family": "retention",
+      "license": "CC-BY-4.0 / COCO terms",
+      "license_source": "https://cocodataset.org/#termsofuse",
+      "loss_family": "retention_replay",
+      "name": "coco_object_replay"
+    },
+    {
+      "commercial_use_allowed": false,
+      "dataset_family": "retention",
+      "license": "LLaVA-Instruct mixed upstream",
+      "license_source": "https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K",
+      "loss_family": "retention_replay",
+      "name": "short_llava_replay"
+    },
+    {
+      "commercial_use_allowed": true,
+      "dataset_family": "retention",
+      "license": "CC-BY-4.0 / COCO terms",
+      "license_source": "https://cocodataset.org/#termsofuse",
+      "loss_family": "retention_replay",
+      "name": "pope_presence_replay"
+    },
+    {
+      "commercial_use_allowed": true,
+      "dataset_family": "retention",
+      "license": "CC-BY-4.0 / COCO terms",
+      "license_source": "https://cocodataset.org/#termsofuse",
+      "loss_family": "retention_replay",
+      "name": "pope_absence_replay"
+    },
+    {
+      "commercial_use_allowed": false,
+      "dataset_family": "capability",
+      "license": "GPL-3.0 / mirror provenance pending",
+      "license_source": "https://huggingface.co/datasets/anhdang000/ChartQA-V2",
+      "loss_family": "chartqa",
+      "name": "chartqa_capability"
+    },
+    {
+      "commercial_use_allowed": true,
+      "dataset_family": "capability",
+      "license": "CC-BY-4.0 / GQA terms",
+      "license_source": "https://cs.stanford.edu/people/dorarad/gqa/about.html",
+      "loss_family": "gqa_spatial_relation",
+      "name": "gqa_spatial_relation_capability"
+    },
+    {
+      "commercial_use_allowed": true,
+      "dataset_family": "counterfactual",
+      "license": "CC-BY-4.0 / VQAv2 terms",
+      "license_source": "https://visualqa.org/download.html",
+      "loss_family": "counterfactual_ce_reduced_dose",
+      "name": "vqa_wrong_image_counterfactual_ce"
+    },
+    {
+      "commercial_use_allowed": true,
+      "dataset_family": "counterfactual",
+      "license": "CC-BY-4.0 / VQAv2 terms",
+      "license_source": "https://visualqa.org/download.html",
+      "loss_family": "counterfactual_ce_reduced_dose",
+      "name": "vqa_blank_image_counterfactual_ce"
+    },
+    {
+      "commercial_use_allowed": true,
+      "dataset_family": "capability",
+      "license": "CC-BY-4.0 / TextVQA terms",
+      "license_source": "https://textvqa.org/dataset/",
+      "loss_family": "textvqa_majority_answer",
+      "name": "textvqa_capability"
+    }
+  ]
+}

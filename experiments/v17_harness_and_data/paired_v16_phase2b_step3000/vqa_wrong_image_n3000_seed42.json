@@ -1,0 +1,27 @@
+{
+  "benchmark": "vqa",
+  "candidate_artifact": "/tmp/v17_artifacts/v16_phase2b_step3000/v17_fixed_harness_v16_phase2b_step3000_vqa_wrong_image_n3000_seed42.json",
+  "baseline_artifact": "/tmp/v17_artifacts/v11/vqa_wrong_image_n3000_seed42.json",
+  "candidate_run_label": "v16_phase2b_step3000_vqa_wrong_image_n3000_seed42",
+  "baseline_run_label": "v11_frontier_vqa_wrong_image_n3000_seed42",
+  "candidate_eval_schema_version": "v17_fixed_harness",
+  "baseline_eval_schema_version": "v17_fixed_harness",
+  "candidate_seed": 42,
+  "baseline_seed": 42,
+  "paired_total": 3000,
+  "candidate_only_rows": 0,
+  "baseline_only_rows": 0,
+  "bootstrap_seed": 12345,
+  "bootstrap_resamples": 10000,
+  "metrics": {
+    "vqa_accuracy": {
+      "candidate_accuracy": 35.57777777777778,
+      "baseline_accuracy": 35.52222222222223,
+      "observed_delta": 0.05555555555555553,
+      "ci95_low": -0.4,
+      "ci95_high": 0.5222222222222221,
+      "p_value_two_sided": 0.3989,
+      "significant": false
+    }
+  }
+}

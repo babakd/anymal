@@ -23,6 +23,9 @@ layout.
 | `V8_CORE_LLM_SWAP_RESULTS.md` | `experiments/v8_qwen/V8_CORE_LLM_SWAP_RESULTS.md` |
 | `v9_qwen_plan.md` | `experiments/v9_qwen/plan.md` |
 | `v9_qwen_experiment_results.md` | `experiments/v9_qwen/results.md` |
+| `V15_QWEN3.md` | `experiments/v15_qwen/plan.md` |
+| `V16_QWEN3.md` | `experiments/v16_qwen/plan.md` |
+| `V17_HARNESS_AND_DATA.md` | `experiments/v17_harness_and_data/plan.md` |
 | old long `CLAUDE.md` | `docs/history/CLAUDE_legacy.md` |
 
 Root files with these old names are now short redirect stubs only.

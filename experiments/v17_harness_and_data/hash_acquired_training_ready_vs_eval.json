@@ -1,0 +1,583 @@
+{
+  "train_sources": [
+    {
+      "source_path": "/checkpoints/v17_acquired/data/ocr_vqa_train_seed1701_n2000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/v17_acquired/images/ocr_vqa",
+      "unique_hashes": 2000,
+      "checked_refs": 9629,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_acquired/data/ai2d_train_train_seed1701_n2000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/v17_acquired/images/ai2d_train",
+      "unique_hashes": 557,
+      "checked_refs": 1000,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_acquired/data/chartqa_augmented_train_seed1701_n2000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/v17_acquired/images/chartqa_augmented",
+      "unique_hashes": 1943,
+      "checked_refs": 2000,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_acquired/data/sharegpt4v_detailed_train_seed1701_n2000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/v17_acquired/images/sharegpt4v_detailed",
+      "unique_hashes": 1018,
+      "checked_refs": 1018,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_acquired/data/refcoco_train_train_seed1701_n2000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/v17_acquired/images/refcoco_train",
+      "unique_hashes": 1911,
+      "checked_refs": 2000,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_acquired/data/refcocoplus_train_train_seed1701_n2000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/v17_acquired/images/refcocoplus_train",
+      "unique_hashes": 1904,
+      "checked_refs": 1999,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_acquired/data/refcocog_train_train_seed1701_n2000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/v17_acquired/images/refcocog_train",
+      "unique_hashes": 1924,
+      "checked_refs": 2000,
+      "missing_refs": 0,
+      "missing_examples": []
+    }
+  ],
+  "eval_artifacts": [
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/gqa_search_n1000.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/gqa_images_hf",
+      "unique_hashes": 349,
+      "checked_refs": 4000,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/gqa_confirm_n3000_offset1000.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/gqa_images_hf",
+      "unique_hashes": 394,
+      "checked_refs": 12000,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/chartqa_images_hf",
+      "unique_hashes": 1055,
+      "checked_refs": 7680,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/textvqa_validation_full.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/textvqa_images_hf",
+      "unique_hashes": 3166,
+      "checked_refs": 20000,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/pope_adversarial_n1000.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/coco_val2014",
+      "unique_hashes": 455,
+      "checked_refs": 4000,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/pope_popular_n1000.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/coco_val2014",
+      "unique_hashes": 455,
+      "checked_refs": 4000,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/coco_val2014",
+      "unique_hashes": 2316,
+      "checked_refs": 12000,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/vqa_blank_n3000_seed42.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/coco_val2014",
+      "unique_hashes": 2316,
+      "checked_refs": 12000,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/vqa_shuffled_n3000_seed42.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/coco_val2014",
+      "unique_hashes": 2316,
+      "checked_refs": 12000,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/vqa_wrong_image_n3000_seed42.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/coco_val2014",
+      "unique_hashes": 2316,
+      "checked_refs": 12000,
+      "missing_refs": 0,
+      "missing_examples": []
+    }
+  ],
+  "total_unique_train_hashes": 10724,
+  "total_unique_eval_hashes": 7256,
+  "pairs": [
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ocr_vqa_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_search_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ocr_vqa_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_confirm_n3000_offset1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ocr_vqa_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ocr_vqa_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/textvqa_validation_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ocr_vqa_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_adversarial_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ocr_vqa_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_popular_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ocr_vqa_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ocr_vqa_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_blank_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ocr_vqa_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_shuffled_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ocr_vqa_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_wrong_image_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ai2d_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_search_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ai2d_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_confirm_n3000_offset1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ai2d_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ai2d_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/textvqa_validation_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ai2d_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_adversarial_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ai2d_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_popular_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ai2d_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ai2d_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_blank_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ai2d_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_shuffled_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/ai2d_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_wrong_image_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/chartqa_augmented_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_search_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/chartqa_augmented_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_confirm_n3000_offset1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/chartqa_augmented_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/chartqa_augmented_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/textvqa_validation_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/chartqa_augmented_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_adversarial_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/chartqa_augmented_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_popular_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/chartqa_augmented_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/chartqa_augmented_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_blank_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/chartqa_augmented_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_shuffled_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/chartqa_augmented_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_wrong_image_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/sharegpt4v_detailed_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_search_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/sharegpt4v_detailed_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_confirm_n3000_offset1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/sharegpt4v_detailed_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/sharegpt4v_detailed_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/textvqa_validation_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/sharegpt4v_detailed_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_adversarial_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/sharegpt4v_detailed_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_popular_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/sharegpt4v_detailed_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/sharegpt4v_detailed_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_blank_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/sharegpt4v_detailed_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_shuffled_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/sharegpt4v_detailed_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_wrong_image_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcoco_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_search_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcoco_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_confirm_n3000_offset1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcoco_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcoco_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/textvqa_validation_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcoco_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_adversarial_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcoco_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_popular_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcoco_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcoco_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_blank_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcoco_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_shuffled_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcoco_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_wrong_image_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocoplus_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_search_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocoplus_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_confirm_n3000_offset1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocoplus_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocoplus_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/textvqa_validation_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocoplus_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_adversarial_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocoplus_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_popular_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocoplus_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocoplus_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_blank_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocoplus_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_shuffled_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocoplus_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_wrong_image_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocog_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_search_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocog_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_confirm_n3000_offset1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocog_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocog_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/textvqa_validation_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocog_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_adversarial_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocog_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_popular_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocog_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocog_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_blank_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocog_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_shuffled_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/refcocog_train_train_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_wrong_image_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    }
+  ]
+}

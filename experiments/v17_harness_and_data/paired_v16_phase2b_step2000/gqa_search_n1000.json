@@ -1,0 +1,27 @@
+{
+  "benchmark": "gqa",
+  "candidate_artifact": "/tmp/v17_artifacts/v16_phase2b_step2000/v17_fixed_harness_v16_phase2b_step2000_gqa_search_n1000.json",
+  "baseline_artifact": "/tmp/v17_artifacts/v11/gqa_search_n1000.json",
+  "candidate_run_label": "v16_phase2b_step2000_gqa_search_n1000",
+  "baseline_run_label": "v11_frontier_gqa_search_n1000",
+  "candidate_eval_schema_version": "v17_fixed_harness",
+  "baseline_eval_schema_version": "v17_fixed_harness",
+  "candidate_seed": 42,
+  "baseline_seed": 42,
+  "paired_total": 1000,
+  "candidate_only_rows": 0,
+  "baseline_only_rows": 0,
+  "bootstrap_seed": 12345,
+  "bootstrap_resamples": 10000,
+  "metrics": {
+    "gqa_accuracy": {
+      "candidate_accuracy": 43.7,
+      "baseline_accuracy": 44.9,
+      "observed_delta": -1.2,
+      "ci95_low": -2.5,
+      "ci95_high": 0.1,
+      "p_value_two_sided": 0.0408,
+      "significant": false
+    }
+  }
+}

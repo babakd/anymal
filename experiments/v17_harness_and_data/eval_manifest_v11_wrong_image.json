@@ -1,0 +1,38 @@
+[
+  {
+    "candidate": "v11",
+    "task": "vqa_wrong_image_n3000_seed42",
+    "remote_output_path": "/checkpoints/v17_fixed_harness/v11/vqa_wrong_image_n3000_seed42.json",
+    "command": [
+      "modal",
+      "run",
+      "--detach",
+      "vqa_checkpoint_eval.py",
+      "--candidate-checkpoint",
+      "/checkpoints/pretrain-output/v11-qwen3-c1-posscale000-scale1125/checkpoint-posscale000-scale1125",
+      "--candidate-label",
+      "v11_frontier_vqa_wrong_image_n3000_seed42",
+      "--candidate-architecture",
+      "v3",
+      "--llm-backbone",
+      "Qwen/Qwen3-8B",
+      "--batch-size",
+      "8",
+      "--seed",
+      "42",
+      "--eval-schema-version",
+      "v17_fixed_harness",
+      "--max-samples",
+      "3000",
+      "--image-perturbation",
+      "wrong_image_same_answer_type",
+      "--prediction-samples",
+      "3000",
+      "--no-include-baselines",
+      "--remote-output-path",
+      "/checkpoints/v17_fixed_harness/v11/vqa_wrong_image_n3000_seed42.json",
+      "--output",
+      "/tmp/v17_fixed_harness_v11_vqa_wrong_image_n3000_seed42.json"
+    ]
+  }
+]
