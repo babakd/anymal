@@ -23,6 +23,7 @@ ALLOWED_ROOT_REDIRECTS = {
     "V15_QWEN3.md",
     "V16_QWEN3.md",
     "V17_HARNESS_AND_DATA.md",
+    "V18_MIDTRAINING_DATA.md",
     "v7_experiments.md",
     "v9_qwen_experiment_results.md",
     "v9_qwen_plan.md",
