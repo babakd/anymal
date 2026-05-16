@@ -38,8 +38,6 @@ DEFAULT_V9_SOURCES = [
 EVAL_REF_FIELDS = (
     "image_id",
     "source_image_id",
-    "question_id",
-    "gqa_question_id",
     "image",
     "image_path",
     "image_file",
@@ -55,7 +53,6 @@ TRAIN_REF_FIELDS = (
     "image_file",
     "file_name",
     "filename",
-    "gqa_question_id",
     "image_id",
     "source_image_id",
 )

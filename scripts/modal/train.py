@@ -3367,6 +3367,9 @@ def run_pretrain(
         "v15_qwen_retention_replay_stage1b",
         "v15_qwen_balanced_stage1b",
         "v15_qwen_balanced_notext_stage1b",
+        "v17_qwen_balanced_legacy10_stage1b",
+        "v17_qwen_balanced_option_i_stage1b",
+        "v17_qwen_balanced_option_ii_stage1b",
         "v15_qwen_chartqa_stage1b",
         "v15_qwen_textvqa_stage1b",
         "v15_qwen_counterfactual_contrastive_stage1b",
@@ -3387,6 +3390,10 @@ def run_pretrain(
         )
     else:
         raise ValueError(f"Unsupported pretrain dataset: {dataset}")
+
+    dataset_license_summary = getattr(dataset, "license_summary", None)
+    if dataset_license_summary:
+        print(f"Dataset license summary: {dataset_license_summary}")
 
     # Split into train/val
     train_dataset, val_dataset = deterministic_train_val_split(dataset, val_fraction=0.05)
@@ -3498,6 +3505,7 @@ def run_pretrain(
         teacher_kl_checkpoint=pretrain_teacher_kl_checkpoint or "",
         teacher_kl_cache_path=pretrain_teacher_kl_cache_path or "",
         teacher_kl_cache_top_k=int(pretrain_teacher_kl_cache_top_k or 0),
+        dataset_license_summary=dataset_license_summary,
     )
 
     # Train
@@ -3507,6 +3515,14 @@ def run_pretrain(
         train_dataloader=train_dataloader,
         eval_dataloader=eval_dataloader,
     )
+    if dataset_license_summary and use_wandb and is_main_process() and getattr(trainer, "logger", None):
+        try:
+            trainer.logger.config.update(
+                {"dataset_license_summary": dataset_license_summary},
+                allow_val_change=True,
+            )
+        except Exception as exc:
+            print(f"WARNING: failed to update W&B dataset license summary: {exc}")
 
     metrics = trainer.train()
     print(f"Training complete! Final metrics: {metrics}")
@@ -3536,6 +3552,34 @@ def load_finetune_dataset(
     """
     import json as _json
     from data.instruction_dataset import InstructionDataset, create_instruction_dataset
+    from evaluation.checkpoint_eval.dataset_revisions import (
+        pinned_revision as _pinned_revision,
+        slice_fingerprint as _slice_fingerprint,
+    )
+
+    def _hf_revision(dataset_id: str) -> str:
+        return _pinned_revision(str(dataset_id))
+
+    def _license_metadata(
+        license_name: str,
+        license_source: str,
+        commercial_use_allowed: bool | None,
+    ) -> dict:
+        return {
+            "license": license_name,
+            "license_source": license_source,
+            "commercial_use_allowed": commercial_use_allowed,
+        }
+
+    def _apply_license(entry: dict, license_name: str, license_source: str, commercial_use_allowed: bool | None):
+        entry.update(
+            _license_metadata(
+                license_name=license_name,
+                license_source=license_source,
+                commercial_use_allowed=commercial_use_allowed,
+            )
+        )
+        return entry
 
     def _filter_supervised_samples(ds, label: str):
         """Drop instruction samples that produce no supervised answer tokens.
@@ -3638,7 +3682,16 @@ def load_finetune_dataset(
             )
         else:
             print(f"{label}: text-only supervised-token filter kept {len(keep_indices)} samples")
-        return Subset(ds, keep_indices)
+        filtered = Subset(ds, keep_indices)
+        for attr in (
+            "license_summary",
+            "source_metadata",
+            "source_names",
+            "strategy",
+        ):
+            if hasattr(ds, attr):
+                setattr(filtered, attr, getattr(ds, attr))
+        return filtered
 
     image_dir = "/checkpoints/coco_images"
     if not os.path.exists(image_dir):
@@ -4739,7 +4792,7 @@ def load_finetune_dataset(
         volume.commit()
         return output_path, vqa_image_dir
 
-    def _gqa_focus_match(question, answer="", focus="all"):
+    def _gqa_focus_match(question, answer="", focus="all", row=None):
         focus = str(focus or "all").strip().lower()
         if focus in {"", "all", "none"}:
             return True
@@ -4755,6 +4808,12 @@ def load_finetune_dataset(
             "v3_error_spatial_non_yn",
             "v3_error_spatial_left_right",
         }:
+            if row is not None:
+                types = row.get("types") or {}
+                structural = str(types.get("structural") or "").strip().lower()
+                semantic = str(types.get("semantic") or "").strip().lower()
+                if structural or semantic:
+                    return semantic in {"rel", "relate"} or structural in {"verify", "logical"}
             spatial_terms = (
                 " left ",
                 " right ",
@@ -4850,6 +4909,102 @@ def load_finetune_dataset(
             return None
         return dist
 
+    def _official_gqa_questions_zip() -> str:
+        import requests
+
+        gqa_dir = "/checkpoints/gqa_data"
+        os.makedirs(gqa_dir, exist_ok=True)
+        path = os.path.join(gqa_dir, "questions1.2.zip")
+        if os.path.exists(path) and os.path.getsize(path) > 1_000_000:
+            return path
+        tmp_path = f"{path}.tmp"
+        with requests.get(
+            "https://downloads.cs.stanford.edu/nlp/data/gqa/questions1.2.zip",
+            stream=True,
+            timeout=120,
+        ) as response:
+            response.raise_for_status()
+            with open(tmp_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+        os.replace(tmp_path, path)
+        volume.commit()
+        return path
+
+    def _official_gqa_rows(split: str) -> list[tuple[str, dict]]:
+        import zipfile
+
+        zip_path = _official_gqa_questions_zip()
+        target = f"{split}_questions.json"
+        with zipfile.ZipFile(zip_path) as zf:
+            matches = [name for name in zf.namelist() if name.endswith(target)]
+            if not matches:
+                raise RuntimeError(f"Could not find {target} in {zip_path}")
+            with zf.open(matches[0]) as f:
+                raw = _json.load(f)
+        rows = [
+            (str(question_id), row)
+            for question_id, row in raw.items()
+            if isinstance(row, dict) and row.get("isBalanced", True)
+        ]
+        return rows or [(str(question_id), row) for question_id, row in raw.items()]
+
+    def _official_gqa_image_filename(image_id) -> str:
+        try:
+            return f"VG_{int(image_id)}.jpg"
+        except Exception:
+            safe = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in str(image_id))
+            return f"VG_{safe}.jpg"
+
+    def _valid_image_file(path: str) -> bool:
+        from PIL import Image
+
+        if not os.path.exists(path) or os.path.getsize(path) <= 0:
+            return False
+        try:
+            with Image.open(path) as image:
+                image.verify()
+            return True
+        except Exception:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return False
+
+    def _ensure_official_gqa_image(image_id, image_dir: str) -> tuple[str, str]:
+        import requests
+        import threading
+
+        filename = _official_gqa_image_filename(image_id)
+        out_path = os.path.join(image_dir, filename)
+        if _valid_image_file(out_path):
+            return filename, "cached"
+        templates = (
+            "https://cs.stanford.edu/people/rak248/VG_100K_2/{image_id}.jpg",
+            "https://cs.stanford.edu/people/rak248/VG_100K/{image_id}.jpg",
+        )
+        last_error = ""
+        for template in templates:
+            try:
+                response = requests.get(template.format(image_id=int(image_id)), timeout=30)
+                if response.status_code == 404:
+                    last_error = "404"
+                    continue
+                response.raise_for_status()
+                tmp_path = f"{out_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+                with open(tmp_path, "wb") as f:
+                    f.write(response.content)
+                os.replace(tmp_path, out_path)
+                if not _valid_image_file(out_path):
+                    last_error = "downloaded file failed image validation"
+                    continue
+                return filename, "downloaded"
+            except Exception as exc:
+                last_error = str(exc)
+        raise RuntimeError(f"Could not fetch GQA image {image_id}: {last_error}")
+
     def _gqa_direct_answer_path(split="train_balanced", max_samples=10000, focus="all"):
         """Build GQA direct-answer instruction data for V9 compositional grounding."""
         from io import BytesIO
@@ -4868,10 +5023,15 @@ def load_finetune_dataset(
                 f"/checkpoints/gqa_data/"
                 f"v9_qwen_gqa_{safe_split}_{int(max_samples)}.json"
             )
+        elif safe_focus in {"spatial", "spatial_relation", "relation", "left_right"}:
+            output_path = (
+                f"/checkpoints/gqa_data/"
+                f"v17_gqa_metadata_spatial_{safe_split}_seed1503_n{int(max_samples)}.json"
+            )
         else:
             output_path = (
                 f"/checkpoints/gqa_data/"
-                f"v12_qwen_gqa_{safe_focus}_{safe_split}_{int(max_samples)}.json"
+                f"v17_qwen_gqa_metadata_{safe_focus}_{safe_split}_{int(max_samples)}.json"
             )
         dist = _distributed_backend()
         if dist is not None and dist.get_rank() != 0:
@@ -4888,16 +5048,24 @@ def load_finetune_dataset(
 
         dataset_id = "Mineru/GQA"
         split_name = str(split)
-        dataset = load_dataset(
-            dataset_id,
-            split=split_name,
-            cache_dir="/checkpoints/hf_datasets",
-            streaming=True,
-        )
-        rows = dataset.shuffle(
-            buffer_size=max(1000, min(int(max_samples) * 2, 20000)),
-            seed=9417,
-        )
+        revision = _hf_revision(dataset_id)
+        use_official_gqa = safe_focus not in {"", "all", "none"}
+        if use_official_gqa:
+            rows = _official_gqa_rows(split_name)
+            rng = random.Random(1503)
+            rng.shuffle(rows)
+        else:
+            dataset = load_dataset(
+                dataset_id,
+                split=split_name,
+                cache_dir="/checkpoints/hf_datasets",
+                streaming=True,
+                revision=revision,
+            )
+            rows = dataset.shuffle(
+                buffer_size=max(1000, min(int(max_samples) * 2, 20000)),
+                seed=9417,
+            )
 
         def _safe_image_filename(image_id):
             safe = "".join(
@@ -4923,41 +5091,73 @@ def load_finetune_dataset(
         written = 0
         skipped_missing_fields = 0
         skipped_focus = 0
-        for source_idx, row in enumerate(rows):
+        skipped_image = 0
+        for source_idx, row_item in enumerate(rows):
             if len(samples) >= int(max_samples):
                 break
-            if not row.get("question") or not row.get("answer") or not row.get("question_id") or not row.get("image"):
+            if use_official_gqa:
+                question_id, row = row_item
+            else:
+                row = row_item
+                question_id = str(row.get("question_id") or source_idx)
+            required = [row.get("question"), row.get("answer"), question_id]
+            if use_official_gqa:
+                required.append(row.get("imageId"))
+            else:
+                required.append(row.get("image"))
+            if not all(required):
                 skipped_missing_fields += 1
                 continue
             question = " ".join(str(row["question"]).split())
             answer = " ".join(str(row["answer"]).split())
-            if not _gqa_focus_match(question, answer, focus=focus):
+            if not _gqa_focus_match(question, answer, focus=focus, row=row):
                 skipped_focus += 1
                 continue
-            image_id = str(row["question_id"])
-            filename = _safe_image_filename(image_id)
-            image_path = os.path.join(gqa_image_dir, filename)
-            if os.path.exists(image_path):
-                cached += 1
+            image_id = str(row.get("imageId") if use_official_gqa else row.get("question_id"))
+            if use_official_gqa:
+                try:
+                    filename, image_status = _ensure_official_gqa_image(image_id, gqa_image_dir)
+                except Exception as exc:
+                    skipped_image += 1
+                    if skipped_image <= 5:
+                        print(f"Skipping GQA image {image_id}: {exc}")
+                    continue
+                if image_status == "cached":
+                    cached += 1
+                else:
+                    written += 1
             else:
-                _row_image_to_rgb(row["image"]).save(image_path, format="JPEG")
-                written += 1
-                if written % 1000 == 0:
-                    print(
-                        f"GQA direct-answer cache progress: samples={len(samples)} "
-                        f"images_written={written}; images_cached={cached}"
-                    )
-                    volume.commit()
+                filename = _safe_image_filename(image_id)
+                image_path = os.path.join(gqa_image_dir, filename)
+                if os.path.exists(image_path):
+                    cached += 1
+                else:
+                    _row_image_to_rgb(row["image"]).save(image_path, format="JPEG")
+                    written += 1
+            if written and written % 1000 == 0:
+                print(
+                    f"GQA direct-answer cache progress: samples={len(samples)} "
+                    f"images_written={written}; images_cached={cached}"
+                )
+                volume.commit()
             if _has_reserved_chat_markers(question) or _has_reserved_chat_markers(answer):
                 continue
             samples.append(
                 {
-                    "id": f"gqa_{split_name}_{source_idx}_{image_id}",
+                    "id": f"gqa_{split_name}_{source_idx}_{question_id}",
                     "image": filename,
                     "source_dataset": dataset_id,
+                    "source_dataset_revision": revision,
+                    "source_questions_url": (
+                        "https://downloads.cs.stanford.edu/nlp/data/gqa/questions1.2.zip"
+                        if use_official_gqa
+                        else None
+                    ),
                     "source_split": split_name,
                     "source_index": int(source_idx),
-                    "gqa_question_id": image_id,
+                    "source_image_id": str(image_id),
+                    "gqa_question_id": str(question_id),
+                    "gqa_types": row.get("types") or {},
                     "conversations": [
                         {"from": "human", "value": f"<image>\n{question}"},
                         {"from": "gpt", "value": answer},
@@ -4970,11 +5170,47 @@ def load_finetune_dataset(
 
         with open(output_path, "w") as f:
             _json.dump(samples, f)
+        fingerprint = _slice_fingerprint(
+            dataset_id=dataset_id,
+            revision=revision,
+            split=split_name,
+            seed=9417,
+            offset=0,
+            max_samples=max_samples,
+        )
+        slice_dir = "/checkpoints/v17_slices"
+        os.makedirs(slice_dir, exist_ok=True)
+        with open(
+            os.path.join(slice_dir, f"gqa_train_{safe_split}_{safe_focus}_{fingerprint}.json"),
+            "w",
+        ) as f:
+            _json.dump(
+                {
+                    "dataset_id": dataset_id,
+                    "revision": revision,
+                    "split": split_name,
+                    "focus": safe_focus,
+                    "shuffle_seed": 9417,
+                    "max_samples": int(max_samples),
+                    "fingerprint": fingerprint,
+                    "source_indices": [sample["source_index"] for sample in samples],
+                    "source_question_ids": [sample["gqa_question_id"] for sample in samples],
+                    "source_image_ids": [sample.get("source_image_id") for sample in samples],
+                    "metadata_source": (
+                        "official_gqa_questions1.2"
+                        if use_official_gqa
+                        else "hf_dataset_rows"
+                    ),
+                },
+                f,
+                indent=2,
+            )
         print(
             f"Built {len(samples)} GQA direct-answer samples from {dataset_id}/{split_name} "
             f"focus={safe_focus} "
             f"at {output_path}; images_written={written}; images_cached={cached}; "
-            f"skipped_missing_fields={skipped_missing_fields}; skipped_focus={skipped_focus}"
+            f"skipped_missing_fields={skipped_missing_fields}; skipped_focus={skipped_focus}; "
+            f"skipped_image={skipped_image}"
         )
         volume.commit()
         if dist is not None:
@@ -5154,6 +5390,8 @@ def load_finetune_dataset(
 
     def _chartqa_instruction_path(split="train", max_samples=20000, seed=1501):
         from datasets import load_dataset
+        from io import BytesIO
+        import hashlib
 
         chartqa_dir = "/checkpoints/chartqa_data"
         chartqa_image_dir = "/checkpoints/chartqa_images_hf"
@@ -5161,9 +5399,10 @@ def load_finetune_dataset(
         os.makedirs(chartqa_image_dir, exist_ok=True)
         safe_split = str(split).replace("/", "_")
         output_path = (
-            f"{chartqa_dir}/v15_chartqa_{safe_split}_seed{int(seed)}"
+            f"{chartqa_dir}/v17_chartqa_{safe_split}_leakclean_val_seed{int(seed)}"
             f"_n{int(max_samples)}.json"
         )
+        manifest_path = output_path.replace(".json", "_manifest.json")
         dist = _distributed_backend()
         if dist is not None and dist.get_rank() != 0:
             dist.barrier()
@@ -5178,22 +5417,75 @@ def load_finetune_dataset(
             return output_path, chartqa_image_dir
 
         dataset_id = "anhdang000/ChartQA-V2"
+        revision = _hf_revision(dataset_id)
         rows = load_dataset(
             dataset_id,
             split=str(split),
             cache_dir="/checkpoints/hf_datasets",
+            revision=revision,
         )
+        val_hashes = set()
+
+        def _jpeg_bytes_and_hash(image):
+            buffer = BytesIO()
+            image.convert("RGB").save(buffer, format="JPEG", quality=95)
+            payload = buffer.getvalue()
+            digest = hashlib.sha256(payload[: 1024 * 1024]).hexdigest()
+            return payload, digest
+
+        def _hash_file_first_mib(path):
+            digest = hashlib.sha256()
+            with open(path, "rb") as image_file:
+                digest.update(image_file.read(1024 * 1024))
+            return digest.hexdigest()
+
+        if str(split) == "train":
+            val_rows = load_dataset(
+                dataset_id,
+                split="val",
+                cache_dir="/checkpoints/hf_datasets",
+                revision=revision,
+            )
+            for val_index in range(len(val_rows)):
+                val_row = val_rows[int(val_index)]
+                image_value = val_row.get("image")
+                if image_value is None and val_row.get("images"):
+                    image_values = val_row.get("images")
+                    if isinstance(image_values, (list, tuple)) and image_values:
+                        image_value = image_values[0]
+                try:
+                    _, digest = _jpeg_bytes_and_hash(_hf_image_to_rgb(image_value))
+                except Exception as exc:
+                    print(f"Skipping ChartQA val hash row {val_index}: {exc}")
+                    continue
+                val_hashes.add(digest)
+            cached_val_hashes = 0
+            for filename in os.listdir(chartqa_image_dir):
+                if not (filename.startswith("COCO_val2014_") or filename.startswith("chartqa_val_")):
+                    continue
+                cached_path = os.path.join(chartqa_image_dir, filename)
+                if not os.path.isfile(cached_path):
+                    continue
+                try:
+                    val_hashes.add(_hash_file_first_mib(cached_path))
+                    cached_val_hashes += 1
+                except OSError as exc:
+                    print(f"Skipping cached ChartQA val hash {cached_path}: {exc}")
+        else:
+            cached_val_hashes = 0
+
         indices = list(range(len(rows)))
         rng = random.Random(int(seed))
         rng.shuffle(indices)
-        if int(max_samples) > 0:
-            indices = indices[: int(max_samples)]
 
         samples = []
         written = 0
         cached = 0
+        skipped_val_overlap = 0
         skipped_reserved_markers = 0
         for ordinal, source_index in enumerate(indices):
+            if int(max_samples) > 0 and len(samples) >= int(max_samples):
+                break
             row = rows[int(source_index)]
             question = _first_nonempty_text(
                 [row.get("query"), row.get("question"), row.get("problem")]
@@ -5213,26 +5505,33 @@ def load_finetune_dataset(
                     image_value = image_values[0]
             filename = _safe_hf_filename("chartqa", safe_split, source_index)
             image_path = os.path.join(chartqa_image_dir, filename)
+            jpeg_payload = None
             if os.path.exists(image_path):
                 cached += 1
+                image_digest = _hash_file_first_mib(image_path)
             else:
-                _hf_image_to_rgb(image_value).save(
-                    image_path,
-                    format="JPEG",
-                    quality=95,
-                )
+                jpeg_payload, image_digest = _jpeg_bytes_and_hash(_hf_image_to_rgb(image_value))
+            if image_digest in val_hashes:
+                skipped_val_overlap += 1
+                continue
+            if jpeg_payload is not None:
+                with open(image_path, "wb") as image_file:
+                    image_file.write(jpeg_payload)
                 written += 1
                 if written % 1000 == 0:
                     print(
                         f"ChartQA cache progress: samples={len(samples)} "
-                        f"images_written={written}; images_cached={cached}"
+                        f"images_written={written}; images_cached={cached}; "
+                        f"skipped_val_overlap={skipped_val_overlap}"
                     )
                     volume.commit()
             samples.append(
                 {
                     "id": f"chartqa_{safe_split}_{source_index}",
                     "image": filename,
+                    "image_sha256_first_mib": image_digest,
                     "source_dataset": dataset_id,
+                    "source_dataset_revision": revision,
                     "source_split": str(split),
                     "source_index": int(source_index),
                     "conversations": [
@@ -5246,9 +5545,30 @@ def load_finetune_dataset(
             raise RuntimeError("ChartQA instruction generation produced no samples.")
         with open(output_path, "w") as f:
             _json.dump(samples, f)
+        with open(manifest_path, "w") as f:
+            _json.dump(
+                {
+                    "dataset_id": dataset_id,
+                    "revision": revision,
+                    "split": str(split),
+                    "seed": int(seed),
+                    "target_max_samples": int(max_samples),
+                    "rows_written": len(samples),
+                    "val_unique_image_hashes": len(val_hashes),
+                    "cached_val_image_hashes_checked": cached_val_hashes,
+                    "skipped_val_hash_overlap": skipped_val_overlap,
+                    "skipped_reserved_markers": skipped_reserved_markers,
+                    "output_path": output_path,
+                    "image_dir": chartqa_image_dir,
+                    "leakage_filter": "sha256_first_mib_against_pinned_val_split_jpeg_q95_and_cached_eval_images",
+                },
+                f,
+                indent=2,
+            )
         print(
             f"Built {len(samples)} ChartQA instruction samples at {output_path}; "
             f"images_written={written}; images_cached={cached}; "
+            f"skipped_val_overlap={skipped_val_overlap}; "
             f"skipped_reserved_markers={skipped_reserved_markers}"
         )
         volume.commit()
@@ -5271,7 +5591,7 @@ def load_finetune_dataset(
         safe_dataset = str(dataset_id).replace("/", "_")
         safe_split = str(split).replace("/", "_")
         output_path = (
-            f"{textvqa_dir}/v15_{safe_dataset}_{safe_split}_seed{int(seed)}"
+            f"{textvqa_dir}/v17_{safe_dataset}_{safe_split}_majority_seed{int(seed)}"
             f"_n{int(max_samples)}.json"
         )
         dist = _distributed_backend()
@@ -5287,10 +5607,12 @@ def load_finetune_dataset(
                 dist.barrier()
             return output_path, textvqa_image_dir
 
+        revision = _hf_revision(dataset_id)
         rows = load_dataset(
             dataset_id,
             split=str(split),
             cache_dir="/checkpoints/hf_datasets",
+            revision=revision,
         )
         indices = list(range(len(rows)))
         rng = random.Random(int(seed))
@@ -5303,12 +5625,38 @@ def load_finetune_dataset(
         cached = 0
         skipped_image = 0
         skipped_reserved_markers = 0
+        first_vs_majority_different = 0
+
+        def _normalize_textvqa_training_answer(value):
+            return " ".join(str(value or "").lower().strip().split()).rstrip(".,;:!?")
+
+        def _majority_textvqa_answer(row):
+            from collections import Counter
+
+            raw_answers = row.get("answers")
+            if isinstance(raw_answers, str):
+                raw_answers = [raw_answers]
+            elif not isinstance(raw_answers, (list, tuple)):
+                raw_answers = []
+            normalized = [
+                _normalize_textvqa_training_answer(answer)
+                for answer in raw_answers
+                if _normalize_textvqa_training_answer(answer)
+            ]
+            if not normalized:
+                fallback = _normalize_textvqa_training_answer(
+                    _first_nonempty_text([row.get("answer"), row.get("label")])
+                )
+                return fallback, fallback, 0, len(raw_answers)
+            counts = Counter(normalized)
+            majority, count = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0]
+            first = normalized[0]
+            return majority, first, int(count), len(normalized)
+
         for source_index in indices:
             row = rows[int(source_index)]
             question = _first_nonempty_text([row.get("question"), row.get("query")])
-            answer = _first_nonempty_text(
-                [row.get("answers"), row.get("answer"), row.get("label")]
-            )
+            answer, first_answer, majority_count, annotator_count = _majority_textvqa_answer(row)
             if not question or not answer:
                 continue
             if _has_reserved_chat_markers(question) or _has_reserved_chat_markers(answer):
@@ -5349,15 +5697,22 @@ def load_finetune_dataset(
                     "id": f"textvqa_{safe_split}_{source_index}_{image_id}",
                     "image": filename,
                     "source_dataset": dataset_id,
+                    "source_dataset_revision": revision,
                     "source_split": str(split),
                     "source_index": int(source_index),
                     "textvqa_image_id": str(image_id),
+                    "first_annotator_answer": first_answer,
+                    "majority_answer": answer,
+                    "majority_answer_count": int(majority_count),
+                    "annotator_answer_count": int(annotator_count),
                     "conversations": [
                         {"from": "human", "value": f"<image>\n{question}"},
                         {"from": "gpt", "value": answer},
                     ],
                 }
             )
+            if first_answer != answer:
+                first_vs_majority_different += 1
 
         if not samples:
             raise RuntimeError("TextVQA instruction generation produced no samples.")
@@ -5367,18 +5722,53 @@ def load_finetune_dataset(
             f"Built {len(samples)} TextVQA instruction samples at {output_path}; "
             f"images_written={written}; images_cached={cached}; "
             f"skipped_image={skipped_image}; "
-            f"skipped_reserved_markers={skipped_reserved_markers}"
+            f"skipped_reserved_markers={skipped_reserved_markers}; "
+            f"first_vs_majority_different={first_vs_majority_different}"
         )
         volume.commit()
         if dist is not None:
             dist.barrier()
         return output_path, textvqa_image_dir
 
+    def _coco_image_id_from_filename(value):
+        stem = os.path.basename(str(value or "")).split(".", 1)[0]
+        digits = stem.rsplit("_", 1)[-1]
+        return int(digits.lstrip("0") or "0") if digits.isdigit() else None
+
+    def _pope_eval_coco_val2014_ids():
+        import requests
+
+        pope_dir = "/checkpoints/pope_data"
+        os.makedirs(pope_dir, exist_ok=True)
+        urls = {
+            "random": "https://raw.githubusercontent.com/RUCAIBox/POPE/main/output/coco/coco_pope_random.json",
+            "popular": "https://raw.githubusercontent.com/RUCAIBox/POPE/main/output/coco/coco_pope_popular.json",
+            "adversarial": "https://raw.githubusercontent.com/RUCAIBox/POPE/main/output/coco/coco_pope_adversarial.json",
+        }
+        eval_ids = set()
+        for split_name, url in urls.items():
+            path = os.path.join(pope_dir, f"coco_pope_{split_name}.jsonl")
+            if not os.path.exists(path) or os.path.getsize(path) == 0:
+                response = requests.get(url, timeout=60)
+                response.raise_for_status()
+                with open(path, "wb") as f:
+                    f.write(response.content)
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    row = _json.loads(line)
+                    image_id = _coco_image_id_from_filename(row.get("image"))
+                    if image_id is not None:
+                        eval_ids.add(image_id)
+        return eval_ids
+
     def _coco_absence_pope_style_path(max_samples=10000):
         """Build POPE-style object absence probes from COCO train2017 instances."""
         output_path = (
             f"/checkpoints/llava_data/"
-            f"coco_pope_style_absence_train2017_{int(max_samples)}.json"
+            f"coco_pope_style_absence_train2017_leakclean_{int(max_samples)}.json"
         )
         if os.path.exists(output_path):
             return output_path
@@ -5386,6 +5776,7 @@ def load_finetune_dataset(
         instances_path = _ensure_coco_instance_annotations()
         with open(instances_path, "r") as f:
             instances = _json.load(f)
+        pope_eval_ids = _pope_eval_coco_val2014_ids()
 
         available_images = {
             f for f in os.listdir(image_dir)
@@ -5395,7 +5786,14 @@ def load_finetune_dataset(
             image["id"]: image
             for image in instances.get("images", [])
             if image.get("file_name") in available_images
+            and int(image["id"]) not in pope_eval_ids
         }
+        dropped_leakage = sum(
+            1
+            for image in instances.get("images", [])
+            if image.get("file_name") in available_images
+            and int(image["id"]) in pope_eval_ids
+        )
         categories = {
             category["id"]: category["name"]
             for category in instances.get("categories", [])
@@ -5445,7 +5843,11 @@ def load_finetune_dataset(
 
         with open(output_path, "w") as f:
             _json.dump(samples, f)
-        print(f"Built {len(samples)} COCO POPE-style absence samples at {output_path}")
+        print(
+            f"Built {len(samples)} COCO POPE-style absence samples at {output_path}; "
+            f"dropped_pope_eval_overlap_images={dropped_leakage}; "
+            f"pope_eval_image_ids={len(pope_eval_ids)}"
+        )
         volume.commit()
         return output_path
 
@@ -5453,7 +5855,7 @@ def load_finetune_dataset(
         """Build POPE-style object presence probes from COCO train2017 instances."""
         output_path = (
             f"/checkpoints/llava_data/"
-            f"coco_pope_style_presence_train2017_{int(max_samples)}.json"
+            f"coco_pope_style_presence_train2017_leakclean_{int(max_samples)}.json"
         )
         if os.path.exists(output_path):
             return output_path
@@ -5461,6 +5863,7 @@ def load_finetune_dataset(
         instances_path = _ensure_coco_instance_annotations()
         with open(instances_path, "r") as f:
             instances = _json.load(f)
+        pope_eval_ids = _pope_eval_coco_val2014_ids()
 
         available_images = {
             f for f in os.listdir(image_dir)
@@ -5470,7 +5873,14 @@ def load_finetune_dataset(
             image["id"]: image
             for image in instances.get("images", [])
             if image.get("file_name") in available_images
+            and int(image["id"]) not in pope_eval_ids
         }
+        dropped_leakage = sum(
+            1
+            for image in instances.get("images", [])
+            if image.get("file_name") in available_images
+            and int(image["id"]) in pope_eval_ids
+        )
         categories = {
             category["id"]: category["name"]
             for category in instances.get("categories", [])
@@ -5516,7 +5926,11 @@ def load_finetune_dataset(
 
         with open(output_path, "w") as f:
             _json.dump(samples, f)
-        print(f"Built {len(samples)} COCO POPE-style presence samples at {output_path}")
+        print(
+            f"Built {len(samples)} COCO POPE-style presence samples at {output_path}; "
+            f"dropped_pope_eval_overlap_images={dropped_leakage}; "
+            f"pope_eval_image_ids={len(pope_eval_ids)}"
+        )
         volume.commit()
         return output_path
 
@@ -5779,15 +6193,26 @@ def load_finetune_dataset(
         pope_presence_path,
         pope_absence_path,
         weighted=False,
+        weight_profile="option_i",
     ):
-        weights = {
-            "vqa_replay_direct": 8.0,
-            "gqa_replay_direct": 8.0,
-            "coco_object_replay": 5.0,
-            "short_llava_replay": 3.0,
-            "pope_presence_replay": 3.0,
-            "pope_absence_replay": 3.0,
-        }
+        if weight_profile in {"legacy10", "option_ii"}:
+            weights = {
+                "vqa_replay_direct": 5.0,
+                "gqa_replay_direct": 5.0,
+                "coco_object_replay": 5.0,
+                "short_llava_replay": 5.0,
+                "pope_presence_replay": 5.0,
+                "pope_absence_replay": 5.0,
+            }
+        else:
+            weights = {
+                "vqa_replay_direct": 13.0,
+                "gqa_replay_direct": 13.0,
+                "coco_object_replay": 8.0,
+                "short_llava_replay": 5.0,
+                "pope_presence_replay": 5.0,
+                "pope_absence_replay": 6.0,
+            }
 
         def _source(entry):
             entry.update(
@@ -5803,70 +6228,100 @@ def load_finetune_dataset(
 
         return [
             _source(
-                {
-                    "name": "vqa_replay_direct",
-                    "data_path": vqa_direct_path,
-                    "image_dir": vqa_image_dir,
-                    "system_prompt": calibration_prompt,
-                    "max_samples": 2000,
-                    "sample_seed": 1401,
-                    "use_augmentation": False,
-                }
+                _apply_license(
+                    {
+                        "name": "vqa_replay_direct",
+                        "data_path": vqa_direct_path,
+                        "image_dir": vqa_image_dir,
+                        "system_prompt": calibration_prompt,
+                        "max_samples": 2000,
+                        "sample_seed": 1401,
+                        "use_augmentation": False,
+                    },
+                    "CC-BY-4.0 / VQAv2 terms",
+                    "https://visualqa.org/download.html",
+                    True,
+                )
             ),
             _source(
-                {
-                    "name": "gqa_replay_direct",
-                    "data_path": gqa_path,
-                    "image_dir": gqa_image_dir,
-                    "system_prompt": calibration_prompt,
-                    "max_samples": 2000,
-                    "sample_seed": 1402,
-                    "use_augmentation": False,
-                }
+                _apply_license(
+                    {
+                        "name": "gqa_replay_direct",
+                        "data_path": gqa_path,
+                        "image_dir": gqa_image_dir,
+                        "system_prompt": calibration_prompt,
+                        "max_samples": 2000,
+                        "sample_seed": 1402,
+                        "use_augmentation": False,
+                    },
+                    "CC-BY-4.0 / GQA terms",
+                    "https://cs.stanford.edu/people/dorarad/gqa/about.html",
+                    True,
+                )
             ),
             _source(
-                {
-                    "name": "coco_object_replay",
-                    "data_path": coco_direct_path,
-                    "image_dir": image_dir,
-                    "system_prompt": calibration_prompt,
-                    "max_samples": 1200,
-                    "sample_seed": 1403,
-                    "use_augmentation": False,
-                }
+                _apply_license(
+                    {
+                        "name": "coco_object_replay",
+                        "data_path": coco_direct_path,
+                        "image_dir": image_dir,
+                        "system_prompt": calibration_prompt,
+                        "max_samples": 1200,
+                        "sample_seed": 1403,
+                        "use_augmentation": False,
+                    },
+                    "CC-BY-4.0 / COCO terms",
+                    "https://cocodataset.org/#termsofuse",
+                    True,
+                )
             ),
             _source(
-                {
-                    "name": "short_llava_replay",
-                    "data_path": short_direct_path,
-                    "image_dir": image_dir,
-                    "system_prompt": calibration_prompt,
-                    "max_samples": 600,
-                    "sample_seed": 1404,
-                    "use_augmentation": False,
-                }
+                _apply_license(
+                    {
+                        "name": "short_llava_replay",
+                        "data_path": short_direct_path,
+                        "image_dir": image_dir,
+                        "system_prompt": calibration_prompt,
+                        "max_samples": 600,
+                        "sample_seed": 1404,
+                        "use_augmentation": False,
+                    },
+                    "LLaVA-Instruct mixed upstream",
+                    "https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K",
+                    False,
+                )
             ),
             _source(
-                {
-                    "name": "pope_presence_replay",
-                    "data_path": pope_presence_path,
-                    "image_dir": image_dir,
-                    "system_prompt": pope_prompt,
-                    "max_samples": 600,
-                    "sample_seed": 1405,
-                    "use_augmentation": False,
-                }
+                _apply_license(
+                    {
+                        "name": "pope_presence_replay",
+                        "data_path": pope_presence_path,
+                        "image_dir": image_dir,
+                        "system_prompt": pope_prompt,
+                        "max_samples": 600,
+                        "sample_seed": 1405,
+                        "use_augmentation": False,
+                    },
+                    "CC-BY-4.0 / COCO terms",
+                    "https://cocodataset.org/#termsofuse",
+                    True,
+                )
             ),
             _source(
-                {
-                    "name": "pope_absence_replay",
-                    "data_path": pope_absence_path,
-                    "image_dir": image_dir,
-                    "system_prompt": pope_prompt,
-                    "max_samples": 600,
-                    "sample_seed": 1406,
-                    "use_augmentation": False,
-                }
+                _apply_license(
+                    {
+                        "name": "pope_absence_replay",
+                        "data_path": pope_absence_path,
+                        "image_dir": image_dir,
+                        "system_prompt": pope_prompt,
+                        "max_samples": 600,
+                        "sample_seed": 1406,
+                        "use_augmentation": False,
+                    },
+                    "CC-BY-4.0 / COCO terms",
+                    "https://cocodataset.org/#termsofuse",
+                    True,
+                )
             ),
         ]
 
@@ -5874,6 +6329,9 @@ def load_finetune_dataset(
         "v15_qwen_retention_replay_stage1b",
         "v15_qwen_balanced_stage1b",
         "v15_qwen_balanced_notext_stage1b",
+        "v17_qwen_balanced_legacy10_stage1b",
+        "v17_qwen_balanced_option_i_stage1b",
+        "v17_qwen_balanced_option_ii_stage1b",
         "v15_qwen_chartqa_stage1b",
         "v15_qwen_textvqa_stage1b",
         "v15_qwen_counterfactual_contrastive_stage1b",
@@ -5887,6 +6345,29 @@ def load_finetune_dataset(
             "not contain enough reliable visual evidence, answer: cannot determine."
         )
         pope_prompt = "Answer yes or no."
+        if dataset == "v17_qwen_balanced_legacy10_stage1b":
+            balanced_profile = "legacy10"
+        elif dataset == "v17_qwen_balanced_option_ii_stage1b":
+            balanced_profile = "option_ii"
+        else:
+            balanced_profile = "option_i"
+        capability_kl_weight = 0.05 if balanced_profile == "option_ii" else 0.0
+        if balanced_profile == "option_i":
+            balanced_weights = {
+                "chartqa": 17.0,
+                "textvqa": 13.0,
+                "gqa_spatial": 10.0,
+                "wrong_counterfactual": 1.0,
+                "blank_counterfactual": 1.0,
+            }
+        else:
+            balanced_weights = {
+                "chartqa": 25.0,
+                "textvqa": 20.0,
+                "gqa_spatial": 15.0,
+                "wrong_counterfactual": 5.0 if balanced_profile == "legacy10" else 1.0,
+                "blank_counterfactual": 5.0 if balanced_profile == "legacy10" else 1.0,
+            }
 
         if dataset == "v15_qwen_chartqa_stage1b":
             chartqa_path, chartqa_image_dir = _chartqa_instruction_path(
@@ -6040,6 +6521,7 @@ def load_finetune_dataset(
             pope_presence_path=pope_presence_path,
             pope_absence_path=pope_absence_path,
             weighted=(dataset != "v15_qwen_retention_replay_stage1b"),
+            weight_profile=balanced_profile,
         )
         if dataset == "v15_qwen_retention_replay_stage1b":
             mixture_strategy = "concat"
@@ -6065,79 +6547,112 @@ def load_finetune_dataset(
             sources = list(retention_sources)
             sources.extend(
                 [
-                    {
-                        "name": "chartqa_capability",
-                        "data_path": chartqa_path,
-                        "image_dir": chartqa_image_dir,
-                        "system_prompt": calibration_prompt,
-                        "weight": 25.0 if dataset == "v15_qwen_balanced_stage1b" else 35.0,
-                        "max_samples": 20000,
-                        "sample_seed": 1501,
-                        "teacher_kl_weight": 0.0,
-                        "loss_family": "chartqa",
-                        "dataset_family": "capability",
-                        "use_augmentation": False,
-                    },
-                    {
-                        "name": "gqa_spatial_relation_capability",
-                        "data_path": gqa_spatial_path,
-                        "image_dir": gqa_spatial_image_dir,
-                        "system_prompt": calibration_prompt,
-                        "weight": 15.0 if dataset == "v15_qwen_balanced_stage1b" else 25.0,
-                        "max_samples": 15000,
-                        "sample_seed": 1503,
-                        "teacher_kl_weight": 0.0,
-                        "loss_family": "gqa_spatial_relation",
-                        "dataset_family": "capability",
-                        "use_augmentation": False,
-                    },
-                    {
-                        "name": "vqa_wrong_image_counterfactual_ce",
-                        "data_path": wrong_path,
-                        "image_dir": wrong_image_dir,
-                        "system_prompt": control_prompt,
-                        "weight": 5.0,
-                        "max_samples": 5000,
-                        "sample_seed": 1504,
-                        "teacher_kl_weight": 0.0,
-                        "loss_family": "counterfactual_ce",
-                        "dataset_family": "counterfactual",
-                        "use_augmentation": False,
-                    },
-                    {
-                        "name": "vqa_blank_image_counterfactual_ce",
-                        "data_path": blank_path,
-                        "image_dir": blank_image_dir,
-                        "system_prompt": control_prompt,
-                        "weight": 5.0,
-                        "max_samples": 5000,
-                        "sample_seed": 1505,
-                        "teacher_kl_weight": 0.0,
-                        "loss_family": "counterfactual_ce",
-                        "dataset_family": "counterfactual",
-                        "use_augmentation": False,
-                    },
+                    _apply_license(
+                        {
+                            "name": "chartqa_capability",
+                            "data_path": chartqa_path,
+                            "image_dir": chartqa_image_dir,
+                            "system_prompt": calibration_prompt,
+                            "weight": balanced_weights["chartqa"],
+                            "max_samples": 20000,
+                            "sample_seed": 1501,
+                            "teacher_kl_weight": capability_kl_weight,
+                            "loss_family": "chartqa",
+                            "dataset_family": "capability",
+                            "use_augmentation": False,
+                        },
+                        "GPL-3.0 / mirror provenance pending",
+                        "https://huggingface.co/datasets/anhdang000/ChartQA-V2",
+                        False,
+                    ),
+                    _apply_license(
+                        {
+                            "name": "gqa_spatial_relation_capability",
+                            "data_path": gqa_spatial_path,
+                            "image_dir": gqa_spatial_image_dir,
+                            "system_prompt": calibration_prompt,
+                            "weight": balanced_weights["gqa_spatial"],
+                            "max_samples": 15000,
+                            "sample_seed": 1503,
+                            "teacher_kl_weight": capability_kl_weight,
+                            "loss_family": "gqa_spatial_relation",
+                            "dataset_family": "capability",
+                            "use_augmentation": False,
+                        },
+                        "CC-BY-4.0 / GQA terms",
+                        "https://cs.stanford.edu/people/dorarad/gqa/about.html",
+                        True,
+                    ),
+                    _apply_license(
+                        {
+                            "name": "vqa_wrong_image_counterfactual_ce",
+                            "data_path": wrong_path,
+                            "image_dir": wrong_image_dir,
+                            "system_prompt": control_prompt,
+                            "weight": balanced_weights["wrong_counterfactual"],
+                            "max_samples": 5000,
+                            "sample_seed": 1504,
+                            "teacher_kl_weight": 0.0,
+                            "loss_family": (
+                                "counterfactual_ce_legacy_10pct"
+                                if balanced_profile == "legacy10"
+                                else "counterfactual_ce_reduced_dose"
+                            ),
+                            "dataset_family": "counterfactual",
+                            "use_augmentation": False,
+                        },
+                        "CC-BY-4.0 / VQAv2 terms",
+                        "https://visualqa.org/download.html",
+                        True,
+                    ),
+                    _apply_license(
+                        {
+                            "name": "vqa_blank_image_counterfactual_ce",
+                            "data_path": blank_path,
+                            "image_dir": blank_image_dir,
+                            "system_prompt": control_prompt,
+                            "weight": balanced_weights["blank_counterfactual"],
+                            "max_samples": 5000,
+                            "sample_seed": 1505,
+                            "teacher_kl_weight": 0.0,
+                            "loss_family": (
+                                "counterfactual_ce_legacy_10pct"
+                                if balanced_profile == "legacy10"
+                                else "counterfactual_ce_reduced_dose"
+                            ),
+                            "dataset_family": "counterfactual",
+                            "use_augmentation": False,
+                        },
+                        "CC-BY-4.0 / VQAv2 terms",
+                        "https://visualqa.org/download.html",
+                        True,
+                    ),
                 ]
             )
-            if dataset == "v15_qwen_balanced_stage1b":
+            if dataset != "v15_qwen_balanced_notext_stage1b":
                 textvqa_path, textvqa_image_dir = _textvqa_instruction_path(
                     split="train",
                     max_samples=20000,
                 )
                 sources.append(
-                    {
-                        "name": "textvqa_capability",
-                        "data_path": textvqa_path,
-                        "image_dir": textvqa_image_dir,
-                        "system_prompt": calibration_prompt,
-                        "weight": 20.0,
-                        "max_samples": 20000,
-                        "sample_seed": 1502,
-                        "teacher_kl_weight": 0.0,
-                        "loss_family": "textvqa",
-                        "dataset_family": "capability",
-                        "use_augmentation": False,
-                    }
+                    _apply_license(
+                        {
+                            "name": "textvqa_capability",
+                            "data_path": textvqa_path,
+                            "image_dir": textvqa_image_dir,
+                            "system_prompt": calibration_prompt,
+                            "weight": balanced_weights["textvqa"],
+                            "max_samples": 20000,
+                            "sample_seed": 1502,
+                            "teacher_kl_weight": capability_kl_weight,
+                            "loss_family": "textvqa_majority_answer",
+                            "dataset_family": "capability",
+                            "use_augmentation": False,
+                        },
+                        "CC-BY-4.0 / TextVQA terms",
+                        "https://textvqa.org/dataset/",
+                        True,
+                    )
                 )
             mixture_strategy = "weighted"
 
