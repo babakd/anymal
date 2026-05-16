@@ -1,0 +1,34 @@
+{
+  "train_sources": [
+    {
+      "source_path": "/checkpoints/chartqa_data/v17_chartqa_train_leakclean_val_seed1501_n20000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/chartqa_images_hf",
+      "unique_hashes": 12740,
+      "checked_refs": 20000,
+      "missing_refs": 0,
+      "missing_examples": []
+    }
+  ],
+  "eval_artifacts": [
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/chartqa_images_hf",
+      "unique_hashes": 1055,
+      "checked_refs": 7680,
+      "missing_refs": 0,
+      "missing_examples": []
+    }
+  ],
+  "total_unique_train_hashes": 12740,
+  "total_unique_eval_hashes": 1055,
+  "pairs": [
+    {
+      "train_source": "/checkpoints/chartqa_data/v17_chartqa_train_leakclean_val_seed1501_n20000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    }
+  ]
+}

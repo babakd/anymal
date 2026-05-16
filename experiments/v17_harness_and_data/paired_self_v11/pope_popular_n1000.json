@@ -1,0 +1,27 @@
+{
+  "benchmark": "pope",
+  "candidate_artifact": "/tmp/v17_artifacts/v11/pope_popular_n1000.json",
+  "baseline_artifact": "/tmp/v17_artifacts/v11/pope_popular_n1000.json",
+  "candidate_run_label": "v11_frontier_pope_popular_n1000",
+  "baseline_run_label": "v11_frontier_pope_popular_n1000",
+  "candidate_eval_schema_version": "v17_fixed_harness",
+  "baseline_eval_schema_version": "v17_fixed_harness",
+  "candidate_seed": 42,
+  "baseline_seed": 42,
+  "paired_total": 1000,
+  "candidate_only_rows": 0,
+  "baseline_only_rows": 0,
+  "bootstrap_seed": 12345,
+  "bootstrap_resamples": 10000,
+  "metrics": {
+    "pope_accuracy": {
+      "candidate_accuracy": 81.8,
+      "baseline_accuracy": 81.8,
+      "observed_delta": 0.0,
+      "ci95_low": 0.0,
+      "ci95_high": 0.0,
+      "p_value_two_sided": 1.0,
+      "significant": false
+    }
+  }
+}

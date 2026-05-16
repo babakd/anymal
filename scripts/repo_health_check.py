@@ -20,6 +20,9 @@ ALLOWED_ROOT_REDIRECTS = {
     "V8_CORE_LLM_SWAP_RESULTS.md",
     "V8_QWEN3_plan.md",
     "V8_experiment.md",
+    "V15_QWEN3.md",
+    "V16_QWEN3.md",
+    "V17_HARNESS_AND_DATA.md",
     "v7_experiments.md",
     "v9_qwen_experiment_results.md",
     "v9_qwen_plan.md",
@@ -27,11 +30,13 @@ ALLOWED_ROOT_REDIRECTS = {
 FORBIDDEN_PATH_PARTS = ("Users", "babakd", "anymal")
 FORBIDDEN_TEXT = "/" + "/".join(FORBIDDEN_PATH_PARTS)
 ALLOWED_ROOT_PY = {
+    "chartqa_checkpoint_eval.py",
     "gqa_checkpoint_eval.py",
     "modal_train.py",
     "modal_v8_llm_swap_smoke.py",
     "model_metadata.py",
     "pope_checkpoint_eval.py",
+    "textvqa_checkpoint_eval.py",
     "vqa_checkpoint_eval.py",
 }
 MAX_ROOT_WRAPPER_LINES = 40

@@ -1,0 +1,46 @@
+{
+  "train_sources": [
+    {
+      "source_path": "/checkpoints/llava_data/coco_pope_style_presence_train2017_leakclean_10000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/coco_images",
+      "unique_hashes": 10000,
+      "checked_refs": 10000,
+      "missing_refs": 0
+    },
+    {
+      "source_path": "/checkpoints/llava_data/coco_pope_style_absence_train2017_leakclean_10000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/coco_images",
+      "unique_hashes": 10000,
+      "checked_refs": 10000,
+      "missing_refs": 0
+    }
+  ],
+  "eval_artifacts": [
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/pope_adversarial_n1000.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/coco_val2014",
+      "unique_hashes": 455,
+      "checked_refs": 4000,
+      "missing_refs": 0
+    }
+  ],
+  "total_unique_train_hashes": 18806,
+  "total_unique_eval_hashes": 455,
+  "pairs": [
+    {
+      "train_source": "/checkpoints/llava_data/coco_pope_style_presence_train2017_leakclean_10000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_adversarial_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/llava_data/coco_pope_style_absence_train2017_leakclean_10000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/pope_adversarial_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    }
+  ]
+}

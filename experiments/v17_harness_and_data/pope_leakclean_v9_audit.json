@@ -1,0 +1,84 @@
+{
+  "schema_version": "v9_leakage_audit_v1",
+  "eval_artifacts": [
+    {
+      "path": "/tmp/v17_fixed_harness_v11_pope_adversarial_n1000.json",
+      "run": "v11_frontier_pope_adversarial_n1000",
+      "prediction_samples": 1000,
+      "rows_with_refs": 1000,
+      "missing_ref_rows": 0,
+      "unparseable_ref_rows": 0,
+      "non_object_rows": 0,
+      "default_coco_split": "val2014"
+    }
+  ],
+  "eval_totals": {
+    "prediction_samples": 1000,
+    "rows_with_refs": 1000,
+    "missing_ref_rows": 0,
+    "unparseable_ref_rows": 0,
+    "non_object_rows": 0,
+    "blocks_without_prediction_samples": 0,
+    "numeric_ids": 455,
+    "raw_refs": 455,
+    "coco_split_counts": {
+      "val2014": 455
+    }
+  },
+  "train_sources": [
+    "/checkpoints/llava_data/coco_pope_style_presence_train2017_leakclean_10000.json",
+    "/checkpoints/llava_data/coco_pope_style_absence_train2017_leakclean_10000.json"
+  ],
+  "sources": [
+    {
+      "source": "/checkpoints/llava_data/coco_pope_style_presence_train2017_leakclean_10000.json",
+      "missing": false,
+      "samples": 10000,
+      "image_ref_values": 10000,
+      "missing_ref_samples": 0,
+      "unparseable_ref_samples": 0,
+      "numeric_ids": 10000,
+      "raw_refs": 20000,
+      "coco_split_counts": {},
+      "exact_val2014_overlap": 0,
+      "numeric_id_overlap": 0,
+      "raw_ref_overlap": 0,
+      "exact_val2014_overlap_examples": [],
+      "numeric_id_overlap_examples": [],
+      "raw_ref_overlap_examples": []
+    },
+    {
+      "source": "/checkpoints/llava_data/coco_pope_style_absence_train2017_leakclean_10000.json",
+      "missing": false,
+      "samples": 10000,
+      "image_ref_values": 10000,
+      "missing_ref_samples": 0,
+      "unparseable_ref_samples": 0,
+      "numeric_ids": 10000,
+      "raw_refs": 20000,
+      "coco_split_counts": {},
+      "exact_val2014_overlap": 0,
+      "numeric_id_overlap": 0,
+      "raw_ref_overlap": 0,
+      "exact_val2014_overlap_examples": [],
+      "numeric_id_overlap_examples": [],
+      "raw_ref_overlap_examples": []
+    }
+  ],
+  "train_totals": {
+    "train_sources": 2,
+    "missing_sources": 0,
+    "total_exact_val2014_overlap": 0,
+    "total_numeric_id_overlap": 0,
+    "total_raw_ref_overlap": 0,
+    "numeric_only_warning": false
+  },
+  "missing_sources": [],
+  "gates": {
+    "missing_source_gate": true,
+    "exact_val2014_gate": true,
+    "numeric_id_gate": true,
+    "raw_ref_gate": true,
+    "overall_pass": true
+  }
+}

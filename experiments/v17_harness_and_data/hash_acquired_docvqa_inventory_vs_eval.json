@@ -1,0 +1,79 @@
+{
+  "train_sources": [
+    {
+      "source_path": "/checkpoints/v17_acquired/data/docvqa_public_lmms_validation_seed1701_n2000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/v17_acquired/images/docvqa_public_lmms",
+      "unique_hashes": 991,
+      "checked_refs": 2000,
+      "missing_refs": 0,
+      "missing_examples": []
+    }
+  ],
+  "eval_artifacts": [
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/chartqa_images_hf",
+      "unique_hashes": 1055,
+      "checked_refs": 7680,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/textvqa_validation_full.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/textvqa_images_hf",
+      "unique_hashes": 3166,
+      "checked_refs": 20000,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/gqa_search_n1000.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/gqa_images_hf",
+      "unique_hashes": 349,
+      "checked_refs": 4000,
+      "missing_refs": 0,
+      "missing_examples": []
+    },
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/coco_val2014",
+      "unique_hashes": 2316,
+      "checked_refs": 12000,
+      "missing_refs": 0,
+      "missing_examples": []
+    }
+  ],
+  "total_unique_train_hashes": 991,
+  "total_unique_eval_hashes": 6886,
+  "pairs": [
+    {
+      "train_source": "/checkpoints/v17_acquired/data/docvqa_public_lmms_validation_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/docvqa_public_lmms_validation_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/textvqa_validation_full.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/docvqa_public_lmms_validation_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_search_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    },
+    {
+      "train_source": "/checkpoints/v17_acquired/data/docvqa_public_lmms_validation_seed1701_n2000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/vqa_clean_n3000_seed42.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    }
+  ]
+}

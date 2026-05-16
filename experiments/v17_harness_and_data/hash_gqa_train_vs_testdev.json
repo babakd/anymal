@@ -1,0 +1,34 @@
+{
+  "train_sources": [
+    {
+      "source_path": "/checkpoints/gqa_data/v17_gqa_metadata_spatial_train_balanced_seed1503_n15000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/gqa_images_hf",
+      "unique_hashes": 12683,
+      "checked_refs": 29998,
+      "missing_refs": 0,
+      "missing_examples": []
+    }
+  ],
+  "eval_artifacts": [
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/gqa_search_n1000.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/gqa_images_hf",
+      "unique_hashes": 349,
+      "checked_refs": 4000,
+      "missing_refs": 0,
+      "missing_examples": []
+    }
+  ],
+  "total_unique_train_hashes": 12683,
+  "total_unique_eval_hashes": 349,
+  "pairs": [
+    {
+      "train_source": "/checkpoints/gqa_data/v17_gqa_metadata_spatial_train_balanced_seed1503_n15000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/gqa_search_n1000.json",
+      "overlap_count": 0,
+      "overlap_examples": []
+    }
+  ]
+}

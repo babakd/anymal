@@ -1,0 +1,100 @@
+{
+  "train_sources": [
+    {
+      "source_path": "/checkpoints/chartqa_data/v15_chartqa_train_seed1501_n20000.json",
+      "kind": "train",
+      "image_dir": "/checkpoints/chartqa_images_hf",
+      "unique_hashes": 12727,
+      "checked_refs": 19979,
+      "missing_refs": 0
+    }
+  ],
+  "eval_artifacts": [
+    {
+      "source_path": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "kind": "eval",
+      "image_dir": "/checkpoints/chartqa_images_hf",
+      "unique_hashes": 1055,
+      "checked_refs": 7680,
+      "missing_refs": 0
+    }
+  ],
+  "total_unique_train_hashes": 12727,
+  "total_unique_eval_hashes": 1055,
+  "pairs": [
+    {
+      "train_source": "/checkpoints/chartqa_data/v15_chartqa_train_seed1501_n20000.json",
+      "eval_artifact": "/checkpoints/v17_fixed_harness/v11/chartqa_val_full.json",
+      "overlap_count": 5,
+      "overlap_examples": [
+        {
+          "sha256_first_mib": "0b9a48e5fdbfed89797d2c6ba71115db88a5cff255c5eb1bbca40d1f4e785a6b",
+          "train_paths": [
+            "/checkpoints/chartqa_images_hf/chartqa_train_14138.jpg"
+          ],
+          "eval_paths": [
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000046.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000046.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930001146.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930001146.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000046.jpg"
+          ]
+        },
+        {
+          "sha256_first_mib": "1092f9ce1d58220bcca853eb80c047c55025532b3edca1f6d1abcc20b8e23522",
+          "train_paths": [
+            "/checkpoints/chartqa_images_hf/chartqa_train_15935.jpg"
+          ],
+          "eval_paths": [
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000000.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000000.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000000.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000000.jpg"
+          ]
+        },
+        {
+          "sha256_first_mib": "69858a9efa540a66064bb3c087f55f1793a9de9dc677403bb61b63557a37d801",
+          "train_paths": [
+            "/checkpoints/chartqa_images_hf/chartqa_train_20752.jpg",
+            "/checkpoints/chartqa_images_hf/chartqa_train_23069.jpg"
+          ],
+          "eval_paths": [
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000522.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000522.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000849.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000849.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930001206.jpg"
+          ]
+        },
+        {
+          "sha256_first_mib": "a7ab9e590b7b69acbce447f9d618f6e459349c6f46fb97e2a71768b5d310d405",
+          "train_paths": [
+            "/checkpoints/chartqa_images_hf/chartqa_train_3145.jpg",
+            "/checkpoints/chartqa_images_hf/chartqa_train_35200.jpg"
+          ],
+          "eval_paths": [
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930001609.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930001609.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000480.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000480.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930001192.jpg"
+          ]
+        },
+        {
+          "sha256_first_mib": "b48b1736ff77510e7b1ee2108879372e13124d8be474df10bc473c383a3694c4",
+          "train_paths": [
+            "/checkpoints/chartqa_images_hf/chartqa_train_31025.jpg",
+            "/checkpoints/chartqa_images_hf/chartqa_train_17512.jpg"
+          ],
+          "eval_paths": [
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000813.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000813.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930001040.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930001040.jpg",
+            "/checkpoints/chartqa_images_hf/COCO_val2014_000930000813.jpg"
+          ]
+        }
+      ]
+    }
+  ]
+}
