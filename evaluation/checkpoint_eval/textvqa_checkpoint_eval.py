@@ -38,6 +38,16 @@ PROJECT_DIR = _resolve_project_dir()
 if os.path.exists(REMOTE_PROJECT_DIR) and REMOTE_PROJECT_DIR not in sys.path:
     sys.path.insert(0, REMOTE_PROJECT_DIR)
 
+from evaluation.checkpoint_eval.dataset_revisions import (
+    pinned_revision as _pinned_revision,
+    slice_fingerprint as _slice_fingerprint,
+)
+from evaluation.checkpoint_eval.paired_bootstrap import (
+    binary_ci_metrics,
+    mean_ci_metrics,
+    paired_bootstrap_ci,
+)
+
 
 def _ignore_modal_mount(path: Path) -> bool:
     return ".git" in path.parts
@@ -93,12 +103,24 @@ def _vqa_layout_name(image_id: int) -> str:
 def _load_hf_dataset(dataset_name: str, split: str):
     from datasets import load_dataset
 
+    revision = _pinned_revision(dataset_name, required=str(dataset_name) == HF_TEXTVQA_DATASET)
     try:
-        return load_dataset(dataset_name, split=split, cache_dir=HF_CACHE_DIR)
+        return load_dataset(
+            dataset_name,
+            split=split,
+            cache_dir=HF_CACHE_DIR,
+            revision=revision,
+        )
     except RuntimeError as exc:
         if str(dataset_name) != "facebook/textvqa" or "Dataset scripts" not in str(exc):
             raise
-        return load_dataset("lmms-lab/textvqa", split=split, cache_dir=HF_CACHE_DIR)
+        fallback_revision = _pinned_revision(HF_TEXTVQA_DATASET)
+        return load_dataset(
+            HF_TEXTVQA_DATASET,
+            split=split,
+            cache_dir=HF_CACHE_DIR,
+            revision=fallback_revision,
+        )
 
 
 def _first_nonempty_text(values: list[Any]) -> str:
@@ -188,6 +210,50 @@ def _build_textvqa_vqa_files(
     os.makedirs(image_dir, exist_ok=True)
 
     resolved_split = "validation" if str(split).lower() == "val" else str(split)
+    resolved_dataset_name = (
+        HF_TEXTVQA_DATASET if str(dataset_name) == "facebook/textvqa" else str(dataset_name)
+    )
+    revision = _pinned_revision(
+        resolved_dataset_name,
+        required=resolved_dataset_name == HF_TEXTVQA_DATASET,
+    )
+    fingerprint = _slice_fingerprint(
+        dataset_id=resolved_dataset_name,
+        revision=revision or "",
+        split=resolved_split,
+        seed=int(seed),
+        offset=0,
+        max_samples=int(max_samples),
+    )
+    slice_dir = "/checkpoints/v17_slices"
+    os.makedirs(slice_dir, exist_ok=True)
+    slice_artifact = os.path.join(slice_dir, f"textvqa_{resolved_split}_{fingerprint}.json")
+    if os.path.exists(slice_artifact):
+        with open(slice_artifact, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        questions_path = payload.get("questions_path")
+        annotations_path = payload.get("annotations_path")
+        if questions_path and annotations_path and os.path.exists(questions_path) and os.path.exists(annotations_path):
+            return (
+                str(questions_path),
+                str(annotations_path),
+                {
+                    "source_dataset": resolved_dataset_name,
+                    "source_dataset_revision": revision,
+                    "source_split": resolved_split,
+                    "slice_fingerprint": fingerprint,
+                    "slice_artifact": slice_artifact,
+                    "split_definition_version": payload.get(
+                        "split_definition_version",
+                        "hf_textvqa_seeded_rows_v1",
+                    ),
+                    "selection_seed": int(seed),
+                    "source_indices": payload.get("source_indices") or [],
+                    "rows": int(payload.get("rows") or 0),
+                    "skipped_image_rows": int(payload.get("skipped_image_rows") or 0),
+                    "loaded_from_materialized_slice": True,
+                },
+            )
     dataset = _load_hf_dataset(dataset_name, resolved_split)
     indices = list(range(len(dataset)))
     rng = random.Random(int(seed))
@@ -247,18 +313,42 @@ def _build_textvqa_vqa_files(
         json.dump({"questions": questions}, f)
     with open(annotations_path, "w", encoding="utf-8") as f:
         json.dump({"annotations": annotations}, f)
+    with open(slice_artifact, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "dataset_id": resolved_dataset_name,
+                "revision": revision,
+                "split": resolved_split,
+                "seed": int(seed),
+                "offset": 0,
+                "max_samples": int(max_samples),
+                "fingerprint": fingerprint,
+                "split_definition_version": "hf_textvqa_seeded_rows_v1",
+                "questions_path": questions_path,
+                "annotations_path": annotations_path,
+                "rows": len(questions),
+                "source_indices": source_indices,
+                "skipped_image_rows": int(skipped_image),
+            },
+            f,
+            indent=2,
+        )
     volume.commit()
     return (
         questions_path,
         annotations_path,
         {
-            "source_dataset": dataset_name,
+            "source_dataset": resolved_dataset_name,
+            "source_dataset_revision": revision,
             "source_split": resolved_split,
+            "slice_fingerprint": fingerprint,
+            "slice_artifact": slice_artifact,
             "split_definition_version": "hf_textvqa_seeded_rows_v1",
             "selection_seed": int(seed),
             "source_indices": source_indices,
             "rows": len(questions),
             "skipped_image_rows": int(skipped_image),
+            "loaded_from_materialized_slice": False,
         },
     )
 
@@ -274,18 +364,30 @@ def _norm_answer(text: str) -> str:
     return " ".join(words).strip()
 
 
-def _compute_textvqa_metrics(predictions: list[dict[str, Any]]) -> dict[str, Any]:
+def _compute_textvqa_metrics(
+    predictions: list[dict[str, Any]],
+    ci_confidence: float = 0.95,
+    bootstrap_resamples: int = 10000,
+    bootstrap_seed: int = 12345,
+) -> dict[str, Any]:
     total = len(predictions)
     exact = 0
     soft = 0.0
+    exact_values: list[int] = []
+    soft_values: list[float] = []
     by_type: dict[str, dict[str, float]] = {}
     for row in predictions:
         pred = _norm_answer(row.get("answer", ""))
         answers = [_norm_answer(answer) for answer in row.get("answers", [])]
         matches = sum(1 for answer in answers if pred and pred == answer)
-        exact += int(matches > 0)
+        exact_ok = int(matches > 0)
+        exact += exact_ok
         soft_score = min(1.0, matches / 3.0)
         soft += soft_score
+        exact_values.append(exact_ok)
+        soft_values.append(float(soft_score))
+        row["textvqa_exact_match"] = bool(exact_ok)
+        row["textvqa_soft_accuracy"] = float(soft_score)
         answer_type = str(row.get("answer_type") or "unknown").replace("/", "_")
         bucket = by_type.setdefault(answer_type, {"exact": 0.0, "soft": 0.0, "total": 0.0})
         bucket["exact"] += float(matches > 0)
@@ -297,6 +399,25 @@ def _compute_textvqa_metrics(predictions: list[dict[str, Any]]) -> dict[str, Any
         "textvqa_correct": exact,
         "textvqa_total": total,
     }
+    metrics.update(
+        binary_ci_metrics(
+            "textvqa_exact_match",
+            exact_values,
+            seed=bootstrap_seed,
+            n_resamples=bootstrap_resamples,
+            confidence=ci_confidence,
+        )
+    )
+    metrics.update(
+        mean_ci_metrics(
+            "textvqa_soft",
+            soft_values,
+            seed=bootstrap_seed,
+            n_resamples=bootstrap_resamples,
+            confidence=ci_confidence,
+            include_binomial_when_binary=False,
+        )
+    )
     for key, bucket in sorted(by_type.items()):
         denom = bucket["total"] or 1.0
         metrics[f"textvqa_exact_match_{key}"] = 100.0 * bucket["exact"] / denom

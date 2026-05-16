@@ -38,6 +38,12 @@ PROJECT_DIR = _resolve_project_dir()
 if os.path.exists(REMOTE_PROJECT_DIR) and REMOTE_PROJECT_DIR not in sys.path:
     sys.path.insert(0, REMOTE_PROJECT_DIR)
 
+from evaluation.checkpoint_eval.dataset_revisions import (
+    pinned_revision as _pinned_revision,
+    slice_fingerprint as _slice_fingerprint,
+)
+from evaluation.checkpoint_eval.paired_bootstrap import binary_ci_metrics, paired_bootstrap_ci
+
 
 def _ignore_modal_mount(path: Path) -> bool:
     return ".git" in path.parts
@@ -147,10 +153,48 @@ def _build_chartqa_vqa_files(
     os.makedirs(CHARTQA_DIR, exist_ok=True)
     os.makedirs(image_dir, exist_ok=True)
 
+    revision = _pinned_revision(dataset_name)
+    fingerprint = _slice_fingerprint(
+        dataset_id=dataset_name,
+        revision=revision,
+        split=split,
+        seed=int(seed),
+        offset=0,
+        max_samples=int(max_samples),
+    )
+    slice_dir = "/checkpoints/v17_slices"
+    os.makedirs(slice_dir, exist_ok=True)
+    slice_artifact = os.path.join(slice_dir, f"chartqa_{split}_{fingerprint}.json")
+    if os.path.exists(slice_artifact):
+        with open(slice_artifact, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        questions_path = payload.get("questions_path")
+        annotations_path = payload.get("annotations_path")
+        if questions_path and annotations_path and os.path.exists(questions_path) and os.path.exists(annotations_path):
+            return (
+                str(questions_path),
+                str(annotations_path),
+                {
+                    "source_dataset": dataset_name,
+                    "source_dataset_revision": revision,
+                    "source_split": split,
+                    "slice_fingerprint": fingerprint,
+                    "slice_artifact": slice_artifact,
+                    "split_definition_version": payload.get(
+                        "split_definition_version",
+                        "hf_chartqa_seeded_rows_v1",
+                    ),
+                    "selection_seed": int(seed),
+                    "source_indices": payload.get("source_indices") or [],
+                    "rows": int(payload.get("rows") or 0),
+                    "loaded_from_materialized_slice": True,
+                },
+            )
     dataset = load_dataset(
         dataset_name,
         split=split,
         cache_dir=HF_CACHE_DIR,
+        revision=revision,
     )
     indices = list(range(len(dataset)))
     rng = random.Random(int(seed))
@@ -208,17 +252,40 @@ def _build_chartqa_vqa_files(
         json.dump({"questions": questions}, f)
     with open(annotations_path, "w", encoding="utf-8") as f:
         json.dump({"annotations": annotations}, f)
+    with open(slice_artifact, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "dataset_id": dataset_name,
+                "revision": revision,
+                "split": split,
+                "seed": int(seed),
+                "offset": 0,
+                "max_samples": int(max_samples),
+                "fingerprint": fingerprint,
+                "split_definition_version": "hf_chartqa_seeded_rows_v1",
+                "questions_path": questions_path,
+                "annotations_path": annotations_path,
+                "rows": len(indices),
+                "source_indices": source_indices,
+            },
+            f,
+            indent=2,
+        )
     volume.commit()
     return (
         questions_path,
         annotations_path,
         {
             "source_dataset": dataset_name,
+            "source_dataset_revision": revision,
             "source_split": split,
+            "slice_fingerprint": fingerprint,
+            "slice_artifact": slice_artifact,
             "split_definition_version": "hf_chartqa_seeded_rows_v1",
             "selection_seed": int(seed),
             "source_indices": source_indices,
             "rows": len(indices),
+            "loaded_from_materialized_slice": False,
         },
     )
 
@@ -234,26 +301,125 @@ def _norm_answer(text: str) -> str:
     return " ".join(words).strip()
 
 
-def _compute_chartqa_metrics(predictions: list[dict[str, Any]]) -> dict[str, Any]:
+_CHARTQA_ASSISTANT_PREFIX_RE = re.compile(r"^assistant\s*[:\n\r]+\s*", re.IGNORECASE)
+_CHARTQA_THINKING_CLOSE_RE = re.compile(r"</think\s*>", re.IGNORECASE)
+_CHARTQA_THINKING_TAG_RE = re.compile(r"</?think\s*>", re.IGNORECASE)
+_CHARTQA_SPECIAL_TOKEN_RE = re.compile(r"<\|[^>]+?\|>")
+
+
+def _strip_chartqa_answer(text: str) -> str:
+    text = str(text or "").strip()
+    if _CHARTQA_THINKING_CLOSE_RE.search(text):
+        text = _CHARTQA_THINKING_CLOSE_RE.split(text)[-1].strip()
+    elif _CHARTQA_THINKING_TAG_RE.search(text):
+        text = ""
+    text = _CHARTQA_SPECIAL_TOKEN_RE.sub(" ", text)
+    text = _CHARTQA_ASSISTANT_PREFIX_RE.sub("", text).strip().lower()
+    text = text.split("\n", 1)[0].strip()
+    for prefix in ("the answer is", "answer:", "it is", "this is"):
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+    return text
+
+
+def _parse_chartqa_number(text: str) -> float | None:
+    text = _strip_chartqa_answer(text)
+    text = text.strip()
+    text = re.sub(r"^[\$€£¥]\s*", "", text)
+    text = text.replace(",", "").strip()
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    text = text.rstrip(".").strip()
+    if not re.fullmatch(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", text):
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _chartqa_text_norm(text: str) -> str:
+    text = _strip_chartqa_answer(text)
+    text = re.sub(r"[^\w\s.]", " ", text)
+    text = re.sub(r"(?<!\d)\.(?!\d)", " ", text)
+    words = [word for word in text.split() if word not in {"a", "an", "the"}]
+    return " ".join(words).strip()
+
+
+def chartqa_relaxed_match(pred: str, gold: str) -> bool:
+    """Return ChartQA relaxed accuracy, with numerals in 5% relative tolerance.
+
+    Spelled-out numerals such as "two" are intentionally not mapped to digits;
+    that is a known limitation retained for compatibility with the V17 audit.
+    """
+    gold_num = _parse_chartqa_number(gold)
+    if gold_num is not None:
+        pred_num = _parse_chartqa_number(pred)
+        if pred_num is None:
+            return False
+        epsilon = 1e-12
+        relative_error = abs(pred_num - gold_num) / max(abs(gold_num), epsilon)
+        return relative_error <= 0.05
+    return _chartqa_text_norm(pred) == _chartqa_text_norm(gold)
+
+
+def _compute_chartqa_metrics(
+    predictions: list[dict[str, Any]],
+    ci_confidence: float = 0.95,
+    bootstrap_resamples: int = 10000,
+    bootstrap_seed: int = 12345,
+) -> dict[str, Any]:
     total = len(predictions)
-    correct = 0
+    exact_correct = 0
+    relaxed_correct = 0
+    exact_values: list[int] = []
+    relaxed_values: list[int] = []
     by_type: dict[str, dict[str, int]] = {}
     for row in predictions:
         pred = _norm_answer(row.get("answer", ""))
         answers = [_norm_answer(answer) for answer in row.get("answers", [])]
-        ok = bool(pred and pred in answers)
-        correct += int(ok)
+        exact_ok = bool(pred and pred in answers)
+        relaxed_ok = any(
+            chartqa_relaxed_match(row.get("raw_answer", row.get("answer", "")), answer)
+            for answer in row.get("answers", [])
+        )
+        row["chartqa_exact_match"] = exact_ok
+        row["chartqa_relaxed_match"] = relaxed_ok
+        exact_correct += int(exact_ok)
+        relaxed_correct += int(relaxed_ok)
+        exact_values.append(int(exact_ok))
+        relaxed_values.append(int(relaxed_ok))
         answer_type = str(row.get("answer_type") or "unknown").replace("/", "_")
         bucket = by_type.setdefault(answer_type, {"correct": 0, "total": 0})
-        bucket["correct"] += int(ok)
+        bucket["correct"] += int(relaxed_ok)
         bucket["total"] += 1
     metrics: dict[str, Any] = {
-        "chartqa_exact_match": 100.0 * correct / total if total else 0.0,
-        "chartqa_correct": correct,
+        "chartqa_relaxed_match": 100.0 * relaxed_correct / total if total else 0.0,
+        "chartqa_exact_match": 100.0 * exact_correct / total if total else 0.0,
+        "chartqa_correct": relaxed_correct,
+        "chartqa_exact_correct": exact_correct,
         "chartqa_total": total,
     }
+    metrics.update(
+        binary_ci_metrics(
+            "chartqa_relaxed_match",
+            relaxed_values,
+            seed=bootstrap_seed,
+            n_resamples=bootstrap_resamples,
+            confidence=ci_confidence,
+        )
+    )
+    metrics.update(
+        binary_ci_metrics(
+            "chartqa_exact_match",
+            exact_values,
+            seed=bootstrap_seed,
+            n_resamples=bootstrap_resamples,
+            confidence=ci_confidence,
+        )
+    )
     for key, bucket in sorted(by_type.items()):
-        metrics[f"chartqa_exact_match_{key}"] = (
+        metrics[f"chartqa_relaxed_match_{key}"] = (
             100.0 * bucket["correct"] / bucket["total"] if bucket["total"] else 0.0
         )
         metrics[f"chartqa_num_samples_{key}"] = bucket["total"]
@@ -301,6 +467,9 @@ def evaluate_chartqa(
         seed=int(seed),
         image_dir=str(image_dir),
     )
+    effective_samples = int(chartqa_meta.get("rows") or max_samples)
+    if effective_samples <= 0:
+        raise RuntimeError("ChartQA slice produced no available image/question rows")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     results = []
@@ -328,7 +497,7 @@ def evaluate_chartqa(
             questions=questions,
             annotations=annotations,
             image_dir=image_dir,
-            max_samples=int(max_samples),
+            max_samples=effective_samples,
             seed=int(seed),
             batch_size=int(batch_size),
             prompt_style=str(prompt_style),
