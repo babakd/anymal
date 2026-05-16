@@ -109,9 +109,11 @@ def build_v14_teacher_cache(
     batch_size: int = 4,
     top_k: int = 128,
     split: str = "train",
+    checkpoint_every_batches: int = 1000,
+    resume: bool = True,
 ) -> dict[str, Any]:
     import torch
-    from torch.utils.data import DataLoader
+    from torch.utils.data import DataLoader, Subset
     from tqdm import tqdm
 
     sys.path.insert(0, REMOTE_PROJECT_DIR)
@@ -199,6 +201,46 @@ def build_v14_teacher_cache(
             val_fraction=0.05,
         )
         selected_dataset = val_dataset if split_key == "val" else train_dataset
+    partial_path = output_path + ".partial.pt"
+    entries = {}
+    total_answer_tokens = 0
+    total_remainder = 0.0
+    processed_batches = 0
+    skipped_kl_disabled = 0
+    resumed_from_partial = False
+    if bool(resume) and os.path.exists(partial_path):
+        partial = torch.load(partial_path, map_location="cpu")
+        if partial.get("schema") != "v14_teacher_kl_topk_v1":
+            raise RuntimeError(f"Unexpected teacher-cache partial schema in {partial_path}")
+        if partial.get("dataset") != dataset or partial.get("split") != split:
+            raise RuntimeError(
+                "Teacher-cache partial does not match requested dataset/split: "
+                f"{partial.get('dataset')}/{partial.get('split')} vs {dataset}/{split}"
+            )
+        entries = dict(partial.get("entries") or {})
+        total_answer_tokens = int(partial.get("answer_tokens") or 0)
+        total_remainder = float(partial.get("total_remainder_sum") or 0.0)
+        processed_batches = int(partial.get("processed_batches") or 0)
+        skipped_kl_disabled = int(partial.get("skipped_kl_disabled") or 0)
+        resumed_from_partial = True
+        print(
+            "Resuming teacher cache partial: "
+            f"path={partial_path}, processed_batches={processed_batches}, "
+            f"entries={len(entries)}",
+            flush=True,
+        )
+
+    resume_start = int(processed_batches) * int(batch_size)
+    if resume_start > 0:
+        total_len = len(selected_dataset)
+        if resume_start >= total_len:
+            selected_dataset = Subset(selected_dataset, [])
+        else:
+            selected_dataset = Subset(
+                selected_dataset,
+                list(range(resume_start, total_len)),
+            )
+
     collator = ImageTextCollator(tokenizer=model.tokenizer, max_length=max_length)
     loader = DataLoader(
         selected_dataset,
@@ -210,20 +252,63 @@ def build_v14_teacher_cache(
         drop_last=False,
     )
 
-    entries = {}
-    total_answer_tokens = 0
-    total_remainder = 0.0
-    skipped_kl_disabled = 0
+    def _save_cache(path: str, *, partial: bool) -> None:
+        payload = {
+            "schema": "v14_teacher_kl_topk_v1",
+            "dataset": dataset,
+            "split": split,
+            "teacher_checkpoint": teacher_checkpoint,
+            "teacher_checkpoint_metadata": teacher_meta,
+            "teacher_image_tokens": int(teacher_image_tokens),
+            "top_k": int(top_k),
+            "entries_count": len(entries),
+            "answer_tokens": int(total_answer_tokens),
+            "skipped_kl_disabled": int(skipped_kl_disabled),
+            "processed_batches": int(processed_batches),
+            "total_remainder_sum": float(total_remainder),
+            "mean_remainder_prob_per_entry": (
+                total_remainder / max(len(entries), 1)
+            ),
+            "prompt_template_metadata": {
+                "chat_template_family": getattr(model, "chat_template_family", None),
+                "image_placeholder_token": getattr(model, "image_placeholder_token", None),
+                "image_placeholder_count": int(teacher_image_tokens),
+            },
+            "partial": bool(partial),
+            "entries": entries,
+        }
+        tmp_path = path + ".tmp"
+        torch.save(payload, tmp_path)
+        os.replace(tmp_path, path)
+        volume.commit()
+
     with torch.no_grad():
         for batch in tqdm(loader, desc="Caching V11 teacher"):
+            processed_batches += 1
             if int(max_entries or 0) > 0 and len(entries) >= int(max_entries):
                 break
-            sample_ids = [str(x) for x in batch["sample_id"]]
-            sample_weights = _teacher_kl_weights(batch, len(sample_ids))
-            images = batch["images"].to(device, non_blocking=True)
-            input_ids = batch["input_ids"].to(device, non_blocking=True)
-            attention_mask = batch["attention_mask"].to(device, non_blocking=True)
-            labels = batch["labels"].to(device, non_blocking=True)
+            raw_sample_ids = [str(x) for x in batch["sample_id"]]
+            raw_sample_weights = _teacher_kl_weights(batch, len(raw_sample_ids))
+            active_indices = [
+                idx for idx, value in enumerate(raw_sample_weights) if float(value) > 0.0
+            ]
+            skipped_kl_disabled += len(raw_sample_ids) - len(active_indices)
+            active_indices = [
+                idx for idx in active_indices if raw_sample_ids[idx] not in entries
+            ]
+            if not active_indices:
+                if (
+                    int(checkpoint_every_batches or 0) > 0
+                    and processed_batches % int(checkpoint_every_batches) == 0
+                ):
+                    _save_cache(partial_path, partial=True)
+                continue
+            sample_ids = [raw_sample_ids[idx] for idx in active_indices]
+            sample_weights = [raw_sample_weights[idx] for idx in active_indices]
+            images = batch["images"][active_indices].to(device, non_blocking=True)
+            input_ids = batch["input_ids"][active_indices].to(device, non_blocking=True)
+            attention_mask = batch["attention_mask"][active_indices].to(device, non_blocking=True)
+            labels = batch["labels"][active_indices].to(device, non_blocking=True)
             outputs = model(
                 images=images,
                 input_ids=input_ids,
@@ -234,9 +319,7 @@ def build_v14_teacher_cache(
             for row_idx, (answer_logits, answer_labels, positions) in enumerate(answer_rows):
                 if int(max_entries or 0) > 0 and len(entries) >= int(max_entries):
                     break
-                if float(sample_weights[row_idx]) <= 0.0:
-                    skipped_kl_disabled += 1
-                    continue
+                raw_idx = active_indices[row_idx]
                 if answer_logits.numel() == 0:
                     continue
                 probs = torch.softmax(answer_logits.float(), dim=-1)
@@ -256,49 +339,35 @@ def build_v14_teacher_cache(
                         skip_special_tokens=True,
                     ).strip(),
                     "sample_id": key,
-                    "image_ref": batch.get("image_ref", [""] * len(sample_ids))[row_idx],
-                    "question": batch.get("question_text", [""] * len(sample_ids))[row_idx],
-                    "answer": batch.get("answer_text", [""] * len(sample_ids))[row_idx],
+                    "image_ref": batch.get("image_ref", [""] * len(raw_sample_ids))[raw_idx],
+                    "question": batch.get("question_text", [""] * len(raw_sample_ids))[raw_idx],
+                    "answer": batch.get("answer_text", [""] * len(raw_sample_ids))[raw_idx],
                     "mixture_source": batch.get(
                         "mixture_source",
-                        [""] * len(sample_ids),
-                    )[row_idx],
+                        [""] * len(raw_sample_ids),
+                    )[raw_idx],
                     "teacher_kl_weight": float(sample_weights[row_idx]),
                 }
                 total_answer_tokens += int(answer_labels.numel())
                 total_remainder += float(remainder.detach().mean().item())
+            if (
+                int(checkpoint_every_batches or 0) > 0
+                and processed_batches % int(checkpoint_every_batches) == 0
+            ):
+                _save_cache(partial_path, partial=True)
 
-    payload = {
-        "schema": "v14_teacher_kl_topk_v1",
-        "dataset": dataset,
-        "split": split,
-        "teacher_checkpoint": teacher_checkpoint,
-        "teacher_checkpoint_metadata": teacher_meta,
-        "teacher_image_tokens": int(teacher_image_tokens),
-        "top_k": int(top_k),
-        "entries_count": len(entries),
-        "answer_tokens": int(total_answer_tokens),
-        "skipped_kl_disabled": int(skipped_kl_disabled),
-        "mean_remainder_prob_per_entry": (
-            total_remainder / max(len(entries), 1)
-        ),
-        "prompt_template_metadata": {
-            "chat_template_family": getattr(model, "chat_template_family", None),
-            "image_placeholder_token": getattr(model, "image_placeholder_token", None),
-            "image_placeholder_count": int(teacher_image_tokens),
-        },
-        "entries": entries,
-    }
-    tmp_path = output_path + ".tmp"
-    torch.save(payload, tmp_path)
-    os.replace(tmp_path, output_path)
-    volume.commit()
+    _save_cache(output_path, partial=False)
+    if os.path.exists(partial_path):
+        os.remove(partial_path)
+        volume.commit()
     result = {
         "output_path": output_path,
         "entries": len(entries),
         "answer_tokens": int(total_answer_tokens),
         "top_k": int(top_k),
         "skipped_kl_disabled": int(skipped_kl_disabled),
+        "processed_batches": int(processed_batches),
+        "resumed_from_partial": bool(resumed_from_partial),
     }
     print(result, flush=True)
     return result
@@ -315,6 +384,8 @@ def main(
     batch_size: int = 4,
     top_k: int = 128,
     split: str = "train",
+    checkpoint_every_batches: int = 1000,
+    resume: bool = True,
 ):
     print(
         build_v14_teacher_cache.remote(
@@ -327,5 +398,7 @@ def main(
             batch_size=batch_size,
             top_k=top_k,
             split=split,
+            checkpoint_every_batches=checkpoint_every_batches,
+            resume=resume,
         )
     )
