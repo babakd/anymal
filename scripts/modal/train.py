@@ -3370,6 +3370,8 @@ def run_pretrain(
         "v17_qwen_balanced_legacy10_stage1b",
         "v17_qwen_balanced_option_i_stage1b",
         "v17_qwen_balanced_option_ii_stage1b",
+        "v18_qwen_midtraining_stage1b",
+        "v18_qwen_retention_only_for_cache",
         "v15_qwen_chartqa_stage1b",
         "v15_qwen_textvqa_stage1b",
         "v15_qwen_counterfactual_contrastive_stage1b",
@@ -6180,6 +6182,72 @@ def load_finetune_dataset(
         print(f"Loaded {len(ds)} {dataset} instruction samples")
         return ds
 
+    if dataset in {"v18_qwen_midtraining_stage1b", "v18_qwen_retention_only_for_cache"}:
+        calibration_prompt = (
+            "Answer with only the final answer. Do not include role labels, "
+            "explanations, or the word assistant. End after the answer."
+        )
+        manifest_path = "/checkpoints/v18_qwen/source_manifest.json"
+        if not os.path.exists(manifest_path):
+            raise FileNotFoundError(
+                f"V18 source manifest not found at {manifest_path}. "
+                "Run scripts/modal/v18_data_prep.py --mode combine first."
+            )
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = _json.load(f)
+        source_entries = []
+        for source in manifest.get("sources") or []:
+            teacher_weight = float(source.get("teacher_kl_weight") or 0.0)
+            if dataset == "v18_qwen_retention_only_for_cache" and teacher_weight <= 0.0:
+                continue
+            source_entries.append(
+                {
+                    "name": source["name"],
+                    "data_path": source["data_path"],
+                    "image_dir": source["image_dir"],
+                    "system_prompt": calibration_prompt,
+                    "weight": float(source.get("weight", 1.0)),
+                    "teacher_kl_weight": teacher_weight,
+                    "loss_family": source.get("loss_family"),
+                    "dataset_family": source.get("dataset_family"),
+                    "license": source.get("license"),
+                    "license_source": source.get("license_source"),
+                    "commercial_use_allowed": source.get("commercial_use_allowed"),
+                    "use_augmentation": False,
+                }
+            )
+        if not source_entries:
+            raise RuntimeError(f"{dataset} resolved no V18 sources from {manifest_path}")
+        ds = create_instruction_dataset(
+            data_path=None,
+            image_dir=image_dir,
+            tokenizer=tokenizer,
+            mixture_config={
+                "strategy": "weighted",
+                "datasets": source_entries,
+                "epoch_length": 384000,
+                "weighted_index_mode": "hash",
+            },
+            image_size=image_size,
+            max_length=max_length,
+            num_image_tokens=num_image_tokens,
+            image_token_policy=image_token_policy,
+            min_image_tokens=min_image_tokens,
+            max_image_tokens=max_image_tokens,
+            vision_encoder_type=vision_encoder_type,
+            vision_model_name=vision_model_name,
+            image_view_mode=image_view_mode,
+            use_augmentation=False,
+            image_augmentation_mode="none",
+            filter_to_available_images=True,
+        )
+        ds = _filter_supervised_samples(ds, dataset)
+        print(
+            f"Loaded {len(ds)} {dataset} instruction samples from "
+            f"{len(source_entries)} V18 sources"
+        )
+        return ds
+
     def _v15_retention_sources(
         *,
         calibration_prompt,
@@ -8228,6 +8296,7 @@ def _run_pretrain_distributed(
     learning_rate,
     batch_size,
     use_wandb,
+    output_dir="/checkpoints/pretrain-output",
     architecture="anymal_v1",
     token_compressor_type="learned",
     wandb_api_key=None,
@@ -8329,7 +8398,7 @@ def _run_pretrain_distributed(
     print(f"Starting distributed pretraining on {num_gpus} GPUs")
 
     pretrain_output_dir = _resolve_run_output_dir(
-        base_dir="/checkpoints/pretrain-output",
+        base_dir=output_dir,
         resume_checkpoint=resume_checkpoint,
         prefix="run",
         run_name=run_name,
@@ -8442,6 +8511,7 @@ def pretrain_distributed(
     learning_rate,
     batch_size,
     use_wandb,
+    output_dir="/checkpoints/pretrain-output",
     architecture="anymal_v1",
     token_compressor_type="learned",
     wandb_api_key=None,
@@ -8526,6 +8596,7 @@ def pretrain_distributed(
         learning_rate=learning_rate,
         batch_size=batch_size,
         use_wandb=use_wandb,
+        output_dir=output_dir,
         architecture=architecture,
         token_compressor_type=token_compressor_type,
         wandb_api_key=wandb_api_key,
@@ -8621,6 +8692,7 @@ def pretrain_distributed_h100(
     learning_rate,
     batch_size,
     use_wandb,
+    output_dir="/checkpoints/pretrain-output",
     architecture="anymal_v1",
     token_compressor_type="learned",
     wandb_api_key=None,
@@ -8705,6 +8777,7 @@ def pretrain_distributed_h100(
         learning_rate=learning_rate,
         batch_size=batch_size,
         use_wandb=use_wandb,
+        output_dir=output_dir,
         architecture=architecture,
         token_compressor_type=token_compressor_type,
         wandb_api_key=wandb_api_key,
@@ -8935,6 +9008,7 @@ def main(
     pretrain_checkpoint: str = None,
     finetune_checkpoint: str = None,
     resume_checkpoint: str = None,
+    pretrain_output_dir: str = "/checkpoints/pretrain-output",
     dataset: str = "instruct_150k",
     run_name: str = None,
     background: bool = False,
@@ -9337,6 +9411,7 @@ def main(
             learning_rate=lr,
             batch_size=batch_size,
             use_wandb=use_wandb,
+            output_dir=pretrain_output_dir,
             architecture=architecture,
             token_compressor_type=token_compressor_type,
             wandb_api_key=wandb_api_key,
