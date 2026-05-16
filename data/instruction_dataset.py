@@ -758,6 +758,43 @@ class InstructionDatasetSimple(Dataset):
         }
 
 
+def _summarize_license_metadata(
+    source_names: List[str],
+    source_metadata: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    sources = []
+    license_counts: Dict[str, int] = {}
+    commercial_values = []
+    for name, metadata in zip(source_names, source_metadata):
+        license_name = metadata.get("license")
+        commercial = metadata.get("commercial_use_allowed")
+        if license_name is None and commercial is None:
+            continue
+        license_text = str(license_name or "unknown")
+        license_counts[license_text] = license_counts.get(license_text, 0) + 1
+        if commercial is not None:
+            commercial_values.append(bool(commercial))
+        sources.append(
+            {
+                "name": str(name),
+                "license": license_text,
+                "license_source": metadata.get("license_source"),
+                "commercial_use_allowed": commercial,
+                "dataset_family": metadata.get("dataset_family"),
+                "loss_family": metadata.get("loss_family"),
+            }
+        )
+    if not commercial_values:
+        aggregate = None
+    else:
+        aggregate = all(commercial_values)
+    return {
+        "sources": sources,
+        "license_counts": license_counts,
+        "aggregate_commercial_use_allowed": aggregate,
+    }
+
+
 class InstructionMixtureDataset(Dataset):
     """
     Small wrapper for Stage 2 instruction mixtures.
@@ -773,6 +810,7 @@ class InstructionMixtureDataset(Dataset):
         strategy: str = "balanced",
         source_names: Optional[List[str]] = None,
         source_weights: Optional[List[float]] = None,
+        source_metadata: Optional[List[Dict[str, Any]]] = None,
         length: Optional[int] = None,
         weighted_index_mode: str = "sequential",
     ):
@@ -786,12 +824,15 @@ class InstructionMixtureDataset(Dataset):
         self.datasets = datasets
         self.strategy = strategy
         self.source_names = source_names or [f"source_{i}" for i in range(len(datasets))]
+        self.source_metadata = source_metadata or [{} for _ in range(len(datasets))]
         self._weighted_index_mode = str(weighted_index_mode or "sequential").strip().lower()
         if self._weighted_index_mode not in {"sequential", "hash"}:
             raise ValueError("weighted_index_mode must be one of ['sequential', 'hash']")
 
         if len(self.source_names) != len(self.datasets):
             raise ValueError("source_names length must match datasets length")
+        if len(self.source_metadata) != len(self.datasets):
+            raise ValueError("source_metadata length must match datasets length")
 
         self._weighted_cycle = None
         if self.strategy == "weighted":
@@ -837,6 +878,17 @@ class InstructionMixtureDataset(Dataset):
             f"InstructionMixtureDataset: strategy={self.strategy}, "
             f"length={self._length}, sources: {sizes}"
         )
+        self.license_summary = _summarize_license_metadata(
+            self.source_names,
+            self.source_metadata,
+        )
+        if self.license_summary["sources"]:
+            posture = self.license_summary["aggregate_commercial_use_allowed"]
+            print(
+                "InstructionMixtureDataset license summary: "
+                f"aggregate_commercial_use_allowed={posture}; "
+                f"licenses={self.license_summary['license_counts']}"
+            )
 
     def __len__(self) -> int:
         return self._length
@@ -893,6 +945,7 @@ def build_instruction_mixture_dataset(
     datasets = []
     names = []
     weights = []
+    source_metadata_entries = []
     for i, entry in enumerate(entries):
         if isinstance(entry, str):
             entry = {"data_path": entry}
@@ -945,6 +998,9 @@ def build_instruction_mixture_dataset(
             "loss_family",
             "dataset_family",
             "sample_weight",
+            "license",
+            "license_source",
+            "commercial_use_allowed",
         ):
             if key in entry:
                 source_metadata[key] = entry[key]
@@ -969,6 +1025,22 @@ def build_instruction_mixture_dataset(
         datasets.append(dataset)
         names.append(entry.get("name", f"source_{i}"))
         weights.append(float(entry.get("weight", 1.0)))
+        source_metadata_entries.append(
+            {
+                key: entry.get(key)
+                for key in (
+                    "license",
+                    "license_source",
+                    "commercial_use_allowed",
+                    "dataset_family",
+                    "loss_family",
+                    "data_path",
+                    "image_dir",
+                    "weight",
+                )
+                if key in entry
+            }
+        )
 
     mixture_length = mixture_config.get("length", mixture_config.get("epoch_length"))
     weighted_index_mode = mixture_config.get("weighted_index_mode", "sequential")
@@ -977,6 +1049,7 @@ def build_instruction_mixture_dataset(
         strategy=strategy,
         source_names=names,
         source_weights=weights,
+        source_metadata=source_metadata_entries,
         length=mixture_length,
         weighted_index_mode=weighted_index_mode,
     )

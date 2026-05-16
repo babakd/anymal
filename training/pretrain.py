@@ -89,6 +89,7 @@ class PretrainConfig(TrainerConfig):
     teacher_kl_checkpoint: str = ""
     teacher_kl_cache_path: str = ""
     teacher_kl_cache_top_k: int = 0
+    dataset_license_summary: Optional[Dict[str, Any]] = None
 
     # Caption prompt for training
     caption_prompt: str = "A photo of"

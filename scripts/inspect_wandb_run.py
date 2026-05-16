@@ -3,10 +3,14 @@
 This is intended for babysitting expensive Modal training jobs when local Python
 does not have W&B credentials installed.
 
-Example:
+Examples:
     modal run scripts/inspect_wandb_run.py \
       --run-path babakdam/anymal-pretrain/6ffd2qwa \
       --recent-window 100
+
+    modal run scripts/inspect_wandb_run.py \
+      --run-name v17-qwen3-optionii-capkl005-probe500-r4
+
 """
 
 from __future__ import annotations
@@ -65,6 +69,7 @@ def inspect_wandb_run_remote(
 
     api = wandb.Api()
     run = api.run(run_path)
+    run_config = dict(run.config or {})
 
     # Do not pass a metric key list here. W&B's public API returns only rows
     # containing all requested keys, while our trainer logs loss, eval, health,
@@ -133,6 +138,7 @@ def inspect_wandb_run_remote(
         "url": run.url,
         "state": run.state,
         "name": run.name,
+        "dataset_license_summary": run_config.get("dataset_license_summary"),
         "history_rows": len(rows),
         "train_rows": len(train_rows),
         "last_step": _last_step(rows),
@@ -193,13 +199,62 @@ def inspect_wandb_run_remote(
     }
 
 
+@app.function(
+    image=image,
+    secrets=[modal.Secret.from_name("wandb")],
+    timeout=5 * 60,
+)
+def find_wandb_run_by_name_remote(
+    project_path: str,
+    run_name: str,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    import wandb
+
+    api = wandb.Api()
+    matches = list(
+        api.runs(
+            project_path,
+            filters={"display_name": run_name},
+            per_page=max(1, int(limit)),
+        )
+    )
+    if not matches:
+        recent = list(api.runs(project_path, per_page=max(1, int(limit))))
+        matches = [run for run in recent if run.name == run_name]
+    if not matches:
+        raise ValueError(f"No W&B run named {run_name!r} found in {project_path}")
+
+    matches.sort(key=lambda run: getattr(run, "created_at", "") or "", reverse=True)
+    run = matches[0]
+    return {
+        "run_path": f"{project_path}/{run.id}",
+        "url": run.url,
+        "state": run.state,
+        "name": run.name,
+        "created_at": getattr(run, "created_at", None),
+        "match_count": len(matches),
+    }
+
+
 @app.local_entrypoint()
 def main(
-    run_path: str,
+    run_path: Optional[str] = None,
+    run_name: Optional[str] = None,
+    project_path: str = "babakdam/anymal-pretrain",
     recent_window: int = 100,
     spike_multiplier: float = 2.0,
     grad_spike_multiplier: float = 5.0,
 ):
+    if not run_path:
+        if not run_name:
+            raise ValueError("Pass either --run-path or --run-name.")
+        match = find_wandb_run_by_name_remote.remote(
+            project_path=project_path,
+            run_name=run_name,
+        )
+        run_path = str(match["run_path"])
+
     result = inspect_wandb_run_remote.remote(
         run_path=run_path,
         recent_window=recent_window,
