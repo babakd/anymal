@@ -1,7 +1,39 @@
 {
   "Mineru/GQA": {
     "revision": "55fbe98d3474e07e0d1fe0078ba2d48c9ea7712e",
-    "pinned_on": "2026-05-15"
+    "pinned_on": "2026-05-15",
+    "license": "cc-by-4.0 / GQA terms"
+  },
+  "HuggingFaceM4/A-OKVQA": {
+    "revision": "d1b0efa3a436e9101dfbde3752db7607da696c35",
+    "pinned_on": "2026-05-16",
+    "license": "apache-2.0"
+  },
+  "HuggingFaceM4/COCO": {
+    "revision": "4d0dfd4a3712a80e7b8498ed76e778f7cea9d21c",
+    "pinned_on": "2026-05-16",
+    "license": "cc-by-4.0 / COCO terms"
+  },
+  "LIME-DATA/ai2d": {
+    "revision": "4dbd4b3d7ae735e562489db23e7b3427d047dcba",
+    "pinned_on": "2026-05-16",
+    "license": "apache-2.0"
+  },
+  "Multimodal-Fatima/OK-VQA_train": {
+    "revision": "78e937b0afc333cfe8fee21c4d56aa405b4d0682",
+    "pinned_on": "2026-05-16",
+    "license": "cc-by-4.0 / OK-VQA and COCO terms",
+    "license_note": "HF card omits a license tag; V18 accepted this after permissive upstream OK-VQA terms were verified."
+  },
+  "cambridgeltl/vsr_zeroshot": {
+    "revision": "148b3777ceef4a1bfe46377614980836db7d12f2",
+    "pinned_on": "2026-05-16",
+    "license": "cc-by-4.0"
+  },
+  "howard-hou/OCR-VQA": {
+    "revision": "88234cc092c5f6d199b5cf3b471e3b490a69c07b",
+    "pinned_on": "2026-05-16",
+    "license": "apache-2.0"
   },
   "anhdang000/ChartQA-V2": {
     "revision": "93b2f1f6bd69516c1be21faeefa05540768e0537",
@@ -11,6 +43,7 @@
   },
   "lmms-lab/textvqa": {
     "revision": "9c0699cd19768ac5ab97568f6b3cbac4c0062884",
-    "pinned_on": "2026-05-15"
+    "pinned_on": "2026-05-15",
+    "license": "cc-by-4.0 / TextVQA and OpenImages terms"
   }
 }
