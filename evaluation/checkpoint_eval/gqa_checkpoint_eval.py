@@ -40,6 +40,18 @@ PROJECT_DIR = _resolve_project_dir()
 if os.path.exists(REMOTE_PROJECT_DIR) and REMOTE_PROJECT_DIR not in sys.path:
     sys.path.insert(0, REMOTE_PROJECT_DIR)
 
+from evaluation.checkpoint_eval.dataset_revisions import (
+    pinned_revision as _pinned_revision,
+    slice_fingerprint as _slice_fingerprint,
+)
+from evaluation.checkpoint_eval.paired_bootstrap import (
+    bootstrap_mean_ci as _shared_bootstrap_mean_ci,
+    ci_label as _shared_ci_label,
+    confidence_z as _shared_confidence_z,
+    paired_bootstrap_ci,
+    wilson_ci as _shared_wilson_ci,
+)
+
 def _ignore_modal_mount(path: Path) -> bool:
     return ".git" in path.parts
 
@@ -132,25 +144,44 @@ def _load_gqa_questions(split: str) -> dict:
 
 
 def _vqa_layout_name(image_id: int) -> str:
-    return f"COCO_val2014_{int(image_id):012d}.jpg"
+    # GQA imageId values are Visual Genome IDs, not COCO val2014 IDs.
+    return f"VG_{int(image_id)}.jpg"
+
+
+def _valid_image_file(path: str) -> bool:
+    from PIL import Image
+
+    if not os.path.exists(path) or os.path.getsize(path) <= 0:
+        return False
+    try:
+        with Image.open(path) as image:
+            image.verify()
+        return True
+    except Exception:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return False
 
 
 def _ensure_gqa_images(image_ids: list[int], image_dir: str) -> dict:
     import requests
+    import threading
 
     os.makedirs(image_dir, exist_ok=True)
     unique_ids = sorted({int(image_id) for image_id in image_ids})
     missing = [
         image_id
         for image_id in unique_ids
-        if not os.path.exists(os.path.join(image_dir, _vqa_layout_name(image_id)))
+        if not _valid_image_file(os.path.join(image_dir, _vqa_layout_name(image_id)))
     ]
     if not missing:
         return {"needed": len(unique_ids), "downloaded": 0, "cached": len(unique_ids), "failed": 0}
 
     def download_one(image_id: int) -> tuple[int, bool, str]:
         out_path = os.path.join(image_dir, _vqa_layout_name(image_id))
-        if os.path.exists(out_path):
+        if _valid_image_file(out_path):
             return image_id, True, "cached"
         last_error = ""
         for template in VG_IMAGE_URLS:
@@ -161,8 +192,13 @@ def _ensure_gqa_images(image_ids: list[int], image_dir: str) -> dict:
                     last_error = "404"
                     continue
                 response.raise_for_status()
-                with open(out_path, "wb") as f:
+                tmp_path = f"{out_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+                with open(tmp_path, "wb") as f:
                     f.write(response.content)
+                os.replace(tmp_path, out_path)
+                if not _valid_image_file(out_path):
+                    last_error = "downloaded file failed image validation"
+                    continue
                 return image_id, True, "downloaded"
             except Exception as exc:  # pragma: no cover - remote network path
                 last_error = str(exc)
@@ -291,37 +327,15 @@ def _process_for_exact(answer: str) -> str:
 
 
 def _confidence_z(confidence: float) -> float:
-    confidence = float(confidence)
-    known = {
-        0.80: 1.2815515655446004,
-        0.90: 1.6448536269514722,
-        0.95: 1.959963984540054,
-        0.98: 2.3263478740408408,
-        0.99: 2.5758293035489004,
-    }
-    for key, value in known.items():
-        if abs(confidence - key) < 1e-9:
-            return value
-    return known[0.95]
+    return _shared_confidence_z(confidence)
 
 
 def _ci_label(confidence: float) -> str:
-    return f"ci{int(round(float(confidence) * 100))}"
+    return _shared_ci_label(confidence)
 
 
 def _wilson_ci(successes: int, total: int, confidence: float = 0.95) -> tuple[float, float]:
-    if total <= 0:
-        return 0.0, 0.0
-    z = _confidence_z(confidence)
-    phat = float(successes) / float(total)
-    denom = 1.0 + z * z / total
-    center = (phat + z * z / (2.0 * total)) / denom
-    margin = (
-        z
-        * math.sqrt((phat * (1.0 - phat) + z * z / (4.0 * total)) / total)
-        / denom
-    )
-    return max(0.0, center - margin), min(1.0, center + margin)
+    return _shared_wilson_ci(successes, total, confidence)
 
 
 def _bootstrap_mean_ci(
@@ -330,31 +344,12 @@ def _bootstrap_mean_ci(
     n_resamples: int = 10000,
     confidence: float = 0.95,
 ) -> tuple[float, float]:
-    if not values:
-        return 0.0, 0.0
-    n_resamples = int(n_resamples)
-    if n_resamples <= 0:
-        return 0.0, 0.0
-    total = len(values)
-    p_hat = float(sum(values)) / float(total)
-    alpha = (1.0 - float(confidence)) / 2.0
-    try:
-        import numpy as np
-
-        rng = np.random.default_rng(int(seed))
-        means = rng.binomial(total, p_hat, size=n_resamples) / float(total)
-        low, high = np.quantile(means, [alpha, 1.0 - alpha])
-        return float(low), float(high)
-    except Exception:
-        rng = random.Random(int(seed))
-        means = []
-        for _ in range(n_resamples):
-            successes = sum(1 for _ in range(total) if rng.random() < p_hat)
-            means.append(successes / float(total))
-        means.sort()
-        low_idx = min(max(int(math.floor(alpha * (n_resamples - 1))), 0), n_resamples - 1)
-        high_idx = min(max(int(math.ceil((1.0 - alpha) * (n_resamples - 1))), 0), n_resamples - 1)
-        return float(means[low_idx]), float(means[high_idx])
+    return _shared_bootstrap_mean_ci(
+        values,
+        seed=seed,
+        n_resamples=n_resamples,
+        confidence=confidence,
+    )
 
 
 def _compute_gqa_metrics(
@@ -368,6 +363,7 @@ def _compute_gqa_metrics(
     correct = 0
     correct_values: list[int] = []
     buckets: dict[str, dict[str, int]] = {}
+    by_answer_type: dict[str, dict[str, int]] = {}
     for row in predictions:
         question_id = str(row.get("question_id"))
         meta = meta_by_question.get(question_id, {})
@@ -386,6 +382,18 @@ def _compute_gqa_metrics(
             bucket = buckets.setdefault(f"{key}:{value}", {"correct": 0, "total": 0})
             bucket["correct"] += int(is_correct)
             bucket["total"] += 1
+        answer_bucket_name = str(row.get("answer_type") or _answer_type(meta.get("answer", "")))
+        answer_bucket_name = answer_bucket_name.replace("/", "_")
+        if answer_bucket_name == "yes_no":
+            answer_bucket_name = "yes_no"
+        elif answer_bucket_name not in {"number", "other"}:
+            answer_bucket_name = "other"
+        answer_bucket = by_answer_type.setdefault(
+            answer_bucket_name,
+            {"correct": 0, "total": 0},
+        )
+        answer_bucket["correct"] += int(is_correct)
+        answer_bucket["total"] += 1
 
     ci_name = _ci_label(ci_confidence)
     wilson_low, wilson_high = _wilson_ci(correct, total, ci_confidence)
@@ -408,7 +416,20 @@ def _compute_gqa_metrics(
         f"gqa_accuracy_{ci_name}_binomial_high": 100.0 * wilson_high,
         f"gqa_accuracy_{ci_name}_bootstrap_low": 100.0 * bootstrap_low,
         f"gqa_accuracy_{ci_name}_bootstrap_high": 100.0 * bootstrap_high,
+        "gqa_by_answer_type": {},
     }
+    for answer_type in ("yes_no", "number", "other"):
+        bucket = by_answer_type.get(answer_type, {"correct": 0, "total": 0})
+        low, high = _wilson_ci(bucket["correct"], bucket["total"], ci_confidence)
+        metrics["gqa_by_answer_type"][answer_type] = {
+            "accuracy": (
+                100.0 * bucket["correct"] / bucket["total"] if bucket["total"] else 0.0
+            ),
+            "correct": bucket["correct"],
+            "total": bucket["total"],
+            "ci95_low": 100.0 * low,
+            "ci95_high": 100.0 * high,
+        }
     for name, bucket in sorted(buckets.items()):
         key = name.replace(":", "_").replace("/", "_").replace(" ", "_")
         metrics[f"gqa_accuracy_{key}"] = (
@@ -441,7 +462,79 @@ def _prepare_hf_gqa_records(
         raise ValueError(f"sample_offset must be >= 0, got {sample_offset}")
     os.makedirs(image_dir, exist_ok=True)
     os.makedirs(HF_GQA_CACHE_DIR, exist_ok=True)
-    dataset = load_dataset(HF_GQA_DATASET, split=split, cache_dir=HF_GQA_CACHE_DIR)
+    revision = _pinned_revision(HF_GQA_DATASET)
+    fingerprint = _slice_fingerprint(
+        dataset_id=HF_GQA_DATASET,
+        revision=revision,
+        split=split,
+        seed=int(seed),
+        offset=sample_offset,
+        max_samples=max_samples,
+    )
+    slice_dir = "/checkpoints/v17_slices"
+    os.makedirs(slice_dir, exist_ok=True)
+    slice_artifact = os.path.join(slice_dir, f"gqa_{split}_{fingerprint}.json")
+    if os.path.exists(slice_artifact):
+        with open(slice_artifact, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        cached_records = payload.get("records") or []
+        if cached_records and all("question" in row and "answer" in row for row in cached_records):
+            records = []
+            cached = 0
+            missing_images = 0
+            for row in cached_records:
+                record = dict(row)
+                record["image_path"] = os.path.join(
+                    image_dir,
+                    _safe_image_filename(record["image_id"]),
+                )
+                if os.path.exists(record["image_path"]):
+                    cached += 1
+                else:
+                    missing_images += 1
+                records.append(record)
+            if missing_images:
+                print(
+                    f"Materialized GQA slice exists but {missing_images} cached images are missing; "
+                    "falling back to pinned HF reload.",
+                    flush=True,
+                )
+            else:
+                meta = {
+                    "gqa_split": split,
+                    "source_dataset": HF_GQA_DATASET,
+                    "source_dataset_revision": revision,
+                    "slice_fingerprint": fingerprint,
+                    "slice_artifact": slice_artifact,
+                    "source_url": f"https://huggingface.co/datasets/{HF_GQA_DATASET}",
+                    "source_note": "Loaded from V17 materialized slice artifact.",
+                    "eval_slice_name": str(eval_slice_name or ""),
+                    "split_definition_version": payload.get(
+                        "split_definition_version",
+                        "gqa_hf_seeded_windows_v1",
+                    ),
+                    "selection_seed": int(seed),
+                    "sample_offset": sample_offset,
+                    "sample_count": len(records),
+                    "rows": len(records),
+                    "original_rows": payload.get("original_rows"),
+                    "unique_image_ids": len({row["image_id"] for row in records}),
+                    "selected_image_ids": [row["image_id"] for row in records],
+                    "selected_source_indices": [row["source_index"] for row in records],
+                    "image_cache": {
+                        "needed": len({row["image_id"] for row in records}),
+                        "downloaded": 0,
+                        "cached": cached,
+                        "failed": 0,
+                    },
+                }
+                return records, meta
+    dataset = load_dataset(
+        HF_GQA_DATASET,
+        split=split,
+        cache_dir=HF_GQA_CACHE_DIR,
+        revision=revision,
+    )
     indices = list(range(len(dataset)))
     rng = random.Random(seed)
     rng.shuffle(indices)
@@ -482,6 +575,8 @@ def _prepare_hf_gqa_records(
     meta = {
         "gqa_split": split,
         "source_dataset": HF_GQA_DATASET,
+        "source_dataset_revision": revision,
+        "slice_fingerprint": fingerprint,
         "source_url": f"https://huggingface.co/datasets/{HF_GQA_DATASET}",
         "source_note": "Hugging Face parquet mirror of GQA testdev_balanced with embedded images.",
         "eval_slice_name": str(eval_slice_name or ""),
@@ -501,6 +596,25 @@ def _prepare_hf_gqa_records(
             "failed": 0,
         },
     }
+    with open(slice_artifact, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "dataset_id": HF_GQA_DATASET,
+                "revision": revision,
+                "split": split,
+                "seed": int(seed),
+                "offset": sample_offset,
+                "max_samples": max_samples,
+                "fingerprint": fingerprint,
+                "split_definition_version": "gqa_hf_seeded_windows_v1",
+                "original_rows": len(dataset),
+                "records": records,
+            },
+            f,
+            indent=2,
+        )
+    meta["slice_artifact"] = slice_artifact
+    volume.commit()
     return records, meta
 
 

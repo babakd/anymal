@@ -38,6 +38,8 @@ PROJECT_DIR = _resolve_project_dir()
 if os.path.exists(REMOTE_PROJECT_DIR) and REMOTE_PROJECT_DIR not in sys.path:
     sys.path.insert(0, REMOTE_PROJECT_DIR)
 
+from evaluation.checkpoint_eval.paired_bootstrap import binary_ci_metrics, paired_bootstrap_ci
+
 volume = modal.Volume.from_name("anymal-checkpoints", create_if_missing=True)
 image = (
     modal.Image.debian_slim(python_version="3.10")
@@ -216,10 +218,16 @@ def _official_pope_answer(raw_answer: str) -> str:
     return "no" if {"no", "not"} & words else "yes"
 
 
-def _compute_pope_metrics(predictions: list[dict]) -> dict:
+def _compute_pope_metrics(
+    predictions: list[dict],
+    ci_confidence: float = 0.95,
+    bootstrap_resamples: int = 10000,
+    bootstrap_seed: int = 12345,
+) -> dict:
     tp = fp = tn = fn = 0
     yes_count = 0
     exact_yes_no = 0
+    correct_values: list[int] = []
     for row in predictions:
         label = str(row.get("answers", [""])[0] if row.get("answers") else "").lower()
         pred = _official_pope_answer(row.get("raw_answer", row.get("answer", "")))
@@ -230,18 +238,22 @@ def _compute_pope_metrics(predictions: list[dict]) -> dict:
             yes_count += 1
         if pred == "yes" and label == "yes":
             tp += 1
+            correct_values.append(1)
         elif pred == "yes" and label == "no":
             fp += 1
+            correct_values.append(0)
         elif pred == "no" and label == "no":
             tn += 1
+            correct_values.append(1)
         elif pred == "no" and label == "yes":
             fn += 1
+            correct_values.append(0)
 
     total = tp + fp + tn + fn
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
-    return {
+    metrics = {
         "pope_accuracy": 100.0 * (tp + tn) / total if total else 0.0,
         "pope_precision": precision,
         "pope_recall": recall,
@@ -252,7 +264,19 @@ def _compute_pope_metrics(predictions: list[dict]) -> dict:
         "pope_fp": fp,
         "pope_tn": tn,
         "pope_fn": fn,
+        "pope_correct": tp + tn,
+        "pope_total": total,
     }
+    metrics.update(
+        binary_ci_metrics(
+            "pope",
+            correct_values,
+            seed=bootstrap_seed,
+            n_resamples=bootstrap_resamples,
+            confidence=ci_confidence,
+        )
+    )
+    return metrics
 
 
 def _load_model(run: dict, device, llm_backbone=None, connector_output_scale_override=None):

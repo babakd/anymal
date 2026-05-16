@@ -1,0 +1,16 @@
+{
+  "Mineru/GQA": {
+    "revision": "55fbe98d3474e07e0d1fe0078ba2d48c9ea7712e",
+    "pinned_on": "2026-05-15"
+  },
+  "anhdang000/ChartQA-V2": {
+    "revision": "93b2f1f6bd69516c1be21faeefa05540768e0537",
+    "pinned_on": "2026-05-15",
+    "license": "unknown-community-mirror",
+    "license_note": "V17 must verify equivalence to a primary ChartQA source before deployed-model use."
+  },
+  "lmms-lab/textvqa": {
+    "revision": "9c0699cd19768ac5ab97568f6b3cbac4c0062884",
+    "pinned_on": "2026-05-15"
+  }
+}

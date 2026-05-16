@@ -42,6 +42,7 @@ from data.chat_templates import (
     TRAINING_SYSTEM_PROMPT,
     build_generation_prompt_text,
 )
+from evaluation.checkpoint_eval.paired_bootstrap import mean_ci_metrics, paired_bootstrap_ci
 
 
 SYSTEM_HEADER = "<|start_header_id|>system<|end_header_id|>\n\n"
@@ -66,6 +67,109 @@ NUMBER_WORDS = {
     "ten",
     "eleven",
     "twelve",
+}
+DIGIT_WORD_TO_DIGIT = {
+    "zero": "0",
+    "one": "1",
+    "two": "2",
+    "three": "3",
+    "four": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8",
+    "nine": "9",
+    "ten": "10",
+}
+VQA_PHRASE_CONTRACTIONS = {
+    "can not": "cant",
+    "cannot": "cant",
+    "could not": "couldnt",
+    "did not": "didnt",
+    "does not": "doesnt",
+    "do not": "dont",
+    "had not": "hadnt",
+    "has not": "hasnt",
+    "have not": "havent",
+    "is not": "isnt",
+    "should not": "shouldnt",
+    "was not": "wasnt",
+    "were not": "werent",
+    "will not": "wont",
+    "would not": "wouldnt",
+}
+VQA_CONTRACTIONS = {
+    "aint": "aint",
+    "aren't": "arent",
+    "can't": "cant",
+    "could've": "couldve",
+    "couldn't": "couldnt",
+    "couldnt": "couldnt",
+    "didn't": "didnt",
+    "doesn't": "doesnt",
+    "don't": "dont",
+    "hadn't": "hadnt",
+    "hasn't": "hasnt",
+    "haven't": "havent",
+    "he'd": "hed",
+    "he'll": "hell",
+    "he's": "hes",
+    "how'd": "howd",
+    "how'll": "howll",
+    "how's": "hows",
+    "i'd": "id",
+    "i'll": "ill",
+    "i'm": "im",
+    "i've": "ive",
+    "isn't": "isnt",
+    "it'd": "itd",
+    "it'll": "itll",
+    "it's": "its",
+    "mightn't": "mightnt",
+    "mustn't": "mustnt",
+    "shan't": "shant",
+    "she'd": "shed",
+    "she'll": "shell",
+    "she's": "shes",
+    "should've": "shouldve",
+    "shouldn't": "shouldnt",
+    "that'd": "thatd",
+    "that's": "thats",
+    "there'd": "thered",
+    "there's": "theres",
+    "they'd": "theyd",
+    "they'll": "theyll",
+    "they're": "theyre",
+    "they've": "theyve",
+    "wasn't": "wasnt",
+    "we'd": "wed",
+    "we'll": "well",
+    "we're": "were",
+    "we've": "weve",
+    "weren't": "werent",
+    "what'd": "whatd",
+    "what'll": "whatll",
+    "what're": "whatare",
+    "what's": "whats",
+    "what've": "whatve",
+    "where'd": "whered",
+    "where's": "wheres",
+    "who'd": "whod",
+    "who'll": "wholl",
+    "who're": "whoare",
+    "who's": "whos",
+    "who've": "whove",
+    "won't": "wont",
+    "would've": "wouldve",
+    "wouldn't": "wouldnt",
+    "y'all": "yall",
+    "y'all'd": "yalld",
+    "y'all're": "yallre",
+    "y'all've": "yallve",
+    "you'd": "youd",
+    "you'll": "youll",
+    "you're": "youre",
+    "you've": "youve",
 }
 
 
@@ -360,6 +464,8 @@ class VQAEvaluator:
         hit_max_new_tokens_count = 0
         answer_type_scores = {}
         strict_total_score = 0.0
+        score_values = []
+        strict_score_values = []
         strict_answer_type_scores = {}
         assistant_prefix_count = 0
         thinking_tag_count = 0
@@ -490,6 +596,8 @@ class VQAEvaluator:
                     strict_score = self._compute_vqa_score(strict_answer, gt_answers)
                     total_score += score
                     strict_total_score += strict_score
+                    score_values.append(float(score))
+                    strict_score_values.append(float(strict_score))
                     num_samples += 1
                     if answer_type:
                         bucket = answer_type_scores.setdefault(answer_type, {"score": 0.0, "count": 0})
@@ -539,6 +647,9 @@ class VQAEvaluator:
         results = {
             "accuracy": accuracy * 100,  # Percentage
             "strict_accuracy": strict_accuracy * 100,
+            "vqa_accuracy": accuracy * 100,
+            "vqa_total_score": total_score,
+            "vqa_total": num_samples,
             "num_samples": num_samples,
             "avg_generated_tokens": avg_generated_tokens,
             "eos_rate": eos_rate,
@@ -550,6 +661,28 @@ class VQAEvaluator:
             "top_answers": answer_counts.most_common(20),
             "top_raw_answers": raw_answer_counts.most_common(20),
         }
+        results.update(
+            mean_ci_metrics(
+                "vqa",
+                score_values,
+                seed=12345,
+                n_resamples=10000,
+                confidence=0.95,
+                include_binomial_when_binary=True,
+            )
+        )
+        results.update(
+            mean_ci_metrics(
+                "vqa_strict",
+                strict_score_values,
+                seed=12345,
+                n_resamples=10000,
+                confidence=0.95,
+                include_binomial_when_binary=True,
+            )
+        )
+        results["accuracy"] = results["vqa_accuracy"]
+        results["strict_accuracy"] = results["vqa_strict_accuracy"]
         for answer_type, bucket in sorted(answer_type_scores.items()):
             key = answer_type.replace("/", "_").replace(" ", "_")
             results[f"accuracy_{key}"] = (
@@ -604,7 +737,9 @@ class VQAEvaluator:
             answer = ASSISTANT_ROLE_PREFIX_RE.sub("", answer).strip()
 
         # Take first line/sentence
-        answer = answer.split("\n")[0].split(".")[0]
+        answer = answer.split("\n")[0]
+        sentence_parts = re.split(r"(?<!\d)\.(?!\d)", answer, maxsplit=1)
+        answer = sentence_parts[0]
 
         # Remove common prefixes
         prefixes = ["the answer is", "answer:", "it is", "this is"]
@@ -612,13 +747,37 @@ class VQAEvaluator:
             if answer.startswith(prefix):
                 answer = answer[len(prefix):].strip()
 
+        # Official VQAv2-style contraction handling happens before punctuation
+        # stripping, otherwise forms like "don't" lose the apostrophe too early.
+        for phrase, replacement in VQA_PHRASE_CONTRACTIONS.items():
+            answer = re.sub(
+                rf"\b{re.escape(phrase)}\b",
+                replacement,
+                answer,
+            )
+        words = [
+            VQA_CONTRACTIONS.get(word, word)
+            for word in answer.split()
+        ]
+        answer = " ".join(words)
+
+        words = [
+            DIGIT_WORD_TO_DIGIT.get(word, word)
+            for word in answer.split()
+        ]
+        answer = " ".join(words)
+
         # Remove punctuation
         answer = re.sub(r"[^\w\s]", "", answer)
 
         # Remove articles
         articles = ["a", "an", "the"]
         words = answer.split()
-        words = [w for w in words if w not in articles]
+        words = [
+            DIGIT_WORD_TO_DIGIT.get(w, w)
+            for w in words
+            if w not in articles
+        ]
         answer = " ".join(words)
 
         return answer.strip()
