@@ -8,6 +8,7 @@ shared checkpoint volume. It can also run locally when the same paths exist.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import os
@@ -25,6 +26,18 @@ volume = modal.Volume.from_name("anymal-checkpoints", create_if_missing=False)
 IMAGE_EXT_RE = re.compile(r"\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE)
 COCO_ID_RE = re.compile(r"COCO_(?:train|val)20\d{2}_(\d{1,12})", re.IGNORECASE)
 GQA_ID_RE = re.compile(r"^n(\d{1,12})$", re.IGNORECASE)
+DIRECT_IMAGE_REF_KEYS = (
+    "image",
+    "negative_images",
+    "source_image",
+    "control_image",
+    "image_path",
+    "image_file",
+    "file_name",
+    "filename",
+    "path",
+)
+ID_IMAGE_REF_KEYS = ("image_id", "source_image_id")
 
 
 def _split_arg(value: str | None) -> list[str]:
@@ -188,6 +201,7 @@ def _hash_refs(
     source_path: str,
     kind: str,
     image_dirs: dict[str, str],
+    workers: int = 1,
 ) -> dict[str, Any]:
     payload = _load_json_or_jsonl(source_path)
     default_image_dir = _lookup_image_dir(source_path, image_dirs, payload, kind)
@@ -196,25 +210,20 @@ def _hash_refs(
     missing = 0
     missing_examples = []
     checked_refs = 0
-    path_digest_cache: dict[str, str] = {}
+    resolved_paths = []
     resolved_ref_cache: dict[tuple[str, str], str | None] = {}
     for row in rows:
         row_image_dir = str(row.get("_image_dir") or default_image_dir or "")
-        refs = []
-        for key in (
-            "image",
-            "negative_images",
-            "source_image",
-            "control_image",
-            "image_path",
-            "image_file",
-            "file_name",
-            "filename",
-            "image_id",
-            "source_image_id",
-        ):
+        direct_refs = []
+        for key in DIRECT_IMAGE_REF_KEYS:
             if key in row:
-                refs.extend(_iter_ref_values(row[key]))
+                direct_refs.extend(_iter_ref_values(row[key]))
+        refs = list(direct_refs)
+        has_direct_image_ref = any(_looks_like_image_ref(str(ref)) for ref in direct_refs)
+        if not has_direct_image_ref:
+            for key in ID_IMAGE_REF_KEYS:
+                if key in row:
+                    refs.extend(_iter_ref_values(row[key]))
         for ref in refs:
             if not _looks_like_image_ref(str(ref)):
                 continue
@@ -236,17 +245,45 @@ def _hash_refs(
                         }
                     )
                 continue
-            digest = path_digest_cache.get(path)
-            if digest is None:
-                digest = _hash_first_mib(path)
-                path_digest_cache[path] = digest
-            hashes.setdefault(digest, []).append(path)
+            resolved_paths.append(path)
             if checked_refs % 1000 == 0:
                 print(
-                    f"{kind} hash audit progress {os.path.basename(source_path)}: "
-                    f"checked_refs={checked_refs} unique_hashes={len(hashes)} missing={missing}",
+                    f"{kind} hash audit resolve progress {os.path.basename(source_path)}: "
+                    f"checked_refs={checked_refs} resolved_paths={len(resolved_paths)} missing={missing}",
                     flush=True,
                 )
+    unique_paths = list(dict.fromkeys(resolved_paths))
+    path_digest_cache: dict[str, str] = {}
+    worker_count = max(1, int(workers or 1))
+    if worker_count > 1 and len(unique_paths) > 1:
+        hashed_count = 0
+        chunk_size = max(1000, worker_count * 64)
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            for chunk_start in range(0, len(unique_paths), chunk_size):
+                chunk = unique_paths[chunk_start : chunk_start + chunk_size]
+                futures = {executor.submit(_hash_first_mib, path): path for path in chunk}
+                for future in as_completed(futures):
+                    path = futures[future]
+                    path_digest_cache[path] = future.result()
+                    hashed_count += 1
+                    if hashed_count % 1000 == 0 or hashed_count == len(unique_paths):
+                        print(
+                            f"{kind} hash audit hash progress {os.path.basename(source_path)}: "
+                            f"hashed_paths={hashed_count}/{len(unique_paths)} missing={missing}",
+                            flush=True,
+                        )
+    else:
+        for idx, path in enumerate(unique_paths, start=1):
+            path_digest_cache[path] = _hash_first_mib(path)
+            if idx % 1000 == 0 or idx == len(unique_paths):
+                print(
+                    f"{kind} hash audit hash progress {os.path.basename(source_path)}: "
+                    f"hashed_paths={idx}/{len(unique_paths)} missing={missing}",
+                    flush=True,
+                )
+    for path in resolved_paths:
+        digest = path_digest_cache[path]
+        hashes.setdefault(digest, []).append(path)
     print(
         f"{kind} hash audit done {os.path.basename(source_path)}: "
         f"checked_refs={checked_refs} unique_hashes={len(hashes)} missing={missing}",
@@ -264,18 +301,24 @@ def _hash_refs(
     }
 
 
-def run_audit(train_sources: list[str], eval_artifacts: list[str], image_dirs: dict[str, str]) -> dict[str, Any]:
+def run_audit(
+    train_sources: list[str],
+    eval_artifacts: list[str],
+    image_dirs: dict[str, str],
+    *,
+    workers: int = 1,
+) -> dict[str, Any]:
     train_indexes = []
     for source in train_sources:
         print(f"Starting train hash audit: {source}", flush=True)
         train_indexes.append(
-            _hash_refs(source_path=source, kind="train", image_dirs=image_dirs)
+            _hash_refs(source_path=source, kind="train", image_dirs=image_dirs, workers=workers)
         )
     eval_indexes = []
     for artifact in eval_artifacts:
         print(f"Starting eval hash audit: {artifact}", flush=True)
         eval_indexes.append(
-            _hash_refs(source_path=artifact, kind="eval", image_dirs=image_dirs)
+            _hash_refs(source_path=artifact, kind="eval", image_dirs=image_dirs, workers=workers)
         )
     pair_reports = []
     for train_index in train_indexes:
@@ -332,9 +375,10 @@ def audit_image_hash_overlap_remote(
     train_sources: list[str],
     eval_artifacts: list[str],
     image_dirs: dict[str, str],
+    workers: int = 1,
     output_path: str | None = None,
 ) -> dict[str, Any]:
-    result = run_audit(train_sources, eval_artifacts, image_dirs)
+    result = run_audit(train_sources, eval_artifacts, image_dirs, workers=workers)
     if output_path:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
@@ -351,17 +395,19 @@ def main(
     output: str = "image_hash_overlap_audit.json",
     remote_output_path: str = "",
     local: bool = False,
+    workers: int = 1,
 ):
     parsed_train_sources = _split_arg(train_sources)
     parsed_eval_artifacts = _split_arg(eval_artifacts)
     parsed_image_dirs = _parse_image_dirs(image_dirs)
     if local:
-        result = run_audit(parsed_train_sources, parsed_eval_artifacts, parsed_image_dirs)
+        result = run_audit(parsed_train_sources, parsed_eval_artifacts, parsed_image_dirs, workers=workers)
     else:
         result = audit_image_hash_overlap_remote.remote(
             parsed_train_sources,
             parsed_eval_artifacts,
             parsed_image_dirs,
+            workers,
             remote_output_path or None,
         )
     with open(output, "w", encoding="utf-8") as f:
@@ -377,11 +423,13 @@ if __name__ == "__main__":
     parser.add_argument("--output", default="image_hash_overlap_audit.json")
     parser.add_argument("--remote-output-path", default="")
     parser.add_argument("--local", action="store_true")
+    parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args()
     result_payload = run_audit(
         _split_arg(args.train_sources),
         _split_arg(args.eval_artifacts),
         _parse_image_dirs(args.image_dirs),
+        workers=args.workers,
     )
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(result_payload, f, indent=2)
