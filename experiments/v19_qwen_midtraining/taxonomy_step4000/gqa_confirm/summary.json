@@ -1,0 +1,529 @@
+{
+  "artifacts": {
+    "v11": {
+      "answer_kinds": {
+        "color": {
+          "accuracy": 38.25503355704698,
+          "correct": 57,
+          "total": 149
+        },
+        "direction": {
+          "accuracy": 50.36496350364963,
+          "correct": 69,
+          "total": 137
+        },
+        "other": {
+          "accuracy": 30.80168776371308,
+          "correct": 511,
+          "total": 1659
+        },
+        "yes_no": {
+          "accuracy": 60.758293838862556,
+          "correct": 641,
+          "total": 1055
+        }
+      },
+      "artifact": "/tmp/v11_fixed_harness_fetch/gqa_confirm_n3000_offset1000.json",
+      "checkpoint": "/checkpoints/pretrain-output/v11-qwen3-c1-posscale000-scale1125/checkpoint-posscale000-scale1125",
+      "eval_schema_version": "v17_fixed_harness",
+      "label": "v11_frontier_gqa_confirm_n3000_offset1000",
+      "name": "v11",
+      "num_samples": 3000,
+      "reported_gqa_accuracy": 42.6,
+      "sample_accuracy": 42.6,
+      "taxonomy": {
+        "attribute": {
+          "accuracy": 36.19047619047619,
+          "correct": 76,
+          "total": 210
+        },
+        "color": {
+          "accuracy": 35.65573770491803,
+          "correct": 87,
+          "total": 244
+        },
+        "comparison": {
+          "accuracy": 57.83132530120482,
+          "correct": 48,
+          "total": 83
+        },
+        "label:attribute": {
+          "accuracy": 43.340857787810386,
+          "correct": 192,
+          "total": 443
+        },
+        "label:color": {
+          "accuracy": 35.65573770491803,
+          "correct": 87,
+          "total": 244
+        },
+        "label:comparison": {
+          "accuracy": 54.074074074074076,
+          "correct": 73,
+          "total": 135
+        },
+        "label:left_right": {
+          "accuracy": 43.98907103825137,
+          "correct": 161,
+          "total": 366
+        },
+        "label:logical_compositional": {
+          "accuracy": 53.68421052631579,
+          "correct": 561,
+          "total": 1045
+        },
+        "label:object_identity": {
+          "accuracy": 28.31505483549352,
+          "correct": 284,
+          "total": 1003
+        },
+        "label:other": {
+          "accuracy": 28.571428571428573,
+          "correct": 62,
+          "total": 217
+        },
+        "label:spatial_relation": {
+          "accuracy": 42.883720930232556,
+          "correct": 461,
+          "total": 1075
+        },
+        "label:yes_no_object_presence": {
+          "accuracy": 60.758293838862556,
+          "correct": 641,
+          "total": 1055
+        },
+        "left_right": {
+          "accuracy": 43.87464387464387,
+          "correct": 154,
+          "total": 351
+        },
+        "logical_compositional": {
+          "accuracy": 44.53125,
+          "correct": 57,
+          "total": 128
+        },
+        "object_identity": {
+          "accuracy": 27.087576374745417,
+          "correct": 133,
+          "total": 491
+        },
+        "other": {
+          "accuracy": 28.571428571428573,
+          "correct": 62,
+          "total": 217
+        },
+        "spatial_relation": {
+          "accuracy": 42.4597364568082,
+          "correct": 290,
+          "total": 683
+        },
+        "yes_no_object_presence": {
+          "accuracy": 62.563237774030355,
+          "correct": 371,
+          "total": 593
+        }
+      },
+      "top_predictions": [
+        [
+          "no",
+          611
+        ],
+        [
+          "yes",
+          445
+        ],
+        [
+          "right",
+          93
+        ],
+        [
+          "man",
+          57
+        ],
+        [
+          "white",
+          54
+        ],
+        [
+          "left",
+          42
+        ],
+        [
+          "bed",
+          41
+        ],
+        [
+          "table",
+          41
+        ],
+        [
+          "blue",
+          39
+        ],
+        [
+          "woman",
+          38
+        ],
+        [
+          "chair",
+          34
+        ],
+        [
+          "medium",
+          33
+        ],
+        [
+          "player",
+          31
+        ],
+        [
+          "laptop",
+          30
+        ],
+        [
+          "car",
+          29
+        ],
+        [
+          "red",
+          28
+        ],
+        [
+          "keyboard",
+          28
+        ],
+        [
+          "sink",
+          26
+        ],
+        [
+          "black",
+          24
+        ],
+        [
+          "girl",
+          23
+        ],
+        [
+          "couch",
+          23
+        ],
+        [
+          "shirt",
+          20
+        ],
+        [
+          "plastic",
+          17
+        ],
+        [
+          "desk",
+          17
+        ],
+        [
+          "elephant",
+          17
+        ]
+      ]
+    },
+    "v19_step4000": {
+      "answer_kinds": {
+        "color": {
+          "accuracy": 38.25503355704698,
+          "correct": 57,
+          "total": 149
+        },
+        "direction": {
+          "accuracy": 51.09489051094891,
+          "correct": 70,
+          "total": 137
+        },
+        "other": {
+          "accuracy": 30.741410488245933,
+          "correct": 510,
+          "total": 1659
+        },
+        "yes_no": {
+          "accuracy": 58.00947867298578,
+          "correct": 612,
+          "total": 1055
+        }
+      },
+      "artifact": "/tmp/v17_fixed_harness_v19_step4000_gqa_confirm_n3000_offset1000.json",
+      "checkpoint": "/checkpoints/pretrain-output/v19-qwen3-midtraining-v18sup-v11kl-w2-6000/checkpoint-4000",
+      "eval_schema_version": "v17_fixed_harness",
+      "label": "v19_step4000_gqa_confirm_n3000_offset1000",
+      "name": "v19_step4000",
+      "num_samples": 3000,
+      "reported_gqa_accuracy": 41.63333333333333,
+      "sample_accuracy": 41.63333333333333,
+      "taxonomy": {
+        "attribute": {
+          "accuracy": 37.142857142857146,
+          "correct": 78,
+          "total": 210
+        },
+        "color": {
+          "accuracy": 36.0655737704918,
+          "correct": 88,
+          "total": 244
+        },
+        "comparison": {
+          "accuracy": 60.24096385542169,
+          "correct": 50,
+          "total": 83
+        },
+        "label:attribute": {
+          "accuracy": 42.66365688487585,
+          "correct": 189,
+          "total": 443
+        },
+        "label:color": {
+          "accuracy": 36.0655737704918,
+          "correct": 88,
+          "total": 244
+        },
+        "label:comparison": {
+          "accuracy": 56.2962962962963,
+          "correct": 76,
+          "total": 135
+        },
+        "label:left_right": {
+          "accuracy": 39.34426229508197,
+          "correct": 144,
+          "total": 366
+        },
+        "label:logical_compositional": {
+          "accuracy": 51.961722488038276,
+          "correct": 543,
+          "total": 1045
+        },
+        "label:object_identity": {
+          "accuracy": 28.015952143569294,
+          "correct": 281,
+          "total": 1003
+        },
+        "label:other": {
+          "accuracy": 29.032258064516128,
+          "correct": 63,
+          "total": 217
+        },
+        "label:spatial_relation": {
+          "accuracy": 40.46511627906977,
+          "correct": 435,
+          "total": 1075
+        },
+        "label:yes_no_object_presence": {
+          "accuracy": 58.00947867298578,
+          "correct": 612,
+          "total": 1055
+        },
+        "left_right": {
+          "accuracy": 39.88603988603989,
+          "correct": 140,
+          "total": 351
+        },
+        "logical_compositional": {
+          "accuracy": 43.75,
+          "correct": 56,
+          "total": 128
+        },
+        "object_identity": {
+          "accuracy": 26.680244399185337,
+          "correct": 131,
+          "total": 491
+        },
+        "other": {
+          "accuracy": 29.032258064516128,
+          "correct": 63,
+          "total": 217
+        },
+        "spatial_relation": {
+          "accuracy": 41.58125915080527,
+          "correct": 284,
+          "total": 683
+        },
+        "yes_no_object_presence": {
+          "accuracy": 60.53962900505902,
+          "correct": 359,
+          "total": 593
+        }
+      },
+      "top_predictions": [
+        [
+          "no",
+          792
+        ],
+        [
+          "yes",
+          264
+        ],
+        [
+          "right",
+          82
+        ],
+        [
+          "white",
+          64
+        ],
+        [
+          "man",
+          60
+        ],
+        [
+          "left",
+          55
+        ],
+        [
+          "table",
+          55
+        ],
+        [
+          "blue",
+          51
+        ],
+        [
+          "woman",
+          41
+        ],
+        [
+          "bed",
+          39
+        ],
+        [
+          "car",
+          33
+        ],
+        [
+          "laptop",
+          31
+        ],
+        [
+          "medium",
+          30
+        ],
+        [
+          "player",
+          27
+        ],
+        [
+          "black",
+          27
+        ],
+        [
+          "keyboard",
+          24
+        ],
+        [
+          "shirt",
+          22
+        ],
+        [
+          "chair",
+          21
+        ],
+        [
+          "desk",
+          21
+        ],
+        [
+          "sink",
+          20
+        ],
+        [
+          "couch",
+          20
+        ],
+        [
+          "plastic",
+          19
+        ],
+        [
+          "wood",
+          19
+        ],
+        [
+          "red",
+          18
+        ],
+        [
+          "green",
+          18
+        ]
+      ]
+    }
+  },
+  "pairwise": {
+    "v11_correct_v19_step4000_wrong": {
+      "by_answer_kind": {
+        "color": 8,
+        "direction": 7,
+        "other": 45,
+        "yes_no": 111
+      },
+      "by_taxonomy_label": {
+        "attribute": 19,
+        "color": 12,
+        "comparison": 3,
+        "left_right": 37,
+        "logical_compositional": 80,
+        "object_identity": 29,
+        "other": 4,
+        "spatial_relation": 80,
+        "yes_no_object_presence": 111
+      },
+      "by_taxonomy_primary": {
+        "attribute": 5,
+        "color": 12,
+        "left_right": 34,
+        "logical_compositional": 4,
+        "object_identity": 17,
+        "other": 4,
+        "spatial_relation": 40,
+        "yes_no_object_presence": 55
+      },
+      "comparison": "v11_correct_v19_step4000_wrong",
+      "left_artifact": "/tmp/v11_fixed_harness_fetch/gqa_confirm_n3000_offset1000.json",
+      "left_label": "v11_frontier_gqa_confirm_n3000_offset1000",
+      "num_rows": 171,
+      "right_artifact": "/tmp/v17_fixed_harness_v19_step4000_gqa_confirm_n3000_offset1000.json",
+      "right_label": "v19_step4000_gqa_confirm_n3000_offset1000"
+    },
+    "v19_step4000_correct_v11_wrong": {
+      "by_answer_kind": {
+        "color": 8,
+        "direction": 8,
+        "other": 44,
+        "yes_no": 82
+      },
+      "by_taxonomy_label": {
+        "attribute": 16,
+        "color": 13,
+        "comparison": 6,
+        "left_right": 20,
+        "logical_compositional": 62,
+        "object_identity": 26,
+        "other": 5,
+        "spatial_relation": 54,
+        "yes_no_object_presence": 82
+      },
+      "by_taxonomy_primary": {
+        "attribute": 7,
+        "color": 13,
+        "comparison": 2,
+        "left_right": 20,
+        "logical_compositional": 3,
+        "object_identity": 15,
+        "other": 5,
+        "spatial_relation": 34,
+        "yes_no_object_presence": 43
+      },
+      "comparison": "v19_step4000_correct_v11_wrong",
+      "left_artifact": "/tmp/v17_fixed_harness_v19_step4000_gqa_confirm_n3000_offset1000.json",
+      "left_label": "v19_step4000_gqa_confirm_n3000_offset1000",
+      "num_rows": 142,
+      "right_artifact": "/tmp/v11_fixed_harness_fetch/gqa_confirm_n3000_offset1000.json",
+      "right_label": "v11_frontier_gqa_confirm_n3000_offset1000"
+    }
+  }
+}

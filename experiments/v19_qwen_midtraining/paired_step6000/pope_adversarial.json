@@ -1,0 +1,27 @@
+{
+  "benchmark": "pope",
+  "candidate_artifact": "/tmp/v19_step6000_fetch/pope_adversarial_n1000.json",
+  "baseline_artifact": "/tmp/v11_fixed_harness_fetch/pope_adversarial_n1000.json",
+  "candidate_run_label": "v19_step6000_pope_adversarial_n1000",
+  "baseline_run_label": "v11_frontier_pope_adversarial_n1000",
+  "candidate_eval_schema_version": "v17_fixed_harness",
+  "baseline_eval_schema_version": "v17_fixed_harness",
+  "candidate_seed": 42,
+  "baseline_seed": 42,
+  "paired_total": 1000,
+  "candidate_only_rows": 0,
+  "baseline_only_rows": 0,
+  "bootstrap_seed": 12345,
+  "bootstrap_resamples": 10000,
+  "metrics": {
+    "pope_accuracy": {
+      "candidate_accuracy": 80.2,
+      "baseline_accuracy": 80.3,
+      "observed_delta": -0.1,
+      "ci95_low": -1.7000000000000002,
+      "ci95_high": 1.5,
+      "p_value_two_sided": 0.4687,
+      "significant": false
+    }
+  }
+}
