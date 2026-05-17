@@ -101,6 +101,8 @@ class TrainerConfig:
     use_wandb: bool = False
     wandb_project: str = "anymal"
     wandb_run_name: Optional[str] = None
+    wandb_tags: tuple = field(default_factory=tuple)
+    experiment_source_tag: Optional[str] = None
 
     # Evaluation
     eval_steps: Optional[int] = None
@@ -341,6 +343,7 @@ class Trainer:
                 project=self.config.wandb_project,
                 name=self.config.wandb_run_name,
                 config=vars(self.config),
+                tags=list(self.config.wandb_tags or ()),
             )
             self.logger = wandb
             self.wandb_url = wandb.run.get_url() if wandb.run else None
