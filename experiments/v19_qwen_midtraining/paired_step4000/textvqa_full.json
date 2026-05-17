@@ -1,0 +1,36 @@
+{
+  "benchmark": "textvqa",
+  "candidate_artifact": "/tmp/v17_fixed_harness_v19_step4000_textvqa_validation_full.json",
+  "baseline_artifact": "/tmp/v11_fixed_harness_fetch/textvqa_validation_full.json",
+  "candidate_run_label": "v19_step4000_textvqa_validation_full",
+  "baseline_run_label": "v11_frontier_textvqa_validation_full",
+  "candidate_eval_schema_version": "v17_fixed_harness",
+  "baseline_eval_schema_version": "v17_fixed_harness",
+  "candidate_seed": 42,
+  "baseline_seed": 42,
+  "paired_total": 5000,
+  "candidate_only_rows": 0,
+  "baseline_only_rows": 0,
+  "bootstrap_seed": 12345,
+  "bootstrap_resamples": 10000,
+  "metrics": {
+    "textvqa_exact_match": {
+      "candidate_accuracy": 31.46,
+      "baseline_accuracy": 30.94,
+      "observed_delta": 0.52,
+      "ci95_low": -0.22,
+      "ci95_high": 1.24,
+      "p_value_two_sided": 0.0788,
+      "significant": false
+    },
+    "textvqa_soft_accuracy": {
+      "candidate_accuracy": 28.639999999999983,
+      "baseline_accuracy": 28.39999999999998,
+      "observed_delta": 0.24,
+      "ci95_low": -0.44666666666666666,
+      "ci95_high": 0.9201666666666642,
+      "p_value_two_sided": 0.2455,
+      "significant": false
+    }
+  }
+}

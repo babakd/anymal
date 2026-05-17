@@ -1,0 +1,1665 @@
+{
+  "by_answer_kind": {
+    "color": 2,
+    "direction": 5,
+    "other": 29,
+    "yes_no": 45
+  },
+  "by_taxonomy_label": {
+    "attribute": 7,
+    "color": 4,
+    "comparison": 1,
+    "left_right": 15,
+    "logical_compositional": 36,
+    "object_identity": 11,
+    "other": 12,
+    "spatial_relation": 39,
+    "yes_no_object_presence": 45
+  },
+  "by_taxonomy_primary": {
+    "attribute": 3,
+    "color": 4,
+    "left_right": 15,
+    "logical_compositional": 4,
+    "object_identity": 5,
+    "other": 12,
+    "spatial_relation": 24,
+    "yes_no_object_presence": 14
+  },
+  "comparison": "v11_correct_v19_step6000_wrong",
+  "left_artifact": "/tmp/v11_fixed_harness_fetch/gqa_search_n1000.json",
+  "left_label": "v11_frontier_gqa_search_n1000",
+  "num_rows": 81,
+  "right_artifact": "/tmp/v19_step6000_fetch/gqa_search_n1000.json",
+  "right_label": "v19_step6000_gqa_search_n1000",
+  "rows": [
+    {
+      "answer_kind": "other",
+      "gqa_answer": "large",
+      "image_id": "n282436",
+      "question": "How large is the keyboard?",
+      "question_id": "testdev_balanced_1015_n282436",
+      "source_image_id": "n282436",
+      "source_index": null,
+      "taxonomy_labels": [
+        "other"
+      ],
+      "taxonomy_primary": "other",
+      "v11_answer": "large",
+      "v11_processed_answer": "large",
+      "v11_raw_answer": "large",
+      "v19_step6000_answer": "medium",
+      "v19_step6000_processed_answer": "medium",
+      "v19_step6000_raw_answer": "medium"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "clean",
+      "image_id": "n310828",
+      "question": "How clean is the mouse pad in the bottom of the image?",
+      "question_id": "testdev_balanced_10352_n310828",
+      "source_image_id": "n310828",
+      "source_index": null,
+      "taxonomy_labels": [
+        "other"
+      ],
+      "taxonomy_primary": "other",
+      "v11_answer": "clean",
+      "v11_processed_answer": "clean",
+      "v11_raw_answer": "clean",
+      "v19_step6000_answer": "very clean",
+      "v19_step6000_processed_answer": "very clean",
+      "v19_step6000_raw_answer": "very clean"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n97485",
+      "question": "Does the basket below the other basket look empty?",
+      "question_id": "testdev_balanced_10548_n97485",
+      "source_image_id": "n97485",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n355339",
+      "question": "Is the plastic keyboard to the right of the chair?",
+      "question_id": "testdev_balanced_10903_n355339",
+      "source_image_id": "n355339",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "train",
+      "image_id": "n525029",
+      "question": "What rides on the train tracks?",
+      "question_id": "testdev_balanced_10934_n525029",
+      "source_image_id": "n525029",
+      "source_index": null,
+      "taxonomy_labels": [
+        "other"
+      ],
+      "taxonomy_primary": "other",
+      "v11_answer": "train",
+      "v11_processed_answer": "train",
+      "v11_raw_answer": "train",
+      "v19_step6000_answer": "people",
+      "v19_step6000_processed_answer": "people",
+      "v19_step6000_raw_answer": "people"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n259949",
+      "question": "Do the trousers made of denim have blue color?",
+      "question_id": "testdev_balanced_11418_n259949",
+      "source_image_id": "n259949",
+      "source_index": null,
+      "taxonomy_labels": [
+        "yes_no_object_presence",
+        "attribute"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n181355",
+      "question": "Does the man to the right of the woman wear a hat?",
+      "question_id": "testdev_balanced_11458_n181355",
+      "source_image_id": "n181355",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n4777",
+      "question": "Is the chair to the right of the stuffed dog both hard and brown?",
+      "question_id": "testdev_balanced_1148_n4777",
+      "source_image_id": "n4777",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n115614",
+      "question": "Are the stores behind the people that are standing?",
+      "question_id": "testdev_balanced_11715_n115614",
+      "source_image_id": "n115614",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "boy",
+      "image_id": "n159284",
+      "question": "Who is wearing the shirt?",
+      "question_id": "testdev_balanced_1183_n159284",
+      "source_image_id": "n159284",
+      "source_index": null,
+      "taxonomy_labels": [
+        "attribute",
+        "object_identity"
+      ],
+      "taxonomy_primary": "attribute",
+      "v11_answer": "boy",
+      "v11_processed_answer": "boy",
+      "v11_raw_answer": "boy",
+      "v19_step6000_answer": "man",
+      "v19_step6000_processed_answer": "man",
+      "v19_step6000_raw_answer": "man"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "helmet",
+      "image_id": "n317260",
+      "question": "What's the batter wearing?",
+      "question_id": "testdev_balanced_11912_n317260",
+      "source_image_id": "n317260",
+      "source_index": null,
+      "taxonomy_labels": [
+        "other"
+      ],
+      "taxonomy_primary": "other",
+      "v11_answer": "helmet",
+      "v11_processed_answer": "helmet",
+      "v11_raw_answer": "helmet",
+      "v19_step6000_answer": "gloves",
+      "v19_step6000_processed_answer": "gloves",
+      "v19_step6000_raw_answer": "gloves"
+    },
+    {
+      "answer_kind": "color",
+      "gqa_answer": "brown",
+      "image_id": "n435808",
+      "question": "Is the desk white or brown?",
+      "question_id": "testdev_balanced_12230_n435808",
+      "source_image_id": "n435808",
+      "source_index": null,
+      "taxonomy_labels": [
+        "color",
+        "logical_compositional"
+      ],
+      "taxonomy_primary": "color",
+      "v11_answer": "brown",
+      "v11_processed_answer": "brown",
+      "v11_raw_answer": "brown",
+      "v19_step6000_answer": "white",
+      "v19_step6000_processed_answer": "white",
+      "v19_step6000_raw_answer": "white"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "street",
+      "image_id": "n486200",
+      "question": "Where is the traffic sign?",
+      "question_id": "testdev_balanced_12245_n486200",
+      "source_image_id": "n486200",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "object_identity"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "street",
+      "v11_processed_answer": "street",
+      "v11_raw_answer": "street",
+      "v19_step6000_answer": "left",
+      "v19_step6000_processed_answer": "left",
+      "v19_step6000_raw_answer": "left"
+    },
+    {
+      "answer_kind": "direction",
+      "gqa_answer": "right",
+      "image_id": "n283587",
+      "question": "On which side is the small side table, the left or the right?",
+      "question_id": "testdev_balanced_12361_n283587",
+      "source_image_id": "n283587",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "logical_compositional"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "right",
+      "v11_processed_answer": "right",
+      "v11_raw_answer": "right",
+      "v19_step6000_answer": "left",
+      "v19_step6000_processed_answer": "left",
+      "v19_step6000_raw_answer": "left"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n89148",
+      "question": "Are the windows above a doll?",
+      "question_id": "testdev_balanced_12363_n89148",
+      "source_image_id": "n89148",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "direction",
+      "gqa_answer": "right",
+      "image_id": "n432591",
+      "question": "Which side of the image are the books on?",
+      "question_id": "testdev_balanced_12425_n432591",
+      "source_image_id": "n432591",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "object_identity"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "right",
+      "v11_processed_answer": "right",
+      "v11_raw_answer": "right",
+      "v19_step6000_answer": "left",
+      "v19_step6000_processed_answer": "left",
+      "v19_step6000_raw_answer": "left"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n498712",
+      "question": "Does the young person look happy and thin?",
+      "question_id": "testdev_balanced_1322_n498712",
+      "source_image_id": "n498712",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n498140",
+      "question": "Is the grill below a bus driver?",
+      "question_id": "testdev_balanced_1594_n498140",
+      "source_image_id": "n498140",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n526228",
+      "question": "Does the coffee table in front of the man look small and wooden?",
+      "question_id": "testdev_balanced_1873_n526228",
+      "source_image_id": "n526228",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "long",
+      "image_id": "n524855",
+      "question": "What length is the tail?",
+      "question_id": "testdev_balanced_2173_n524855",
+      "source_image_id": "n524855",
+      "source_index": null,
+      "taxonomy_labels": [
+        "other"
+      ],
+      "taxonomy_primary": "other",
+      "v11_answer": "long",
+      "v11_processed_answer": "long",
+      "v11_raw_answer": "long",
+      "v19_step6000_answer": "10",
+      "v19_step6000_processed_answer": "10",
+      "v19_step6000_raw_answer": "10"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "talking",
+      "image_id": "n204894",
+      "question": "What's the child doing?",
+      "question_id": "testdev_balanced_2175_n204894",
+      "source_image_id": "n204894",
+      "source_index": null,
+      "taxonomy_labels": [
+        "other"
+      ],
+      "taxonomy_primary": "other",
+      "v11_answer": "talking",
+      "v11_processed_answer": "talking",
+      "v11_raw_answer": "talking",
+      "v19_step6000_answer": "talking on phone",
+      "v19_step6000_processed_answer": "talking on phone",
+      "v19_step6000_raw_answer": "talking on phone"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n433692",
+      "question": "Are there any pens to the right of the tall lamp near the laptop?",
+      "question_id": "testdev_balanced_2376_n433692",
+      "source_image_id": "n433692",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "sink",
+      "image_id": "n54180",
+      "question": "What do you think is the man in front of?",
+      "question_id": "testdev_balanced_2905_n54180",
+      "source_image_id": "n54180",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "sink",
+      "v11_processed_answer": "sink",
+      "v11_raw_answer": "sink",
+      "v19_step6000_answer": "mirror",
+      "v19_step6000_processed_answer": "mirror",
+      "v19_step6000_raw_answer": "mirror"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "boy",
+      "image_id": "n126891",
+      "question": "Who is wearing a jersey?",
+      "question_id": "testdev_balanced_3038_n126891",
+      "source_image_id": "n126891",
+      "source_index": null,
+      "taxonomy_labels": [
+        "attribute",
+        "object_identity"
+      ],
+      "taxonomy_primary": "attribute",
+      "v11_answer": "boy",
+      "v11_processed_answer": "boy",
+      "v11_raw_answer": "boy",
+      "v19_step6000_answer": "player",
+      "v19_step6000_processed_answer": "player",
+      "v19_step6000_raw_answer": "player"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "boy",
+      "image_id": "n126891",
+      "question": "Who is wearing the jersey?",
+      "question_id": "testdev_balanced_3039_n126891",
+      "source_image_id": "n126891",
+      "source_index": null,
+      "taxonomy_labels": [
+        "attribute",
+        "object_identity"
+      ],
+      "taxonomy_primary": "attribute",
+      "v11_answer": "boy",
+      "v11_processed_answer": "boy",
+      "v11_raw_answer": "boy",
+      "v19_step6000_answer": "player",
+      "v19_step6000_processed_answer": "player",
+      "v19_step6000_raw_answer": "player"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "top",
+      "image_id": "n285391",
+      "question": "In which part of the picture is the rope, the bottom or the top?",
+      "question_id": "testdev_balanced_3069_n285391",
+      "source_image_id": "n285391",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional"
+      ],
+      "taxonomy_primary": "logical_compositional",
+      "v11_answer": "top",
+      "v11_processed_answer": "top",
+      "v11_raw_answer": "top",
+      "v19_step6000_answer": "bottom",
+      "v19_step6000_processed_answer": "bottom",
+      "v19_step6000_raw_answer": "bottom"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n162148",
+      "question": "Is the white shirt worn on the undershirt the woman is wearing?",
+      "question_id": "testdev_balanced_3219_n162148",
+      "source_image_id": "n162148",
+      "source_index": null,
+      "taxonomy_labels": [
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "dirty",
+      "image_id": "n450919",
+      "question": "How clean is the mud near the grass?",
+      "question_id": "testdev_balanced_3248_n450919",
+      "source_image_id": "n450919",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "dirty",
+      "v11_processed_answer": "dirty",
+      "v11_raw_answer": "dirty",
+      "v19_step6000_answer": "muddy",
+      "v19_step6000_processed_answer": "muddy",
+      "v19_step6000_raw_answer": "muddy"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "thin",
+      "image_id": "n23762",
+      "question": "How fat is the tall person?",
+      "question_id": "testdev_balanced_3344_n23762",
+      "source_image_id": "n23762",
+      "source_index": null,
+      "taxonomy_labels": [
+        "other"
+      ],
+      "taxonomy_primary": "other",
+      "v11_answer": "thin",
+      "v11_processed_answer": "thin",
+      "v11_raw_answer": "thin",
+      "v19_step6000_answer": "very tall",
+      "v19_step6000_processed_answer": "very tall",
+      "v19_step6000_raw_answer": "very tall"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "socks",
+      "image_id": "n194179",
+      "question": "What is on the shoes?",
+      "question_id": "testdev_balanced_3398_n194179",
+      "source_image_id": "n194179",
+      "source_index": null,
+      "taxonomy_labels": [
+        "object_identity"
+      ],
+      "taxonomy_primary": "object_identity",
+      "v11_answer": "socks",
+      "v11_processed_answer": "socks",
+      "v11_raw_answer": "socks",
+      "v19_step6000_answer": "shin guards",
+      "v19_step6000_processed_answer": "shin guards",
+      "v19_step6000_raw_answer": "shin guards"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n498140",
+      "question": "Does the person above the grill look calm and male?",
+      "question_id": "testdev_balanced_3535_n498140",
+      "source_image_id": "n498140",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n398257",
+      "question": "Does the keyboard look white and curved?",
+      "question_id": "testdev_balanced_3795_n398257",
+      "source_image_id": "n398257",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n146522",
+      "question": "Are both the ball to the right of the other balls and the black helmet made of plastic?",
+      "question_id": "testdev_balanced_3809_n146522",
+      "source_image_id": "n146522",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence",
+        "attribute"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "large",
+      "image_id": "n411121",
+      "question": "Is the parked vehicle to the left of the person small or large?",
+      "question_id": "testdev_balanced_4311_n411121",
+      "source_image_id": "n411121",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "logical_compositional"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "large",
+      "v11_processed_answer": "large",
+      "v11_raw_answer": "large",
+      "v19_step6000_answer": "small",
+      "v19_step6000_processed_answer": "small",
+      "v19_step6000_raw_answer": "small"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n380113",
+      "question": "Are there soccer players to the left of the person in the top part?",
+      "question_id": "testdev_balanced_4666_n380113",
+      "source_image_id": "n380113",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n470131",
+      "question": "Is the sweet dessert sitting beside the food in front of the tape?",
+      "question_id": "testdev_balanced_4782_n470131",
+      "source_image_id": "n470131",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "open",
+      "image_id": "n23181",
+      "question": "Are the drapes closed or open?",
+      "question_id": "testdev_balanced_4792_n23181",
+      "source_image_id": "n23181",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional"
+      ],
+      "taxonomy_primary": "logical_compositional",
+      "v11_answer": "open",
+      "v11_processed_answer": "open",
+      "v11_raw_answer": "open",
+      "v19_step6000_answer": "closed",
+      "v19_step6000_processed_answer": "closed",
+      "v19_step6000_raw_answer": "closed"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "park",
+      "image_id": "n223750",
+      "question": "Which place is it?",
+      "question_id": "testdev_balanced_5010_n223750",
+      "source_image_id": "n223750",
+      "source_index": null,
+      "taxonomy_labels": [
+        "object_identity"
+      ],
+      "taxonomy_primary": "object_identity",
+      "v11_answer": "park",
+      "v11_processed_answer": "park",
+      "v11_raw_answer": "park",
+      "v19_step6000_answer": "new york",
+      "v19_step6000_processed_answer": "new york",
+      "v19_step6000_raw_answer": "new york"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "coat",
+      "image_id": "n111390",
+      "question": "What do you think is the old lady wearing?",
+      "question_id": "testdev_balanced_504_n111390",
+      "source_image_id": "n111390",
+      "source_index": null,
+      "taxonomy_labels": [
+        "other"
+      ],
+      "taxonomy_primary": "other",
+      "v11_answer": "coat",
+      "v11_processed_answer": "coat",
+      "v11_raw_answer": "coat",
+      "v19_step6000_answer": "dress",
+      "v19_step6000_processed_answer": "dress",
+      "v19_step6000_raw_answer": "a dress"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n363445",
+      "question": "Does the purple thing above the dessert look small?",
+      "question_id": "testdev_balanced_5167_n363445",
+      "source_image_id": "n363445",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "large",
+      "image_id": "n12404",
+      "question": "How large is the concrete sidewalk?",
+      "question_id": "testdev_balanced_538_n12404",
+      "source_image_id": "n12404",
+      "source_index": null,
+      "taxonomy_labels": [
+        "other"
+      ],
+      "taxonomy_primary": "other",
+      "v11_answer": "large",
+      "v11_processed_answer": "large",
+      "v11_raw_answer": "large",
+      "v19_step6000_answer": "10 feet",
+      "v19_step6000_processed_answer": "10 feet",
+      "v19_step6000_raw_answer": "10 feet"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n16656",
+      "question": "Is the Caucasian person in front of the tree the sky is behind of?",
+      "question_id": "testdev_balanced_5441_n16656",
+      "source_image_id": "n16656",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n118102",
+      "question": "Is the color of the counter brown?",
+      "question_id": "testdev_balanced_5481_n118102",
+      "source_image_id": "n118102",
+      "source_index": null,
+      "taxonomy_labels": [
+        "color",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "color",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "beach",
+      "image_id": "n298104",
+      "question": "Where do you think is the happy person standing on?",
+      "question_id": "testdev_balanced_552_n298104",
+      "source_image_id": "n298104",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "object_identity"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "beach",
+      "v11_processed_answer": "beach",
+      "v11_raw_answer": "beach",
+      "v19_step6000_answer": "sand",
+      "v19_step6000_processed_answer": "sand",
+      "v19_step6000_raw_answer": "sand"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n119944",
+      "question": "Is the old tree behind the baskets near the man?",
+      "question_id": "testdev_balanced_5717_n119944",
+      "source_image_id": "n119944",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n541854",
+      "question": "Are there chairs or knives in the photograph?",
+      "question_id": "testdev_balanced_5867_n541854",
+      "source_image_id": "n541854",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "direction",
+      "gqa_answer": "right",
+      "image_id": "n71728",
+      "question": "Is the woman to the left or to the right of the man in the middle of the picture?",
+      "question_id": "testdev_balanced_5917_n71728",
+      "source_image_id": "n71728",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "logical_compositional"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "right",
+      "v11_processed_answer": "right",
+      "v11_raw_answer": "right",
+      "v19_step6000_answer": "left",
+      "v19_step6000_processed_answer": "left",
+      "v19_step6000_raw_answer": "left"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n295771",
+      "question": "Is the couch near the window both red and smooth?",
+      "question_id": "testdev_balanced_5998_n295771",
+      "source_image_id": "n295771",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "chairs",
+      "image_id": "n276011",
+      "question": "What items of furniture are wooden?",
+      "question_id": "testdev_balanced_623_n276011",
+      "source_image_id": "n276011",
+      "source_index": null,
+      "taxonomy_labels": [
+        "other"
+      ],
+      "taxonomy_primary": "other",
+      "v11_answer": "chairs",
+      "v11_processed_answer": "chairs",
+      "v11_raw_answer": "chairs",
+      "v19_step6000_answer": "table",
+      "v19_step6000_processed_answer": "table",
+      "v19_step6000_raw_answer": "table"
+    },
+    {
+      "answer_kind": "direction",
+      "gqa_answer": "right",
+      "image_id": "n497789",
+      "question": "On which side of the image are the striped animals?",
+      "question_id": "testdev_balanced_6366_n497789",
+      "source_image_id": "n497789",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "right",
+      "v11_processed_answer": "right",
+      "v11_raw_answer": "right",
+      "v19_step6000_answer": "left",
+      "v19_step6000_processed_answer": "left",
+      "v19_step6000_raw_answer": "left"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "top",
+      "image_id": "n469525",
+      "question": "In which part of the image is the tall animal, the top or the bottom?",
+      "question_id": "testdev_balanced_6382_n469525",
+      "source_image_id": "n469525",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional"
+      ],
+      "taxonomy_primary": "logical_compositional",
+      "v11_answer": "top",
+      "v11_processed_answer": "top",
+      "v11_raw_answer": "top",
+      "v19_step6000_answer": "bottom",
+      "v19_step6000_processed_answer": "bottom",
+      "v19_step6000_raw_answer": "bottom"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "long",
+      "image_id": "n243701",
+      "question": "How long is the hair?",
+      "question_id": "testdev_balanced_6403_n243701",
+      "source_image_id": "n243701",
+      "source_index": null,
+      "taxonomy_labels": [
+        "other"
+      ],
+      "taxonomy_primary": "other",
+      "v11_answer": "long",
+      "v11_processed_answer": "long",
+      "v11_raw_answer": "long",
+      "v19_step6000_answer": "medium",
+      "v19_step6000_processed_answer": "medium",
+      "v19_step6000_raw_answer": "medium"
+    },
+    {
+      "answer_kind": "color",
+      "gqa_answer": "brown",
+      "image_id": "n429961",
+      "question": "Does the container that is not large look white or brown?",
+      "question_id": "testdev_balanced_644_n429961",
+      "source_image_id": "n429961",
+      "source_index": null,
+      "taxonomy_labels": [
+        "color",
+        "logical_compositional"
+      ],
+      "taxonomy_primary": "color",
+      "v11_answer": "brown",
+      "v11_processed_answer": "brown",
+      "v11_raw_answer": "brown",
+      "v19_step6000_answer": "white",
+      "v19_step6000_processed_answer": "white",
+      "v19_step6000_raw_answer": "white"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n355567",
+      "question": "Does the person that is to the right of the lady look modern?",
+      "question_id": "testdev_balanced_6491_n355567",
+      "source_image_id": "n355567",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "dense",
+      "image_id": "n214497",
+      "question": "How do the cars look like, dense or sparse?",
+      "question_id": "testdev_balanced_64_n214497",
+      "source_image_id": "n214497",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional"
+      ],
+      "taxonomy_primary": "logical_compositional",
+      "v11_answer": "dense",
+      "v11_processed_answer": "dense",
+      "v11_raw_answer": "dense",
+      "v19_step6000_answer": "sparse",
+      "v19_step6000_processed_answer": "sparse",
+      "v19_step6000_raw_answer": "sparse"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n51658",
+      "question": "Are there any rackets that are red?",
+      "question_id": "testdev_balanced_6998_n51658",
+      "source_image_id": "n51658",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n381072",
+      "question": "Are there cakes to the left of the plate that is to the left of the knife?",
+      "question_id": "testdev_balanced_7098_n381072",
+      "source_image_id": "n381072",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n295771",
+      "question": "Is the window near the plant both large and clear?",
+      "question_id": "testdev_balanced_7134_n295771",
+      "source_image_id": "n295771",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n260521",
+      "question": "Is the book above the bench open and white?",
+      "question_id": "testdev_balanced_7154_n260521",
+      "source_image_id": "n260521",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n153293",
+      "question": "Are the folded towels sitting inside the shelves next to the wall?",
+      "question_id": "testdev_balanced_7271_n153293",
+      "source_image_id": "n153293",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n451187",
+      "question": "Do the vehicles to the left of the bench look white and metallic?",
+      "question_id": "testdev_balanced_7411_n451187",
+      "source_image_id": "n451187",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n507149",
+      "question": "Is the kite above the person long and light?",
+      "question_id": "testdev_balanced_7562_n507149",
+      "source_image_id": "n507149",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n181355",
+      "question": "Does the hat that is made of cloth seem to be crooked and green?",
+      "question_id": "testdev_balanced_7760_n181355",
+      "source_image_id": "n181355",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional",
+        "yes_no_object_presence",
+        "attribute"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n541482",
+      "question": "Is the cloud different in color than the sky?",
+      "question_id": "testdev_balanced_7819_n541482",
+      "source_image_id": "n541482",
+      "source_index": null,
+      "taxonomy_labels": [
+        "color",
+        "comparison",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "color",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "suitcase",
+      "image_id": "n302387",
+      "question": "What is on the rug?",
+      "question_id": "testdev_balanced_7977_n302387",
+      "source_image_id": "n302387",
+      "source_index": null,
+      "taxonomy_labels": [
+        "object_identity"
+      ],
+      "taxonomy_primary": "object_identity",
+      "v11_answer": "suitcase",
+      "v11_processed_answer": "suitcase",
+      "v11_raw_answer": "suitcase",
+      "v19_step6000_answer": "case",
+      "v19_step6000_processed_answer": "case",
+      "v19_step6000_raw_answer": "case"
+    },
+    {
+      "answer_kind": "direction",
+      "gqa_answer": "right",
+      "image_id": "n37274",
+      "question": "Is the crate to the left or to the right of the man that is on the left of the picture?",
+      "question_id": "testdev_balanced_8077_n37274",
+      "source_image_id": "n37274",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "logical_compositional"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "right",
+      "v11_processed_answer": "right",
+      "v11_raw_answer": "right",
+      "v19_step6000_answer": "left",
+      "v19_step6000_processed_answer": "left",
+      "v19_step6000_raw_answer": "left"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n315887",
+      "question": "Is the keyboard long and regular?",
+      "question_id": "testdev_balanced_8168_n315887",
+      "source_image_id": "n315887",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n55058",
+      "question": "Does the onion to the left of the serving dish look healthy and small?",
+      "question_id": "testdev_balanced_8182_n55058",
+      "source_image_id": "n55058",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n264887",
+      "question": "Does the mouse pad in front of the monitor have green color?",
+      "question_id": "testdev_balanced_8218_n264887",
+      "source_image_id": "n264887",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n507959",
+      "question": "Are the small dolls to the left of the people who are standing behind the luggage?",
+      "question_id": "testdev_balanced_8250_n507959",
+      "source_image_id": "n507959",
+      "source_index": null,
+      "taxonomy_labels": [
+        "left_right",
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "left_right",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n527290",
+      "question": "Are there any chairs next to the couch?",
+      "question_id": "testdev_balanced_8481_n527290",
+      "source_image_id": "n527290",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n119944",
+      "question": "Does the woman that is not thin sit on a bench?",
+      "question_id": "testdev_balanced_880_n119944",
+      "source_image_id": "n119944",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n143935",
+      "question": "Are there any cows that are not small?",
+      "question_id": "testdev_balanced_8917_n143935",
+      "source_image_id": "n143935",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n77818",
+      "question": "Is the TV on top of an entertainment center?",
+      "question_id": "testdev_balanced_8960_n77818",
+      "source_image_id": "n77818",
+      "source_index": null,
+      "taxonomy_labels": [
+        "spatial_relation",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "spatial_relation",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n51002",
+      "question": "Are there either any small desks or boxes?",
+      "question_id": "testdev_balanced_906_n51002",
+      "source_image_id": "n51002",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "metal",
+      "image_id": "n486200",
+      "question": "What is the minivan made of?",
+      "question_id": "testdev_balanced_9128_n486200",
+      "source_image_id": "n486200",
+      "source_index": null,
+      "taxonomy_labels": [
+        "object_identity"
+      ],
+      "taxonomy_primary": "object_identity",
+      "v11_answer": "metal",
+      "v11_processed_answer": "metal",
+      "v11_raw_answer": "metal",
+      "v19_step6000_answer": "plastic",
+      "v19_step6000_processed_answer": "plastic",
+      "v19_step6000_raw_answer": "plastic"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "zebras",
+      "image_id": "n207893",
+      "question": "What is the name of the animals that are standing in the grass that is not short?",
+      "question_id": "testdev_balanced_9133_n207893",
+      "source_image_id": "n207893",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional",
+        "object_identity"
+      ],
+      "taxonomy_primary": "object_identity",
+      "v11_answer": "zebras",
+      "v11_processed_answer": "zebras",
+      "v11_raw_answer": "zebras",
+      "v19_step6000_answer": "zebra",
+      "v19_step6000_processed_answer": "zebra",
+      "v19_step6000_raw_answer": "zebra"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n223750",
+      "question": "Does the purse look dark and large?",
+      "question_id": "testdev_balanced_9408_n223750",
+      "source_image_id": "n223750",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional",
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    },
+    {
+      "answer_kind": "other",
+      "gqa_answer": "table",
+      "image_id": "n429961",
+      "question": "What's the cauliflower on?",
+      "question_id": "testdev_balanced_9511_n429961",
+      "source_image_id": "n429961",
+      "source_index": null,
+      "taxonomy_labels": [
+        "other"
+      ],
+      "taxonomy_primary": "other",
+      "v11_answer": "table",
+      "v11_processed_answer": "table",
+      "v11_raw_answer": "table",
+      "v19_step6000_answer": "wood",
+      "v19_step6000_processed_answer": "wood",
+      "v19_step6000_raw_answer": "wood"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "no",
+      "image_id": "n331357",
+      "question": "Are the cows white?",
+      "question_id": "testdev_balanced_9888_n331357",
+      "source_image_id": "n331357",
+      "source_index": null,
+      "taxonomy_labels": [
+        "yes_no_object_presence"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "no",
+      "v11_processed_answer": "no",
+      "v11_raw_answer": "no",
+      "v19_step6000_answer": "yes",
+      "v19_step6000_processed_answer": "yes",
+      "v19_step6000_raw_answer": "yes"
+    },
+    {
+      "answer_kind": "yes_no",
+      "gqa_answer": "yes",
+      "image_id": "n77818",
+      "question": "Does the window that is made of glass look square?",
+      "question_id": "testdev_balanced_9900_n77818",
+      "source_image_id": "n77818",
+      "source_index": null,
+      "taxonomy_labels": [
+        "logical_compositional",
+        "yes_no_object_presence",
+        "attribute"
+      ],
+      "taxonomy_primary": "yes_no_object_presence",
+      "v11_answer": "yes",
+      "v11_processed_answer": "yes",
+      "v11_raw_answer": "yes",
+      "v19_step6000_answer": "no",
+      "v19_step6000_processed_answer": "no",
+      "v19_step6000_raw_answer": "no"
+    }
+  ]
+}

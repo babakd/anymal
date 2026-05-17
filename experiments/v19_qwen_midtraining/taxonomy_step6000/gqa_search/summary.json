@@ -1,0 +1,527 @@
+{
+  "artifacts": {
+    "v11": {
+      "answer_kinds": {
+        "color": {
+          "accuracy": 38.0,
+          "correct": 19,
+          "total": 50
+        },
+        "direction": {
+          "accuracy": 47.05882352941177,
+          "correct": 24,
+          "total": 51
+        },
+        "other": {
+          "accuracy": 32.11678832116788,
+          "correct": 176,
+          "total": 548
+        },
+        "yes_no": {
+          "accuracy": 65.52706552706553,
+          "correct": 230,
+          "total": 351
+        }
+      },
+      "artifact": "/tmp/v11_fixed_harness_fetch/gqa_search_n1000.json",
+      "checkpoint": "/checkpoints/pretrain-output/v11-qwen3-c1-posscale000-scale1125/checkpoint-posscale000-scale1125",
+      "eval_schema_version": "v17_fixed_harness",
+      "label": "v11_frontier_gqa_search_n1000",
+      "name": "v11",
+      "num_samples": 1000,
+      "reported_gqa_accuracy": 44.9,
+      "sample_accuracy": 44.9,
+      "taxonomy": {
+        "attribute": {
+          "accuracy": 32.30769230769231,
+          "correct": 21,
+          "total": 65
+        },
+        "color": {
+          "accuracy": 40.963855421686745,
+          "correct": 34,
+          "total": 83
+        },
+        "comparison": {
+          "accuracy": 57.69230769230769,
+          "correct": 15,
+          "total": 26
+        },
+        "label:attribute": {
+          "accuracy": 42.10526315789474,
+          "correct": 56,
+          "total": 133
+        },
+        "label:color": {
+          "accuracy": 40.963855421686745,
+          "correct": 34,
+          "total": 83
+        },
+        "label:comparison": {
+          "accuracy": 55.55555555555556,
+          "correct": 25,
+          "total": 45
+        },
+        "label:left_right": {
+          "accuracy": 44.44444444444444,
+          "correct": 52,
+          "total": 117
+        },
+        "label:logical_compositional": {
+          "accuracy": 55.714285714285715,
+          "correct": 195,
+          "total": 350
+        },
+        "label:object_identity": {
+          "accuracy": 32.7536231884058,
+          "correct": 113,
+          "total": 345
+        },
+        "label:other": {
+          "accuracy": 35.80246913580247,
+          "correct": 29,
+          "total": 81
+        },
+        "label:spatial_relation": {
+          "accuracy": 43.73259052924791,
+          "correct": 157,
+          "total": 359
+        },
+        "label:yes_no_object_presence": {
+          "accuracy": 65.52706552706553,
+          "correct": 230,
+          "total": 351
+        },
+        "left_right": {
+          "accuracy": 44.827586206896555,
+          "correct": 52,
+          "total": 116
+        },
+        "logical_compositional": {
+          "accuracy": 42.857142857142854,
+          "correct": 18,
+          "total": 42
+        },
+        "object_identity": {
+          "accuracy": 33.529411764705884,
+          "correct": 57,
+          "total": 170
+        },
+        "other": {
+          "accuracy": 35.80246913580247,
+          "correct": 29,
+          "total": 81
+        },
+        "spatial_relation": {
+          "accuracy": 44.11764705882353,
+          "correct": 105,
+          "total": 238
+        },
+        "yes_no_object_presence": {
+          "accuracy": 65.92178770949721,
+          "correct": 118,
+          "total": 179
+        }
+      },
+      "top_predictions": [
+        [
+          "no",
+          203
+        ],
+        [
+          "yes",
+          143
+        ],
+        [
+          "right",
+          43
+        ],
+        [
+          "man",
+          25
+        ],
+        [
+          "white",
+          19
+        ],
+        [
+          "table",
+          14
+        ],
+        [
+          "medium",
+          12
+        ],
+        [
+          "blue",
+          11
+        ],
+        [
+          "shirt",
+          11
+        ],
+        [
+          "woman",
+          11
+        ],
+        [
+          "chair",
+          11
+        ],
+        [
+          "player",
+          9
+        ],
+        [
+          "green",
+          9
+        ],
+        [
+          "red",
+          9
+        ],
+        [
+          "giraffe",
+          8
+        ],
+        [
+          "bed",
+          8
+        ],
+        [
+          "desk",
+          8
+        ],
+        [
+          "left",
+          8
+        ],
+        [
+          "girl",
+          7
+        ],
+        [
+          "laptop",
+          7
+        ],
+        [
+          "oven",
+          7
+        ],
+        [
+          "bottom",
+          7
+        ],
+        [
+          "couch",
+          7
+        ],
+        [
+          "black",
+          6
+        ],
+        [
+          "dog",
+          6
+        ]
+      ]
+    },
+    "v19_step6000": {
+      "answer_kinds": {
+        "color": {
+          "accuracy": 34.0,
+          "correct": 17,
+          "total": 50
+        },
+        "direction": {
+          "accuracy": 47.05882352941177,
+          "correct": 24,
+          "total": 51
+        },
+        "other": {
+          "accuracy": 28.64963503649635,
+          "correct": 157,
+          "total": 548
+        },
+        "yes_no": {
+          "accuracy": 60.68376068376068,
+          "correct": 213,
+          "total": 351
+        }
+      },
+      "artifact": "/tmp/v19_step6000_fetch/gqa_search_n1000.json",
+      "checkpoint": "/checkpoints/pretrain-output/v19-qwen3-midtraining-v18sup-v11kl-w2-6000/checkpoint-6000",
+      "eval_schema_version": "v17_fixed_harness",
+      "label": "v19_step6000_gqa_search_n1000",
+      "name": "v19_step6000",
+      "num_samples": 1000,
+      "reported_gqa_accuracy": 41.1,
+      "sample_accuracy": 41.1,
+      "taxonomy": {
+        "attribute": {
+          "accuracy": 32.30769230769231,
+          "correct": 21,
+          "total": 65
+        },
+        "color": {
+          "accuracy": 38.55421686746988,
+          "correct": 32,
+          "total": 83
+        },
+        "comparison": {
+          "accuracy": 57.69230769230769,
+          "correct": 15,
+          "total": 26
+        },
+        "label:attribute": {
+          "accuracy": 40.6015037593985,
+          "correct": 54,
+          "total": 133
+        },
+        "label:color": {
+          "accuracy": 38.55421686746988,
+          "correct": 32,
+          "total": 83
+        },
+        "label:comparison": {
+          "accuracy": 57.77777777777778,
+          "correct": 26,
+          "total": 45
+        },
+        "label:left_right": {
+          "accuracy": 39.31623931623932,
+          "correct": 46,
+          "total": 117
+        },
+        "label:logical_compositional": {
+          "accuracy": 50.57142857142857,
+          "correct": 177,
+          "total": 350
+        },
+        "label:object_identity": {
+          "accuracy": 32.46376811594203,
+          "correct": 112,
+          "total": 345
+        },
+        "label:other": {
+          "accuracy": 22.22222222222222,
+          "correct": 18,
+          "total": 81
+        },
+        "label:spatial_relation": {
+          "accuracy": 38.16155988857939,
+          "correct": 137,
+          "total": 359
+        },
+        "label:yes_no_object_presence": {
+          "accuracy": 60.68376068376068,
+          "correct": 213,
+          "total": 351
+        },
+        "left_right": {
+          "accuracy": 39.6551724137931,
+          "correct": 46,
+          "total": 116
+        },
+        "logical_compositional": {
+          "accuracy": 35.714285714285715,
+          "correct": 15,
+          "total": 42
+        },
+        "object_identity": {
+          "accuracy": 32.94117647058823,
+          "correct": 56,
+          "total": 170
+        },
+        "other": {
+          "accuracy": 22.22222222222222,
+          "correct": 18,
+          "total": 81
+        },
+        "spatial_relation": {
+          "accuracy": 38.23529411764706,
+          "correct": 91,
+          "total": 238
+        },
+        "yes_no_object_presence": {
+          "accuracy": 65.36312849162012,
+          "correct": 117,
+          "total": 179
+        }
+      },
+      "top_predictions": [
+        [
+          "no",
+          275
+        ],
+        [
+          "yes",
+          73
+        ],
+        [
+          "right",
+          33
+        ],
+        [
+          "man",
+          26
+        ],
+        [
+          "white",
+          21
+        ],
+        [
+          "left",
+          19
+        ],
+        [
+          "table",
+          17
+        ],
+        [
+          "medium",
+          14
+        ],
+        [
+          "blue",
+          11
+        ],
+        [
+          "woman",
+          11
+        ],
+        [
+          "player",
+          10
+        ],
+        [
+          "shirt",
+          10
+        ],
+        [
+          "red",
+          10
+        ],
+        [
+          "bottom",
+          9
+        ],
+        [
+          "dog",
+          8
+        ],
+        [
+          "oven",
+          8
+        ],
+        [
+          "desk",
+          8
+        ],
+        [
+          "giraffe",
+          7
+        ],
+        [
+          "green",
+          7
+        ],
+        [
+          "car",
+          7
+        ],
+        [
+          "bed",
+          7
+        ],
+        [
+          "couch",
+          7
+        ],
+        [
+          "girl",
+          6
+        ],
+        [
+          "black",
+          6
+        ],
+        [
+          "laptop",
+          6
+        ]
+      ]
+    }
+  },
+  "pairwise": {
+    "v11_correct_v19_step6000_wrong": {
+      "by_answer_kind": {
+        "color": 2,
+        "direction": 5,
+        "other": 29,
+        "yes_no": 45
+      },
+      "by_taxonomy_label": {
+        "attribute": 7,
+        "color": 4,
+        "comparison": 1,
+        "left_right": 15,
+        "logical_compositional": 36,
+        "object_identity": 11,
+        "other": 12,
+        "spatial_relation": 39,
+        "yes_no_object_presence": 45
+      },
+      "by_taxonomy_primary": {
+        "attribute": 3,
+        "color": 4,
+        "left_right": 15,
+        "logical_compositional": 4,
+        "object_identity": 5,
+        "other": 12,
+        "spatial_relation": 24,
+        "yes_no_object_presence": 14
+      },
+      "comparison": "v11_correct_v19_step6000_wrong",
+      "left_artifact": "/tmp/v11_fixed_harness_fetch/gqa_search_n1000.json",
+      "left_label": "v11_frontier_gqa_search_n1000",
+      "num_rows": 81,
+      "right_artifact": "/tmp/v19_step6000_fetch/gqa_search_n1000.json",
+      "right_label": "v19_step6000_gqa_search_n1000"
+    },
+    "v19_step6000_correct_v11_wrong": {
+      "by_answer_kind": {
+        "direction": 5,
+        "other": 10,
+        "yes_no": 28
+      },
+      "by_taxonomy_label": {
+        "attribute": 5,
+        "color": 2,
+        "comparison": 2,
+        "left_right": 9,
+        "logical_compositional": 18,
+        "object_identity": 10,
+        "other": 1,
+        "spatial_relation": 19,
+        "yes_no_object_presence": 28
+      },
+      "by_taxonomy_primary": {
+        "attribute": 3,
+        "color": 2,
+        "left_right": 9,
+        "logical_compositional": 1,
+        "object_identity": 4,
+        "other": 1,
+        "spatial_relation": 10,
+        "yes_no_object_presence": 13
+      },
+      "comparison": "v19_step6000_correct_v11_wrong",
+      "left_artifact": "/tmp/v19_step6000_fetch/gqa_search_n1000.json",
+      "left_label": "v19_step6000_gqa_search_n1000",
+      "num_rows": 43,
+      "right_artifact": "/tmp/v11_fixed_harness_fetch/gqa_search_n1000.json",
+      "right_label": "v11_frontier_gqa_search_n1000"
+    }
+  }
+}
