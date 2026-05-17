@@ -204,3 +204,142 @@ is two weighted epochs.
 
 The data work is complete. The next campaign can launch without further source
 acquisition, audit, cache, or mixture wiring work.
+
+## V18 Supplement: LCS-558k and Visual Genome Acquisition
+
+Supplement completed on 2026-05-17. This is additive to the original V18 Stage
+1B mixture: the manifest total moved from 546,588 to 846,588 examples.
+
+## Supplement Sources
+
+| Source | Rows | Path | Image dir | KL weight | Notes |
+| --- | ---: | --- | --- | ---: | --- |
+| `lcs558k_caption` | 200,000 | `/checkpoints/v18_data/lcs558k_seed1801_n200000.json` | `/checkpoints/llava_pretrain/lcs558k_seed1801_n200000_images` | 1.0 | sampled with seed 1801 from `liuhaotian/LLaVA-Pretrain` revision `70f9d1e5e1a697fe35830875cfc7de1dd590d727`; provenance verified against `blip_laion_cc_sbu_558k.json`; `missing_after_extract=0` |
+| `vg_regions_attrs_rels` | 100,000 | `/checkpoints/v18_data/vg_regions_attrs_rels_seed1807_1808_1809_n100000.json` | `/checkpoints/gqa_images_hf` | 0.0 | 50,000 regions seed 1807, 25,000 attributes seed 1808, 25,000 relationships seed 1809; reused the existing GQA/VG image cache |
+
+Visual Genome annotation downloads materialized from the Stanford CDN:
+`region_descriptions.json.zip`, `attributes.json.zip`,
+`relationships.json.zip`, and `image_data.json.zip`. The VG builder confirmed
+36,739 cached VG images in `/checkpoints/gqa_images_hf`; three cached VG images
+were eval-blocked before sampling.
+
+The updated license summary is written to
+`/checkpoints/v18_qwen/mixture_license_summary.json` with
+`aggregate_commercial_use_allowed=true` and the posture note:
+`aggregate_commercial_use_allowed=true with LLaVA-Pretrain caption license noted
+when lcs558k_caption is present`.
+
+## Updated Manifest Rows
+
+| Source | Rows |
+| --- | ---: |
+| `lcs558k_caption` | 200,000 |
+| `coco_captions` | 81,479 |
+| `vqav2_train_broad` | 150,000 |
+| `gqa_train_balanced_broad` | 199,638 |
+| `aokvqa` | 17,000 |
+| `okvqa` | 9,000 |
+| `vsr` | 3,502 |
+| `ocrvqa` | 50,000 |
+| `textvqa_majority` | 20,000 |
+| `ai2d` | 1,000 |
+| `gqa_spatial_metadata` | 14,969 |
+| `vg_regions_attrs_rels` | 100,000 |
+| **Total** | **846,588** |
+
+## Final Mixture Weights
+
+`/checkpoints/v18_qwen/final_mixture_weights.json` was overwritten with the
+supplement weights. Broad alignment is now 50% (`lcs558k_caption` 30% plus
+`coco_captions` 20%), with broad VQA 35%, capability 10%, and compositional
+grounding 5%.
+
+| Source | Before | After |
+| --- | ---: | ---: |
+| `lcs558k_caption` | 0.0 | 30.0 |
+| `coco_captions` | 30.0 | 20.0 |
+| `vqav2_train_broad` | 15.0 | 12.0 |
+| `gqa_train_balanced_broad` | 28.0 | 17.0 |
+| `aokvqa` | 4.0 | 3.0 |
+| `okvqa` | 2.0 | 2.0 |
+| `vsr` | 1.0 | 1.0 |
+| `ocrvqa` | 9.0 | 6.0 |
+| `textvqa_majority` | 5.0 | 3.0 |
+| `ai2d` | 1.0 | 1.0 |
+| `gqa_spatial_metadata` | 5.0 | 3.0 |
+| `vg_regions_attrs_rels` | 0.0 | 2.0 |
+
+## Image Hash Audit
+
+The required official-script audit was run with
+`scripts/audit_image_hash_overlap.py` and written to
+`/checkpoints/v18_qwen/audits/supplement_lcs_vg_vs_v17_v11_evals_official_script.json`.
+Verdict: pass; all train/eval overlap counts are zero, and all train/eval refs
+resolved with `missing_refs=0`.
+
+| Train source | Checked refs | Unique hashes | Missing refs |
+| --- | ---: | ---: | ---: |
+| `lcs558k_seed1801_n200000.json` | 200,000 | 198,769 | 0 |
+| `vg_regions_attrs_rels_seed1807_1808_1809_n100000.json` | 100,000 | 3,377 | 0 |
+
+| Eval artifact | Checked refs | Unique hashes | Missing refs | LCS overlap | VG overlap |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `vqa_wrong_image_n3000_seed42.json` | 12,000 | 2,316 | 0 | 0 | 0 |
+| `vqa_shuffled_n3000_seed42.json` | 12,000 | 2,316 | 0 | 0 | 0 |
+| `vqa_blank_n3000_seed42.json` | 12,000 | 2,316 | 0 | 0 | 0 |
+| `vqa_clean_n3000_seed42.json` | 12,000 | 2,316 | 0 | 0 | 0 |
+| `pope_popular_n1000.json` | 4,000 | 455 | 0 | 0 | 0 |
+| `pope_adversarial_n1000.json` | 4,000 | 455 | 0 | 0 | 0 |
+| `textvqa_validation_full.json` | 20,000 | 3,166 | 0 | 0 | 0 |
+| `chartqa_val_full.json` | 7,680 | 1,055 | 0 | 0 | 0 |
+| `gqa_confirm_n3000_offset1000.json` | 12,000 | 394 | 0 | 0 | 0 |
+| `gqa_search_n1000.json` | 4,000 | 349 | 0 | 0 | 0 |
+
+The VG rows therefore have zero image-hash overlap with both GQA corrected eval
+slices (`gqa_confirm_n3000_offset1000` and `gqa_search_n1000`).
+
+## Teacher Cache V2
+
+The V11 teacher KL cache was rebuilt to cover the expanded active retention
+pool and written to
+`/checkpoints/v18_qwen/v18_v11_teacher_topk128_retention_v2.pt`, preserving the
+prior `/checkpoints/v18_qwen/v18_v11_teacher_topk128_retention_300k.pt`.
+
+| Field | Prior cache | V2 cache | Delta |
+| --- | ---: | ---: | ---: |
+| Entries | 215,680 | 348,796 | +133,116 |
+| Answer tokens | 1,753,018 | 3,327,949 | +1,574,931 |
+| Top-k | 128 | 128 | 0 |
+
+Coverage audit for `v18_qwen_midtraining_stage1b` train split reported
+364,800 selected rows, 288,183 KL-active rows, 265,931 unique active sample IDs,
+and `missing_active_ids=0`. Active rows by source were 109,387 LCS, 72,940
+COCO, 62,053 GQA broad, and 43,803 VQAv2; VG is KL-disabled as planned.
+
+## Supplement Smoke
+
+The Phase 8-shaped 1-step H100 smoke completed successfully with the updated
+mixture and V2 cache.
+
+| Field | Value |
+| --- | --- |
+| Modal run | `https://modal.com/apps/babakd/main/ap-j80eQ5qGiTrFdYvu9S6wYp` |
+| W&B run | `https://wandb.ai/babakdam/anymal-pretrain/runs/ya86ukmg` |
+| Dataset | `v18_qwen_midtraining_stage1b` |
+| Teacher cache | `/checkpoints/v18_qwen/v18_v11_teacher_topk128_retention_v2.pt` |
+| Cache entries loaded | 348,796 |
+| Output checkpoint | `/checkpoints/v18_qwen/smoke_1step_supplement/v18-midtraining-supplement-smoke-1step/checkpoint-1` |
+| Final reported train loss | `3.030981285231454` |
+
+Smoke logs confirmed all 12 sources load with real images:
+`lcs558k_caption=200000`, `coco_captions=81479`,
+`vqav2_train_broad=150000`, `gqa_train_balanced_broad=199638`,
+`aokvqa=17000`, `okvqa=9000`, `vsr=3502`, `ocrvqa=50000`,
+`textvqa_majority=20000`, `ai2d=1000`, `gqa_spatial_metadata=14969`, and
+`vg_regions_attrs_rels=100000`.
+
+W&B config verification was run separately through the Modal `wandb` secret
+(`https://modal.com/apps/babakd/main/ap-H8Yb65S6JfSHM2QwDCtPWJ`). The run config
+contains `dataset_license_summary` with
+`aggregate_commercial_use_allowed=true`, `mixed; LLaVA-Pretrain caption license
+noted`, and `cc-by-4.0 / Visual Genome terms`.

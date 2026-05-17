@@ -6212,6 +6212,7 @@ def load_finetune_dataset(
                     "dataset_family": source.get("dataset_family"),
                     "license": source.get("license"),
                     "license_source": source.get("license_source"),
+                    "license_note": source.get("license_note"),
                     "commercial_use_allowed": source.get("commercial_use_allowed"),
                     "use_augmentation": False,
                 }

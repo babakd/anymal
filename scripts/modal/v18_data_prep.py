@@ -1,8 +1,8 @@
 """Acquire and prepare V18 mid-training data artifacts on Modal.
 
-The script follows the conservative Phase 0 policy recorded by
-``scripts/modal/v18_phase0.py``: skip paid, GPL/NC, mixed-license, direct
-download without explicit approval, and unverified-license sources.
+The script follows the Phase 0 policy recorded by ``scripts/modal/v18_phase0.py``:
+skip paid, GPL/NC, mixed-license, direct-download, and unverified-license sources
+unless the user has explicitly approved the exception for this V18 mixture.
 """
 
 from __future__ import annotations
@@ -41,6 +41,10 @@ image = (
 V18_ROOT = "/checkpoints/v18_qwen"
 V18_DATA = "/checkpoints/v18_data"
 IMAGE_EXT_RE = re.compile(r"\.(?:jpg|jpeg|png|webp)$", re.IGNORECASE)
+LCS_HF_REPO = "liuhaotian/LLaVA-Pretrain"
+LCS_HF_REVISION = "70f9d1e5e1a697fe35830875cfc7de1dd590d727"
+LCS_JSON_FILENAME = "blip_laion_cc_sbu_558k.json"
+LCS_IMAGES_ZIP_FILENAME = "images.zip"
 
 
 LICENSES = {
@@ -89,6 +93,22 @@ LICENSES = {
         "license_source": "https://textvqa.org/dataset/",
         "commercial_use_allowed": True,
     },
+    "lcs558k": {
+        "license": "mixed; LLaVA-Pretrain caption license noted",
+        "license_source": "https://huggingface.co/datasets/liuhaotian/LLaVA-Pretrain",
+        "license_note": (
+            "User approved inclusion for V18. Source is LLaVA Visual Instruct "
+            "Pretrain LCS-558K from blip_laion_cc_sbu_558k.json; HF card "
+            "license tag is 'other' and the caption/image provenance is "
+            "license-dependent across LLaVA/LAION/CC/SBU components."
+        ),
+        "commercial_use_allowed": True,
+    },
+    "visual_genome": {
+        "license": "cc-by-4.0 / Visual Genome terms",
+        "license_source": "https://homes.cs.washington.edu/~ranjay/visualgenome/api.html",
+        "commercial_use_allowed": True,
+    },
 }
 
 
@@ -111,6 +131,15 @@ def _count_images(path: str) -> int:
         for entry in os.scandir(path)
         if entry.is_file() and entry.name.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
     )
+
+
+def _count_images_recursive(path: str) -> int:
+    if not os.path.isdir(path):
+        return 0
+    total = 0
+    for _root, _dirs, files in os.walk(path):
+        total += sum(1 for name in files if name.lower().endswith((".jpg", ".jpeg", ".png", ".webp")))
+    return total
 
 
 def _json_len(path: str) -> int | None:
@@ -325,6 +354,54 @@ def _sample_rows(rows: list[dict[str, Any]], max_samples: int, seed: int) -> lis
     indices = list(range(len(rows)))
     rng.shuffle(indices)
     return [rows[i] for i in indices[: int(max_samples)]]
+
+
+def _reservoir_add(
+    reservoir: list[dict[str, Any]],
+    row: dict[str, Any],
+    *,
+    seen_count: int,
+    max_samples: int,
+    rng: random.Random,
+) -> None:
+    if len(reservoir) < int(max_samples):
+        reservoir.append(row)
+        return
+    replacement_index = rng.randrange(int(seen_count))
+    if replacement_index < int(max_samples):
+        reservoir[replacement_index] = row
+
+
+def _download_file(url: str, output_path: str, *, expected_min_bytes: int = 1) -> dict[str, Any]:
+    import requests
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    if os.path.exists(output_path) and os.path.getsize(output_path) >= int(expected_min_bytes):
+        return {
+            "url": url,
+            "path": output_path,
+            "bytes": os.path.getsize(output_path),
+            "cached": True,
+        }
+    tmp_path = output_path + ".tmp"
+    print(f"Downloading {url} -> {output_path}", flush=True)
+    with requests.get(url, stream=True, timeout=120) as response:
+        response.raise_for_status()
+        with open(tmp_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+    if os.path.getsize(tmp_path) < int(expected_min_bytes):
+        raise RuntimeError(
+            f"Downloaded file is too small: {tmp_path} has {os.path.getsize(tmp_path)} bytes"
+        )
+    os.replace(tmp_path, output_path)
+    return {
+        "url": url,
+        "path": output_path,
+        "bytes": os.path.getsize(output_path),
+        "cached": False,
+    }
 
 
 def _normal_text(value: Any) -> str:
@@ -942,6 +1019,645 @@ def build_ocrvqa(max_samples: int = 50000, seed: int = 1807) -> dict[str, Any]:
     }
 
 
+def _lcs_zip_members(zip_path: str) -> dict[str, str]:
+    if not os.path.exists(zip_path):
+        raise FileNotFoundError(f"Missing LCS-558k image zip: {zip_path}")
+    members: dict[str, str] = {}
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            name = info.filename
+            if not IMAGE_EXT_RE.search(name):
+                continue
+            ref = name[len("images/") :] if name.startswith("images/") else name
+            members[ref] = name
+    return members
+
+
+def _hf_dataset_file_metadata(repo_id: str, revision: str, filenames: list[str]) -> dict[str, dict[str, Any]]:
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    try:
+        info = api.repo_info(
+            repo_id=repo_id,
+            repo_type="dataset",
+            revision=revision,
+            files_metadata=True,
+        )
+    except TypeError:
+        info = api.dataset_info(repo_id, revision=revision)
+    wanted = set(filenames)
+    metadata: dict[str, dict[str, Any]] = {}
+    for sibling in getattr(info, "siblings", []) or []:
+        filename = getattr(sibling, "rfilename", None)
+        if filename not in wanted:
+            continue
+        item: dict[str, Any] = {"rfilename": filename}
+        for key in ("size", "blob_id"):
+            value = getattr(sibling, key, None)
+            if value is not None:
+                item[key] = value
+        metadata[str(filename)] = item
+    missing = sorted(wanted - set(metadata))
+    if missing:
+        raise RuntimeError(
+            f"{repo_id}@{revision} is missing expected LCS-558k files: {missing}"
+        )
+    return metadata
+
+
+def _ensure_lcs558k_source_files() -> dict[str, Any]:
+    from huggingface_hub import hf_hub_download
+
+    root = "/checkpoints/llava_pretrain"
+    json_dir = "/checkpoints/llava_data"
+    os.makedirs(root, exist_ok=True)
+    os.makedirs(json_dir, exist_ok=True)
+    json_path = os.path.join(json_dir, LCS_JSON_FILENAME)
+    zip_path = os.path.join(root, LCS_IMAGES_ZIP_FILENAME)
+    file_metadata = _hf_dataset_file_metadata(
+        LCS_HF_REPO,
+        LCS_HF_REVISION,
+        [LCS_JSON_FILENAME, LCS_IMAGES_ZIP_FILENAME],
+    )
+
+    for filename, target_path, target_dir in (
+        (LCS_JSON_FILENAME, json_path, json_dir),
+        (LCS_IMAGES_ZIP_FILENAME, zip_path, root),
+    ):
+        expected_size = file_metadata.get(filename, {}).get("size")
+        if os.path.exists(target_path):
+            actual_size = os.path.getsize(target_path)
+            if expected_size is not None and int(actual_size) != int(expected_size):
+                raise RuntimeError(
+                    f"Cached {filename} size mismatch for {LCS_HF_REPO}@{LCS_HF_REVISION}: "
+                    f"{actual_size} bytes at {target_path}, expected {expected_size}"
+                )
+            continue
+        downloaded_path = hf_hub_download(
+            repo_id=LCS_HF_REPO,
+            repo_type="dataset",
+            revision=LCS_HF_REVISION,
+            filename=filename,
+            local_dir=target_dir,
+            local_dir_use_symlinks=False,
+        )
+        if os.path.abspath(downloaded_path) != os.path.abspath(target_path):
+            os.replace(downloaded_path, target_path)
+        expected_size = file_metadata.get(filename, {}).get("size")
+        if expected_size is not None and os.path.getsize(target_path) != int(expected_size):
+            raise RuntimeError(
+                f"Downloaded {filename} size mismatch for {LCS_HF_REPO}@{LCS_HF_REVISION}: "
+                f"{os.path.getsize(target_path)} bytes at {target_path}, expected {expected_size}"
+            )
+
+    return {
+        "repo_id": LCS_HF_REPO,
+        "revision": LCS_HF_REVISION,
+        "json_path": json_path,
+        "images_zip_path": zip_path,
+        "files": file_metadata,
+    }
+
+
+def _ensure_lcs558k_sample_images(
+    rows: list[dict[str, Any]],
+    *,
+    zip_path: str = "/checkpoints/llava_pretrain/images.zip",
+    image_dir: str,
+) -> dict[str, Any]:
+    os.makedirs(image_dir, exist_ok=True)
+    refs = sorted({str(row.get("image") or "").strip() for row in rows if row.get("image")})
+    missing = [ref for ref in refs if not os.path.exists(os.path.join(image_dir, ref))]
+    if not missing:
+        return {
+            "image_dir": image_dir,
+            "sample_image_count": _count_images_recursive(image_dir),
+            "sample_refs": len(refs),
+            "missing_after_extract": 0,
+            "extracted": False,
+            "zip_path": zip_path,
+            "storage": "sampled_files_from_images_zip",
+        }
+    members = _lcs_zip_members(zip_path)
+    unavailable = [ref for ref in missing if ref not in members]
+    if unavailable:
+        raise RuntimeError(
+            f"LCS-558k image zip is missing {len(unavailable)} selected refs; "
+            f"examples={unavailable[:5]}"
+        )
+    print(
+        f"Extracting {len(missing)} selected LCS-558k images from {zip_path} "
+        f"to {image_dir}",
+        flush=True,
+    )
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for idx, ref in enumerate(missing, start=1):
+            target_path = os.path.join(image_dir, ref)
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            tmp_path = target_path + ".tmp"
+            with zf.open(members[ref], "r") as source, open(tmp_path, "wb") as dest:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    if not chunk:
+                        break
+                    dest.write(chunk)
+            os.replace(tmp_path, target_path)
+            if idx % 10000 == 0 or idx == len(missing):
+                print(f"LCS selected image extract: {idx}/{len(missing)}", flush=True)
+    still_missing = [ref for ref in refs if not os.path.exists(os.path.join(image_dir, ref))]
+    if still_missing:
+        raise RuntimeError(
+            f"LCS-558k selected image extraction incomplete: "
+            f"{len(still_missing)} refs still missing; examples={still_missing[:5]}"
+        )
+    return {
+        "image_dir": image_dir,
+        "sample_image_count": _count_images_recursive(image_dir),
+        "sample_refs": len(refs),
+        "missing_after_extract": 0,
+        "extracted": True,
+        "zip_path": zip_path,
+        "storage": "sampled_files_from_images_zip",
+    }
+
+
+def build_lcs558k_caption(max_samples: int = 200000, seed: int = 1801) -> dict[str, Any]:
+    source_file_report = _ensure_lcs558k_source_files()
+    input_path = source_file_report["json_path"]
+    zip_path = source_file_report["images_zip_path"]
+    image_dir = f"/checkpoints/llava_pretrain/lcs558k_seed{seed}_n{max_samples}_images"
+    output_path = f"{V18_DATA}/lcs558k_seed{seed}_n{max_samples}.json"
+    if os.path.exists(output_path) and _json_len(output_path) == int(max_samples):
+        rows = _load_json(output_path)
+        image_report = _ensure_lcs558k_sample_images(rows, image_dir=image_dir)
+        return {
+            "name": "lcs558k_caption",
+            "data_path": output_path,
+            "image_dir": image_dir,
+            "rows": int(max_samples),
+            "cached": True,
+            "input_path": input_path,
+            "target_rows": int(max_samples),
+            "sample_seed": int(seed),
+            "dataset_family": "broad_alignment",
+            "loss_family": "caption",
+            "teacher_kl_weight": 1.0,
+            "image_cache": image_report,
+            "provenance_verified_against": "blip_laion_cc_sbu_558k.json",
+            "hf_dataset": source_file_report,
+            "hf_dataset_revision": LCS_HF_REVISION,
+            **LICENSES["lcs558k"],
+        }
+    rows = _load_json(input_path)
+    if not isinstance(rows, list):
+        raise ValueError(f"Expected list JSON at {input_path}")
+    zip_members = _lcs_zip_members(zip_path)
+    available = []
+    missing_examples = []
+    for source_index, row in enumerate(rows):
+        image_ref = str(row.get("image") or "").strip()
+        conversations = row.get("conversations") or []
+        if not image_ref or not isinstance(conversations, list) or len(conversations) < 2:
+            continue
+        if image_ref not in zip_members:
+            if len(missing_examples) < 20:
+                missing_examples.append(image_ref)
+            continue
+        available.append(
+            {
+                **row,
+                "id": f"lcs558k_{row.get('id', source_index)}",
+                "image": image_ref,
+                "source_dataset": "liuhaotian/LLaVA-Pretrain",
+                "source_split": "train",
+                "source_index": int(source_index),
+                "source_image_id": str(row.get("id", source_index)),
+            }
+        )
+    if len(available) < int(max_samples):
+        raise RuntimeError(
+            f"LCS-558k has only {len(available)} rows with cached images; "
+            f"need {max_samples}. Missing examples: {missing_examples[:5]}"
+        )
+    sampled = _sample_rows(available, int(max_samples), int(seed))
+    image_report = _ensure_lcs558k_sample_images(sampled, image_dir=image_dir)
+    tagged = _tag_rows(
+        sampled,
+        source_name="lcs558k_caption",
+        dataset_family="broad_alignment",
+        loss_family="caption",
+        license_key="lcs558k",
+        teacher_kl_weight=1.0,
+    )
+    _json_dump(output_path, tagged)
+    return {
+        "name": "lcs558k_caption",
+        "data_path": output_path,
+        "input_path": input_path,
+        "image_dir": image_dir,
+        "rows": len(tagged),
+        "target_rows": int(max_samples),
+        "available_rows_with_cached_images": len(available),
+        "source_rows": len(rows),
+        "sample_seed": int(seed),
+        "dataset_family": "broad_alignment",
+        "loss_family": "caption",
+        "teacher_kl_weight": 1.0,
+        "image_cache": image_report,
+        "provenance_verified_against": "blip_laion_cc_sbu_558k.json",
+        "hf_dataset": source_file_report,
+        "hf_dataset_revision": LCS_HF_REVISION,
+        **LICENSES["lcs558k"],
+    }
+
+
+VG_BASE_URL = "https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset"
+VG_ANNOTATION_FILES = [
+    "region_descriptions.json.zip",
+    "attributes.json.zip",
+    "relationships.json.zip",
+    "image_data.json.zip",
+]
+
+
+def _ensure_vg_annotations(root: str = "/checkpoints/visual_genome") -> dict[str, Any]:
+    os.makedirs(root, exist_ok=True)
+    reports = []
+    for filename in VG_ANNOTATION_FILES:
+        zip_path = os.path.join(root, filename)
+        reports.append(_download_file(f"{VG_BASE_URL}/{filename}", zip_path))
+        json_name = filename[:-4]
+        json_path = os.path.join(root, json_name)
+        if not os.path.exists(json_path):
+            print(f"Extracting {zip_path}", flush=True)
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                matches = [name for name in zf.namelist() if os.path.basename(name) == json_name]
+                if not matches:
+                    raise RuntimeError(f"Could not find {json_name} inside {zip_path}")
+                with zf.open(matches[0]) as source, open(json_path + ".tmp", "wb") as dest:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        if not chunk:
+                            break
+                        dest.write(chunk)
+                os.replace(json_path + ".tmp", json_path)
+        reports[-1]["json_path"] = json_path
+        reports[-1]["json_bytes"] = os.path.getsize(json_path)
+    return {"root": root, "files": reports}
+
+
+def _vg_image_name(image_id: Any, image_dir: str) -> str | None:
+    try:
+        numeric = int(image_id)
+    except Exception:
+        return None
+    for filename in (f"VG_{numeric}.jpg", f"{numeric}.jpg"):
+        if os.path.exists(os.path.join(image_dir, filename)):
+            return filename
+    return None
+
+
+def _load_eval_hash_blocklist() -> dict[str, Any]:
+    eval_paths: set[str] = set()
+    eval_missing: dict[str, list[dict[str, Any]]] = {}
+    for artifact in EVAL_ARTIFACTS:
+        paths, missing = _resolve_paths(artifact["path"], artifact["image_dir"])
+        eval_paths.update(paths)
+        eval_missing[artifact["name"]] = missing
+    nonempty_missing = {name: values for name, values in eval_missing.items() if values}
+    if nonempty_missing:
+        raise RuntimeError(
+            "Cannot build Visual Genome eval-overlap blocklist because eval image "
+            f"refs failed to resolve: {nonempty_missing}"
+        )
+    eval_hashes = _hash_paths(eval_paths, "eval:all-for-vg-prefilter")
+    return {
+        "hashes": set(eval_hashes),
+        "unique_paths": len(eval_paths),
+        "unique_hashes": len(eval_hashes),
+        "missing_examples": eval_missing,
+    }
+
+
+def _vg_image_allowed(
+    *,
+    filename: str,
+    image_dir: str,
+    blocked_eval_hashes: set[str],
+    digest_cache: dict[str, str],
+) -> tuple[bool, str | None]:
+    path = os.path.join(image_dir, filename)
+    digest = digest_cache.get(path)
+    if digest is None:
+        digest = _hash_path(path)
+        digest_cache[path] = digest
+    return digest not in blocked_eval_hashes, digest
+
+
+def _first_name(value: Any) -> str:
+    if isinstance(value, list) and value:
+        return _normal_text(value[0])
+    return _normal_text(value)
+
+
+def build_visual_genome(max_regions: int = 50000, max_attributes: int = 25000, max_relationships: int = 25000) -> dict[str, Any]:
+    root = "/checkpoints/visual_genome"
+    image_dir = "/checkpoints/gqa_images_hf"
+    annotation_report = _ensure_vg_annotations(root)
+    image_data = _load_json(os.path.join(root, "image_data.json"))
+    cached_image_filenames: dict[str, str] = {}
+    for row in image_data:
+        image_id = row.get("image_id", row.get("id"))
+        filename = _vg_image_name(image_id, image_dir)
+        if filename:
+            cached_image_filenames[str(int(image_id))] = filename
+    if not cached_image_filenames:
+        raise RuntimeError(
+            "Visual Genome could not reuse any cached images from /checkpoints/gqa_images_hf"
+        )
+
+    eval_blocklist = _load_eval_hash_blocklist()
+    digest_cache: dict[str, str] = {}
+    allowed_cache: dict[str, tuple[bool, str | None]] = {}
+    blocked_cached_images = set()
+
+    def image_for(image_id: Any) -> str | None:
+        try:
+            key = str(int(image_id))
+        except Exception:
+            return None
+        filename = cached_image_filenames.get(key)
+        if not filename:
+            return None
+        if key not in allowed_cache:
+            allowed, digest = _vg_image_allowed(
+                filename=filename,
+                image_dir=image_dir,
+                blocked_eval_hashes=eval_blocklist["hashes"],
+                digest_cache=digest_cache,
+            )
+            allowed_cache[key] = (allowed, digest)
+            if not allowed:
+                blocked_cached_images.add(key)
+        allowed, _digest = allowed_cache[key]
+        if not allowed:
+            return None
+        return filename
+
+    def region_rows() -> tuple[list[dict[str, Any]], int]:
+        rng = random.Random(1807)
+        samples: list[dict[str, Any]] = []
+        seen = 0
+        payload = _load_json(os.path.join(root, "region_descriptions.json"))
+        rng.shuffle(payload)
+        for image_entry_index, image_entry in enumerate(payload, start=1):
+            regions = list(image_entry.get("regions") or [])
+            rng.shuffle(regions)
+            for region in regions:
+                if len(samples) >= int(max_regions):
+                    break
+                phrase = _normal_text(region.get("phrase"))
+                image_id = region.get("image_id", image_entry.get("image_id", image_entry.get("id")))
+                filename = image_for(image_id)
+                if not phrase or not filename:
+                    continue
+                try:
+                    x = int(float(region.get("x", 0)))
+                    y = int(float(region.get("y", 0)))
+                    w = int(float(region.get("width", region.get("w", 0))))
+                    h = int(float(region.get("height", region.get("h", 0))))
+                except Exception:
+                    x = y = w = h = 0
+                seen += 1
+                samples.append(
+                    {
+                        "id": f"vg_region_{region.get('region_id', seen)}",
+                        "image": filename,
+                        "source_dataset": "Visual Genome",
+                        "source_split": "train",
+                        "source_index": int(seen),
+                        "source_image_id": str(image_id),
+                        "source_region_id": str(region.get("region_id", seen)),
+                        "vg_subsource": "regions",
+                        "region": {"x": x, "y": y, "width": w, "height": h},
+                        "conversations": [
+                            {
+                                "from": "human",
+                                "value": (
+                                    "<image>\nDescribe the region centered at "
+                                    f"({x + w // 2}, {y + h // 2}) with size ({w}, {h})."
+                                ),
+                            },
+                            {"from": "gpt", "value": phrase},
+                        ],
+                    }
+                )
+            if len(samples) >= int(max_regions):
+                break
+            if image_entry_index % 10000 == 0:
+                print(
+                    f"VG regions scan: images={image_entry_index} candidates={seen} samples={len(samples)}",
+                    flush=True,
+                )
+        print(f"VG regions scan done: candidates={seen} samples={len(samples)}", flush=True)
+        return samples, seen
+
+    def attribute_rows() -> tuple[list[dict[str, Any]], int]:
+        rng = random.Random(1808)
+        samples: list[dict[str, Any]] = []
+        seen = 0
+        payload = _load_json(os.path.join(root, "attributes.json"))
+        rng.shuffle(payload)
+        for image_entry_index, image_entry in enumerate(payload, start=1):
+            objects = list(image_entry.get("attributes") or [])
+            rng.shuffle(objects)
+            for obj in objects:
+                if len(samples) >= int(max_attributes):
+                    break
+                attrs = [_normal_text(value) for value in obj.get("attributes") or []]
+                attrs = [value for value in attrs if value]
+                name = _first_name(obj.get("names") or obj.get("name") or "object")
+                image_id = obj.get("image_id", image_entry.get("image_id", image_entry.get("id")))
+                filename = image_for(image_id)
+                if not attrs or not name or not filename:
+                    continue
+                seen += 1
+                samples.append(
+                    {
+                        "id": f"vg_attribute_{obj.get('object_id', seen)}",
+                        "image": filename,
+                        "source_dataset": "Visual Genome",
+                        "source_split": "train",
+                        "source_index": int(seen),
+                        "source_image_id": str(image_id),
+                        "source_object_id": str(obj.get("object_id", seen)),
+                        "vg_subsource": "attributes",
+                        "object_name": name,
+                        "conversations": [
+                            {
+                                "from": "human",
+                                "value": f"<image>\nWhat attributes does the {name} have?",
+                            },
+                            {"from": "gpt", "value": ", ".join(attrs)},
+                        ],
+                    }
+                )
+            if len(samples) >= int(max_attributes):
+                break
+            if image_entry_index % 10000 == 0:
+                print(
+                    f"VG attributes scan: images={image_entry_index} candidates={seen} samples={len(samples)}",
+                    flush=True,
+                )
+        print(f"VG attributes scan done: candidates={seen} samples={len(samples)}", flush=True)
+        return samples, seen
+
+    def relationship_rows() -> tuple[list[dict[str, Any]], int]:
+        rng = random.Random(1809)
+        samples: list[dict[str, Any]] = []
+        seen = 0
+        payload = _load_json(os.path.join(root, "relationships.json"))
+        rng.shuffle(payload)
+        for image_entry_index, image_entry in enumerate(payload, start=1):
+            relationships = list(image_entry.get("relationships") or [])
+            rng.shuffle(relationships)
+            for rel in relationships:
+                if len(samples) >= int(max_relationships):
+                    break
+                predicate = _normal_answer(rel.get("predicate")).lower()
+                subject = rel.get("subject") or {}
+                obj = rel.get("object") or {}
+                subject_name = _first_name(subject.get("names") or subject.get("name") or "subject")
+                object_name = _first_name(obj.get("names") or obj.get("name") or "object")
+                image_id = rel.get("image_id", image_entry.get("image_id", image_entry.get("id")))
+                filename = image_for(image_id)
+                if not predicate or not subject_name or not object_name or not filename:
+                    continue
+                seen += 1
+                samples.append(
+                    {
+                        "id": f"vg_relationship_{rel.get('relationship_id', seen)}",
+                        "image": filename,
+                        "source_dataset": "Visual Genome",
+                        "source_split": "train",
+                        "source_index": int(seen),
+                        "source_image_id": str(image_id),
+                        "source_relationship_id": str(rel.get("relationship_id", seen)),
+                        "vg_subsource": "relationships",
+                        "subject_name": subject_name,
+                        "object_name": object_name,
+                        "conversations": [
+                            {
+                                "from": "human",
+                                "value": (
+                                    "<image>\nWhat is the relationship between "
+                                    f"{subject_name} and {object_name}?"
+                                ),
+                            },
+                            {"from": "gpt", "value": predicate},
+                        ],
+                    }
+                )
+            if len(samples) >= int(max_relationships):
+                break
+            if image_entry_index % 10000 == 0:
+                print(
+                    f"VG relationships scan: images={image_entry_index} candidates={seen} samples={len(samples)}",
+                    flush=True,
+                )
+        print(
+            f"VG relationships scan done: candidates={seen} samples={len(samples)}",
+            flush=True,
+        )
+        return samples, seen
+
+    regions, region_candidates = region_rows()
+    attributes, attribute_candidates = attribute_rows()
+    relationships, relationship_candidates = relationship_rows()
+    if len(regions) < int(max_regions) or len(attributes) < int(max_attributes) or len(relationships) < int(max_relationships):
+        raise RuntimeError(
+            "Visual Genome had insufficient cached, eval-clean rows: "
+            f"regions={len(regions)}/{max_regions}, "
+            f"attributes={len(attributes)}/{max_attributes}, "
+            f"relationships={len(relationships)}/{max_relationships}"
+        )
+
+    outputs = {
+        "regions": f"{V18_DATA}/vg_regions_seed1807_n{max_regions}.json",
+        "attributes": f"{V18_DATA}/vg_attributes_seed1808_n{max_attributes}.json",
+        "relationships": f"{V18_DATA}/vg_relationships_seed1809_n{max_relationships}.json",
+        "combined": f"{V18_DATA}/vg_regions_attrs_rels_seed1807_1808_1809_n{max_regions + max_attributes + max_relationships}.json",
+    }
+    tagged_regions = _tag_rows(
+        regions,
+        source_name="vg_regions",
+        dataset_family="compositional_grounding",
+        loss_family="vg_region_description",
+        license_key="visual_genome",
+        teacher_kl_weight=0.0,
+    )
+    tagged_attributes = _tag_rows(
+        attributes,
+        source_name="vg_attributes",
+        dataset_family="compositional_grounding",
+        loss_family="vg_attribute",
+        license_key="visual_genome",
+        teacher_kl_weight=0.0,
+    )
+    tagged_relationships = _tag_rows(
+        relationships,
+        source_name="vg_relationships",
+        dataset_family="compositional_grounding",
+        loss_family="vg_relationship",
+        license_key="visual_genome",
+        teacher_kl_weight=0.0,
+    )
+    combined = [*tagged_regions, *tagged_attributes, *tagged_relationships]
+    _json_dump(outputs["regions"], tagged_regions)
+    _json_dump(outputs["attributes"], tagged_attributes)
+    _json_dump(outputs["relationships"], tagged_relationships)
+    _json_dump(outputs["combined"], combined)
+    manifest_source = {
+        "name": "vg_regions_attrs_rels",
+        "data_path": outputs["combined"],
+        "image_dir": image_dir,
+        "rows": len(combined),
+        "target_rows": int(max_regions + max_attributes + max_relationships),
+        "component_paths": outputs,
+        "component_rows": {
+            "regions": len(tagged_regions),
+            "attributes": len(tagged_attributes),
+            "relationships": len(tagged_relationships),
+        },
+        "component_candidate_rows_after_cache_and_eval_filter": {
+            "regions": int(region_candidates),
+            "attributes": int(attribute_candidates),
+            "relationships": int(relationship_candidates),
+        },
+        "sample_seeds": {
+            "regions": 1807,
+            "attributes": 1808,
+            "relationships": 1809,
+        },
+        "dataset_family": "compositional_grounding",
+        "loss_family": "visual_genome_grounding",
+        "teacher_kl_weight": 0.0,
+        "annotation_report": annotation_report,
+        "image_cache_reuse": {
+            "image_dir": image_dir,
+            "image_data_rows": len(image_data),
+            "cached_vg_images": len(cached_image_filenames),
+            "eval_blocked_cached_images": len(blocked_cached_images),
+            "eval_unique_paths": eval_blocklist["unique_paths"],
+            "eval_unique_hashes": eval_blocklist["unique_hashes"],
+            "eval_missing_examples": eval_blocklist["missing_examples"],
+        },
+        **LICENSES["visual_genome"],
+    }
+    return manifest_source
+
+
 def build_existing_sources() -> list[dict[str, Any]]:
     os.makedirs(V18_DATA, exist_ok=True)
     sources = [
@@ -1020,34 +1736,69 @@ def build_named_hf_source(name: str) -> dict[str, Any]:
 
 
 def write_manifest(sources: list[dict[str, Any]], path: str) -> dict[str, Any]:
+    image_dirs = {}
+    for image_dir in sorted({str(source.get("image_dir") or "") for source in sources if source.get("image_dir")}):
+        if "llava_pretrain" in image_dir:
+            image_dirs[image_dir] = _count_images_recursive(image_dir)
+        else:
+            image_dirs[image_dir] = _count_images(image_dir)
     manifest = {
         "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "policy": "conservative: skip paid/GPL/NC/mixed/unverified sources; direct downloads require explicit approval",
+        "policy": (
+            "V18 supplement: include user-approved LCS-558k license posture and "
+            "Visual Genome Stanford direct download; continue excluding GPL/NC "
+            "and still-unverified sources."
+        ),
         "sources": sources,
         "total_rows": sum(int(source.get("rows") or 0) for source in sources),
-        "image_dirs": {
-            "/checkpoints/coco_images": _count_images("/checkpoints/coco_images"),
-            "/checkpoints/coco_train2014_vqa": _count_images("/checkpoints/coco_train2014_vqa"),
-            "/checkpoints/gqa_images_hf": _count_images("/checkpoints/gqa_images_hf"),
-            "/checkpoints/textvqa_images_hf": _count_images("/checkpoints/textvqa_images_hf"),
-        },
+        "image_dirs": image_dirs,
     }
     _json_dump(path, manifest)
     return manifest
 
 
 FINAL_WEIGHTS = {
-    "coco_captions": 30.0,
-    "vqav2_train_broad": 15.0,
-    "gqa_train_balanced_broad": 28.0,
-    "aokvqa": 4.0,
+    "lcs558k_caption": 30.0,
+    "coco_captions": 20.0,
+    "vqav2_train_broad": 12.0,
+    "gqa_train_balanced_broad": 17.0,
+    "aokvqa": 3.0,
     "okvqa": 2.0,
     "vsr": 1.0,
-    "ocrvqa": 9.0,
-    "textvqa_majority": 5.0,
+    "ocrvqa": 6.0,
+    "textvqa_majority": 3.0,
     "ai2d": 1.0,
-    "gqa_spatial_metadata": 5.0,
+    "gqa_spatial_metadata": 3.0,
+    "vg_regions_attrs_rels": 2.0,
 }
+
+
+def _weights_for_sources(sources: list[dict[str, Any]]) -> dict[str, float]:
+    names = {str(source.get("name") or "") for source in sources}
+    return {name: float(weight) for name, weight in FINAL_WEIGHTS.items() if name in names}
+
+
+def _weights_payload(sources: list[dict[str, Any]], created_at_utc: str) -> dict[str, Any]:
+    weights = _weights_for_sources(sources)
+    family_weights: dict[str, float] = {}
+    by_name = {str(source.get("name") or ""): source for source in sources}
+    for name, weight in weights.items():
+        family = str(by_name.get(name, {}).get("dataset_family") or "unknown")
+        family_weights[family] = family_weights.get(family, 0.0) + float(weight)
+    return {
+        "created_at_utc": created_at_utc,
+        "strategy": "weighted",
+        "epoch_length": 384000,
+        "weighted_index_mode": "hash",
+        "weights": weights,
+        "family_weights": family_weights,
+        "total_weight": sum(weights.values()),
+        "notes": (
+            "Supplement weights rebalance V18 to broad_alignment=50, "
+            "broad_vqa=35, capability=10, compositional_grounding=5 after "
+            "adding LCS-558k and Visual Genome."
+        ),
+    }
 
 
 def _source_license_summary(sources: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1064,6 +1815,7 @@ def _source_license_summary(sources: list[dict[str, Any]]) -> dict[str, Any]:
                 "name": source.get("name"),
                 "license": license_name,
                 "license_source": source.get("license_source"),
+                "license_note": source.get("license_note"),
                 "commercial_use_allowed": source.get("commercial_use_allowed"),
                 "rows": source.get("rows"),
                 "dataset_family": source.get("dataset_family"),
@@ -1075,12 +1827,14 @@ def _source_license_summary(sources: list[dict[str, Any]]) -> dict[str, Any]:
         "sources": entries,
         "license_counts": license_counts,
         "aggregate_commercial_use_allowed": all(commercial_values) if commercial_values else None,
+        "posture_note": (
+            "aggregate_commercial_use_allowed=true with LLaVA-Pretrain caption "
+            "license noted when lcs558k_caption is present"
+        ),
         "excluded_by_policy": [
-            "LCS-558k / LLaVA-Pretrain (mixed/license-dependent)",
             "ChartQA GPL-3.0",
             "ShareGPT4V CC-BY-NC-4.0",
             "LLaVA-Mix-665k NC-mixed",
-            "Visual Genome direct download (approved, not yet materialized in this cache set)",
             "RefCOCO family (unverified HF license tags)",
             "VizWiz/NLVR2 requested mirrors unavailable",
             "DocVQA train unavailable in selected public HF mirror",
@@ -1151,25 +1905,26 @@ def combine_manifests_remote() -> dict[str, Any]:
         f"{V18_ROOT}/hf_source_vsr_manifest.json",
         f"{V18_ROOT}/hf_source_ai2d_manifest.json",
         f"{V18_ROOT}/hf_source_ocrvqa_manifest.json",
+        f"{V18_ROOT}/supplement_lcs558k_manifest.json",
+        f"{V18_ROOT}/supplement_visual_genome_manifest.json",
     ]
     sources: list[dict[str, Any]] = []
     for path in manifest_paths:
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"Cannot combine V18 manifest because required source manifest is missing: {path}"
+            )
         payload = _load_json(path)
         sources.extend(payload.get("sources") or [])
     by_name = {str(source["name"]): source for source in sources}
-    ordered_sources = [by_name[name] for name in FINAL_WEIGHTS if name in by_name]
+    missing = [name for name in FINAL_WEIGHTS if name not in by_name]
+    if missing:
+        raise RuntimeError(f"Cannot combine V18 manifest; missing sources: {missing}")
+    ordered_sources = [by_name[name] for name in FINAL_WEIGHTS]
     for source in ordered_sources:
         source["weight"] = FINAL_WEIGHTS[str(source["name"])]
     manifest = write_manifest(ordered_sources, f"{V18_ROOT}/source_manifest.json")
-    weights = {
-        "created_at_utc": manifest["created_at_utc"],
-        "strategy": "weighted",
-        "epoch_length": 384000,
-        "weighted_index_mode": "hash",
-        "weights": FINAL_WEIGHTS,
-        "total_weight": sum(FINAL_WEIGHTS.values()),
-        "notes": "Weights redistributed conservatively after excluding mixed, NC/GPL, unavailable, and still-unverified sources.",
-    }
+    weights = _weights_payload(ordered_sources, manifest["created_at_utc"])
     license_summary = _source_license_summary(ordered_sources)
     _json_dump(f"{V18_ROOT}/final_mixture_weights.json", weights)
     _json_dump(f"{V18_ROOT}/mixture_license_summary.json", license_summary)
@@ -1261,6 +2016,131 @@ def audit_v18_hashes_remote() -> dict[str, Any]:
     return result
 
 
+def _audit_paths_for_source(source: dict[str, Any]) -> tuple[set[str], list[dict[str, Any]]]:
+    name = str(source.get("name") or "")
+    image_dir = str(source.get("image_dir") or "")
+    if name == "lcs558k_caption":
+        payload = _load_json(str(source["data_path"]))
+        paths: set[str] = set()
+        missing = []
+        refs = sorted({str(row.get("image") or "").strip() for row in _iter_records(payload) if row.get("image")})
+        for ref in refs:
+            path = ref if os.path.isabs(ref) else os.path.join(image_dir, ref)
+            if os.path.exists(path) and os.path.isfile(path):
+                paths.add(path)
+            elif len(missing) < 20:
+                missing.append({"ref": ref, "image_dir": image_dir, "json_path": source["data_path"]})
+        expected = int(source.get("rows") or 0)
+        if expected and len(refs) != expected and len(missing) < 20:
+            missing.append(
+                {
+                    "message": "LCS row count does not match unique image refs",
+                    "expected_rows": expected,
+                    "unique_image_refs": len(refs),
+                    "image_dir": image_dir,
+                }
+            )
+        return paths, missing
+    return _resolve_paths(str(source["data_path"]), image_dir)
+
+
+@app.function(image=image, volumes={"/checkpoints": volume}, timeout=6 * 60 * 60, memory=32768)
+def audit_supplement_hashes_remote() -> dict[str, Any]:
+    os.makedirs(f"{V18_ROOT}/audits", exist_ok=True)
+    supplement_paths = [
+        f"{V18_ROOT}/supplement_lcs558k_manifest.json",
+        f"{V18_ROOT}/supplement_visual_genome_manifest.json",
+    ]
+    sources: list[dict[str, Any]] = []
+    for path in supplement_paths:
+        payload = _load_json(path)
+        sources.extend(source for source in payload.get("sources") or [] if isinstance(source, dict))
+    if len(sources) != 2:
+        raise RuntimeError(f"Expected 2 supplement sources to audit, found {len(sources)}")
+
+    eval_indexes = []
+    for artifact in EVAL_ARTIFACTS:
+        paths, missing = _resolve_paths(artifact["path"], artifact["image_dir"])
+        hashes = _hash_paths(paths, f"eval:{artifact['name']}")
+        eval_indexes.append({**artifact, "paths": paths, "hashes": hashes, "missing_examples": missing})
+
+    source_reports = []
+    pair_reports = []
+    for source in sources:
+        paths, missing = _audit_paths_for_source(source)
+        train_hashes = _hash_paths(paths, f"train:{source['name']}")
+        source_reports.append(
+            {
+                "name": source["name"],
+                "data_path": source["data_path"],
+                "image_dir": source["image_dir"],
+                "rows": source.get("rows"),
+                "resolved_unique_paths": len(paths),
+                "unique_hashes": len(train_hashes),
+                "missing_examples": missing,
+            }
+        )
+        train_digest_set = set(train_hashes)
+        for eval_index in eval_indexes:
+            overlap = sorted(train_digest_set & set(eval_index["hashes"]))
+            pair_reports.append(
+                {
+                    "train_source": source["name"],
+                    "eval_artifact": eval_index["name"],
+                    "overlap_count": len(overlap),
+                    "overlap_examples": [
+                        {
+                            "sha256_first_mib": digest,
+                            "train_paths": train_hashes[digest][:5],
+                            "eval_paths": eval_index["hashes"][digest][:5],
+                        }
+                        for digest in overlap[:20]
+                    ],
+                }
+            )
+
+    result = {
+        "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "sources": source_reports,
+        "eval_artifacts": [
+            {
+                "name": item["name"],
+                "path": item["path"],
+                "image_dir": item["image_dir"],
+                "resolved_unique_paths": len(item["paths"]),
+                "unique_hashes": len(item["hashes"]),
+                "missing_examples": item["missing_examples"],
+            }
+            for item in eval_indexes
+        ],
+        "pairs": pair_reports,
+        "passed": (
+            all(pair["overlap_count"] == 0 for pair in pair_reports)
+            and all(not source["missing_examples"] for source in source_reports)
+            and all(not item["missing_examples"] for item in eval_indexes)
+        ),
+    }
+    _json_dump(f"{V18_ROOT}/audits/supplement_lcs_vg_vs_v17_v11_evals.json", result)
+    for source in source_reports:
+        source_pairs = [pair for pair in pair_reports if pair["train_source"] == source["name"]]
+        _json_dump(
+            f"{V18_ROOT}/audits/{source['name']}_vs_v17_v11_evals.json",
+            {
+                "created_at_utc": result["created_at_utc"],
+                "source": source,
+                "pairs": source_pairs,
+                "passed": (
+                    all(pair["overlap_count"] == 0 for pair in source_pairs)
+                    and not source["missing_examples"]
+                    and all(not item["missing_examples"] for item in eval_indexes)
+                ),
+            },
+        )
+    volume.commit()
+    print(json.dumps(result, indent=2, ensure_ascii=True))
+    return result
+
+
 def _load_manifest_sources(path: str) -> list[dict[str, Any]]:
     payload = _load_json(path)
     sources = payload.get("sources") if isinstance(payload, dict) else None
@@ -1272,16 +2152,7 @@ def _load_manifest_sources(path: str) -> list[dict[str, Any]]:
 def _write_manifest_and_license_artifacts(sources: list[dict[str, Any]], manifest_path: str) -> dict[str, Any]:
     manifest = write_manifest(sources, manifest_path)
     if manifest_path == f"{V18_ROOT}/source_manifest.json":
-        weights = {
-            "created_at_utc": manifest["created_at_utc"],
-            "strategy": "weighted",
-            "epoch_length": 384000,
-            "weighted_index_mode": "hash",
-            "weights": FINAL_WEIGHTS,
-            "total_weight": sum(FINAL_WEIGHTS.values()),
-            "notes": "Weights redistributed conservatively after excluding mixed, NC/GPL, unavailable, and still-unverified sources.",
-        }
-        _json_dump(f"{V18_ROOT}/final_mixture_weights.json", weights)
+        _json_dump(f"{V18_ROOT}/final_mixture_weights.json", _weights_payload(sources, manifest["created_at_utc"]))
         _json_dump(f"{V18_ROOT}/mixture_license_summary.json", _source_license_summary(sources))
     return manifest
 
@@ -1608,6 +2479,77 @@ def build_hf_source_remote(name: str) -> dict[str, Any]:
     image=image,
     volumes={"/checkpoints": volume},
     secrets=[modal.Secret.from_name("huggingface")],
+    timeout=24 * 60 * 60,
+    memory=32768,
+)
+def build_lcs558k_remote() -> dict[str, Any]:
+    source = build_lcs558k_caption(max_samples=200000, seed=1801)
+    manifest = write_manifest([source], f"{V18_ROOT}/supplement_lcs558k_manifest.json")
+    volume.commit()
+    print(json.dumps(manifest, indent=2, ensure_ascii=True))
+    return manifest
+
+
+@app.function(image=image, volumes={"/checkpoints": volume}, timeout=12 * 60 * 60, memory=32768)
+def build_visual_genome_remote() -> dict[str, Any]:
+    source = build_visual_genome()
+    manifest = write_manifest([source], f"{V18_ROOT}/supplement_visual_genome_manifest.json")
+    volume.commit()
+    print(json.dumps(manifest, indent=2, ensure_ascii=True))
+    return manifest
+
+
+@app.function(image=image, volumes={"/checkpoints": volume}, timeout=30 * 60)
+def combine_supplement_remote() -> dict[str, Any]:
+    manifest_path = f"{V18_ROOT}/source_manifest.json"
+    existing_sources = _load_manifest_sources(manifest_path)
+    supplement_paths = [
+        f"{V18_ROOT}/supplement_lcs558k_manifest.json",
+        f"{V18_ROOT}/supplement_visual_genome_manifest.json",
+    ]
+    sources = list(existing_sources)
+    for path in supplement_paths:
+        payload = _load_json(path)
+        for source in payload.get("sources") or []:
+            if not isinstance(source, dict):
+                continue
+            name = str(source.get("name") or "")
+            if not name:
+                raise ValueError(f"Supplement source in {path} is missing name")
+            existing_index = next(
+                (idx for idx, item in enumerate(sources) if str(item.get("name") or "") == name),
+                None,
+            )
+            if existing_index is None:
+                sources.append(source)
+            else:
+                sources[existing_index] = source
+    by_name = {str(source.get("name") or ""): source for source in sources}
+    missing = [name for name in FINAL_WEIGHTS if name not in by_name]
+    if missing:
+        raise RuntimeError(f"Cannot combine V18 supplement; missing sources: {missing}")
+    ordered_sources = [by_name[name] for name in FINAL_WEIGHTS]
+    for source in ordered_sources:
+        source["weight"] = FINAL_WEIGHTS[str(source["name"])]
+    manifest = write_manifest(ordered_sources, manifest_path)
+    weights = _weights_payload(ordered_sources, manifest["created_at_utc"])
+    license_summary = _source_license_summary(ordered_sources)
+    _json_dump(f"{V18_ROOT}/final_mixture_weights.json", weights)
+    _json_dump(f"{V18_ROOT}/mixture_license_summary.json", license_summary)
+    volume.commit()
+    result = {
+        "manifest": manifest,
+        "final_mixture_weights": weights,
+        "mixture_license_summary": license_summary,
+    }
+    print(json.dumps(result, indent=2, ensure_ascii=True))
+    return result
+
+
+@app.function(
+    image=image,
+    volumes={"/checkpoints": volume},
+    secrets=[modal.Secret.from_name("huggingface")],
     timeout=12 * 60 * 60,
 )
 def build_all_remote() -> dict[str, Any]:
@@ -1658,12 +2600,20 @@ def main(mode: str = "inventory", source: str = "") -> None:
         if not source:
             raise ValueError("--source is required with --mode build-hf-source")
         build_hf_source_remote.remote(source)
+    elif mode == "build-lcs558k":
+        build_lcs558k_remote.remote()
+    elif mode == "build-visual-genome":
+        build_visual_genome_remote.remote()
     elif mode == "build-all":
         build_all_remote.remote()
     elif mode == "combine":
         combine_manifests_remote.remote()
+    elif mode == "combine-supplement":
+        combine_supplement_remote.remote()
     elif mode == "audit-hashes":
         audit_v18_hashes_remote.remote()
+    elif mode == "audit-supplement-hashes":
+        audit_supplement_hashes_remote.remote()
     elif mode == "filter-gqa-overlaps":
         filter_gqa_eval_overlaps_remote.remote()
     elif mode == "probe-hf":

@@ -45,5 +45,23 @@
     "revision": "9c0699cd19768ac5ab97568f6b3cbac4c0062884",
     "pinned_on": "2026-05-15",
     "license": "cc-by-4.0 / TextVQA and OpenImages terms"
+  },
+  "liuhaotian/LLaVA-Pretrain": {
+    "revision": "70f9d1e5e1a697fe35830875cfc7de1dd590d727",
+    "pinned_on": "2026-05-16",
+    "license": "mixed; LLaVA-Pretrain caption license noted",
+    "license_note": "User approved inclusion for V18 supplement; HF card license tag is other."
+  },
+  "Visual Genome Stanford CDN": {
+    "revision": "2023-06-28 annotation zip timestamps",
+    "pinned_on": "2026-05-16",
+    "license": "cc-by-4.0 / Visual Genome terms",
+    "source_base_url": "https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/",
+    "files": [
+      "region_descriptions.json.zip",
+      "attributes.json.zip",
+      "relationships.json.zip",
+      "image_data.json.zip"
+    ]
   }
 }
