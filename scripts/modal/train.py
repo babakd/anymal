@@ -436,6 +436,18 @@ def _parse_checkpoint_step_list(value):
     return tuple(sorted({int(part) for part in text.split()}))
 
 
+def _parse_tag_list(value):
+    """Parse a comma/space separated W&B tag list."""
+    if value is None:
+        return ()
+    if isinstance(value, (list, tuple, set)):
+        return tuple(str(part).strip() for part in value if str(part).strip())
+    text = str(value).replace(",", " ").strip()
+    if not text:
+        return ()
+    return tuple(part.strip() for part in text.split() if part.strip())
+
+
 def _parse_lora_target_modules(value):
     """Parse Modal-friendly comma/space separated LoRA target module suffixes."""
     if value is None:
@@ -2511,6 +2523,8 @@ def run_pretrain(
     pretrain_checkpoint=None,
     output_dir="/checkpoints/pretrain-output",
     run_name=None,
+    wandb_tags=None,
+    experiment_source_tag=None,
     pretrain_image_tokens=None,
     vision_image_size=None,
     llm_backbone=None,
@@ -3477,6 +3491,10 @@ def run_pretrain(
         use_wandb=use_wandb,
         wandb_project="anymal-pretrain",
         wandb_run_name=run_name,
+        wandb_tags=_parse_tag_list(wandb_tags),
+        experiment_source_tag=(str(experiment_source_tag).strip() or None)
+        if experiment_source_tag is not None
+        else None,
         resume_from_checkpoint=resume_checkpoint,
         loss_scale=float(pretrain_loss_scale or 1.0),
         loss_normalization=pretrain_loss_normalization or "mean",
@@ -8120,6 +8138,8 @@ def _pretrain_worker(local_rank, world_size, config):
             pretrain_checkpoint=config.get("pretrain_checkpoint"),
             output_dir=config["output_dir"],
             run_name=config.get("run_name"),
+            wandb_tags=config.get("wandb_tags"),
+            experiment_source_tag=config.get("experiment_source_tag"),
             pretrain_image_tokens=config.get("pretrain_image_tokens"),
             vision_image_size=config.get("vision_image_size"),
             dataset=config.get("dataset", "llava_pretrain"),
@@ -8304,6 +8324,8 @@ def _run_pretrain_distributed(
     resume_checkpoint=None,
     pretrain_checkpoint=None,
     run_name=None,
+    wandb_tags=None,
+    experiment_source_tag=None,
     pretrain_image_tokens=None,
     vision_image_size=None,
     dataset="llava_pretrain",
@@ -8419,6 +8441,8 @@ def _run_pretrain_distributed(
         "pretrain_checkpoint": pretrain_checkpoint,
         "output_dir": pretrain_output_dir,
         "run_name": run_name,
+        "wandb_tags": wandb_tags,
+        "experiment_source_tag": experiment_source_tag,
         "pretrain_image_tokens": pretrain_image_tokens,
         "vision_image_size": vision_image_size,
         "dataset": dataset,
@@ -8519,6 +8543,8 @@ def pretrain_distributed(
     resume_checkpoint=None,
     pretrain_checkpoint=None,
     run_name=None,
+    wandb_tags=None,
+    experiment_source_tag=None,
     pretrain_image_tokens=None,
     vision_image_size=None,
     dataset="llava_pretrain",
@@ -8604,6 +8630,8 @@ def pretrain_distributed(
         resume_checkpoint=resume_checkpoint,
         pretrain_checkpoint=pretrain_checkpoint,
         run_name=run_name,
+        wandb_tags=wandb_tags,
+        experiment_source_tag=experiment_source_tag,
         pretrain_image_tokens=pretrain_image_tokens,
         vision_image_size=vision_image_size,
         dataset=dataset,
@@ -8700,6 +8728,8 @@ def pretrain_distributed_h100(
     resume_checkpoint=None,
     pretrain_checkpoint=None,
     run_name=None,
+    wandb_tags=None,
+    experiment_source_tag=None,
     pretrain_image_tokens=None,
     vision_image_size=None,
     dataset="llava_pretrain",
@@ -8785,6 +8815,8 @@ def pretrain_distributed_h100(
         resume_checkpoint=resume_checkpoint,
         pretrain_checkpoint=pretrain_checkpoint,
         run_name=run_name,
+        wandb_tags=wandb_tags,
+        experiment_source_tag=experiment_source_tag,
         pretrain_image_tokens=pretrain_image_tokens,
         vision_image_size=vision_image_size,
         dataset=dataset,
@@ -9012,6 +9044,8 @@ def main(
     pretrain_output_dir: str = "/checkpoints/pretrain-output",
     dataset: str = "instruct_150k",
     run_name: str = None,
+    wandb_tags: str = "",
+    experiment_source_tag: str = "",
     background: bool = False,
     pretrain_image_tokens: int = None,
     vision_image_size: int = None,
@@ -9397,6 +9431,12 @@ def main(
         print(f"  Finetune checkpoint: {finetune_checkpoint}")
     if resume_checkpoint:
         print(f"  Resume from: {resume_checkpoint}")
+    parsed_wandb_tags = _parse_tag_list(wandb_tags)
+    parsed_experiment_source_tag = str(experiment_source_tag or "").strip() or None
+    if parsed_wandb_tags:
+        print(f"  W&B tags: {', '.join(parsed_wandb_tags)}")
+    if parsed_experiment_source_tag:
+        print(f"  Experiment source tag: {parsed_experiment_source_tag}")
 
     if stage == "pretrain":
         # Stage 1 uses multi-GPU distributed pretraining
@@ -9419,6 +9459,8 @@ def main(
             resume_checkpoint=resume_checkpoint,
             pretrain_checkpoint=pretrain_checkpoint,
             run_name=run_name,
+            wandb_tags=parsed_wandb_tags,
+            experiment_source_tag=parsed_experiment_source_tag,
             pretrain_image_tokens=pretrain_image_tokens,
             vision_image_size=vision_image_size,
             dataset=dataset,
