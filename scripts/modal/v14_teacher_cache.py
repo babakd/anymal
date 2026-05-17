@@ -91,6 +91,54 @@ def _teacher_kl_weights(batch: dict[str, Any], batch_size: int) -> list[float]:
     ]
 
 
+def _sample_metadata_without_loading_image(dataset_obj: Any, idx: int) -> tuple[str, float, str]:
+    """Return (sample_id, teacher_kl_weight, source) without calling __getitem__."""
+    if hasattr(dataset_obj, "dataset") and hasattr(dataset_obj, "indices"):
+        return _sample_metadata_without_loading_image(
+            dataset_obj.dataset,
+            int(dataset_obj.indices[int(idx)]),
+        )
+
+    if hasattr(dataset_obj, "strategy") and hasattr(dataset_obj, "datasets"):
+        if dataset_obj.strategy == "balanced":
+            source_idx = idx % len(dataset_obj.datasets)
+            local_idx = (idx // len(dataset_obj.datasets)) % len(dataset_obj.datasets[source_idx])
+        elif dataset_obj.strategy == "weighted":
+            source_idx = dataset_obj._weighted_cycle[idx % len(dataset_obj._weighted_cycle)]
+            stride = idx // len(dataset_obj._weighted_cycle)
+            if dataset_obj._weighted_index_mode == "hash":
+                local_idx = (
+                    stride * 1_000_003
+                    + (idx + 1) * 97_531
+                    + (source_idx + 1) * 31_337
+                ) % len(dataset_obj.datasets[source_idx])
+            else:
+                local_idx = stride % len(dataset_obj.datasets[source_idx])
+        else:
+            for source_idx, end in enumerate(dataset_obj._cumulative_lengths):
+                start = 0 if source_idx == 0 else dataset_obj._cumulative_lengths[source_idx - 1]
+                if idx < end:
+                    local_idx = idx - start
+                    break
+            else:
+                raise IndexError(idx)
+        source_name = str(dataset_obj.source_names[source_idx])
+        sample = dataset_obj.datasets[source_idx].samples[local_idx]
+        base_id = sample.get("id", local_idx)
+        return (
+            f"{source_name}:{int(local_idx)}:{base_id}",
+            float(sample.get("teacher_kl_weight") or 0.0),
+            source_name,
+        )
+
+    sample = dataset_obj.samples[idx]
+    return (
+        str(sample.get("id", idx)),
+        float(sample.get("teacher_kl_weight") or 0.0),
+        str(sample.get("mixture_source") or ""),
+    )
+
+
 @app.function(
     image=image,
     gpu="H100",
@@ -111,6 +159,7 @@ def build_v14_teacher_cache(
     split: str = "train",
     checkpoint_every_batches: int = 1000,
     resume: bool = True,
+    seed_cache_path: str = "",
 ) -> dict[str, Any]:
     import torch
     from torch.utils.data import DataLoader, Subset
@@ -208,6 +257,7 @@ def build_v14_teacher_cache(
     processed_batches = 0
     skipped_kl_disabled = 0
     resumed_from_partial = False
+    seeded_from_cache = ""
     if bool(resume) and os.path.exists(partial_path):
         partial = torch.load(partial_path, map_location="cpu")
         if partial.get("schema") != "v14_teacher_kl_topk_v1":
@@ -227,6 +277,33 @@ def build_v14_teacher_cache(
             "Resuming teacher cache partial: "
             f"path={partial_path}, processed_batches={processed_batches}, "
             f"entries={len(entries)}",
+            flush=True,
+        )
+    elif seed_cache_path:
+        seed = torch.load(seed_cache_path, map_location="cpu")
+        if seed.get("schema") != "v14_teacher_kl_topk_v1":
+            raise RuntimeError(f"Unexpected teacher-cache seed schema in {seed_cache_path}")
+        seed_top_k = int(seed.get("top_k") or 0)
+        if seed_top_k != int(top_k):
+            raise RuntimeError(
+                f"Teacher-cache seed top_k mismatch: seed={seed_top_k}, requested={top_k}"
+            )
+        seed_checkpoint = str(seed.get("teacher_checkpoint") or "")
+        if seed_checkpoint and os.path.normpath(seed_checkpoint) != os.path.normpath(
+            teacher_checkpoint
+        ):
+            raise RuntimeError(
+                "Teacher-cache seed checkpoint mismatch: "
+                f"seed={seed_checkpoint}, requested={teacher_checkpoint}"
+            )
+        entries = dict(seed.get("entries") or {})
+        total_answer_tokens = int(seed.get("answer_tokens") or 0)
+        total_remainder = float(seed.get("total_remainder_sum") or 0.0)
+        skipped_kl_disabled = int(seed.get("skipped_kl_disabled") or 0)
+        seeded_from_cache = str(seed_cache_path)
+        print(
+            "Seeding teacher cache build from existing cache: "
+            f"path={seed_cache_path}, entries={len(entries)}",
             flush=True,
         )
 
@@ -275,6 +352,7 @@ def build_v14_teacher_cache(
                 "image_placeholder_count": int(teacher_image_tokens),
             },
             "partial": bool(partial),
+            "seeded_from_cache": seeded_from_cache,
             "entries": entries,
         }
         tmp_path = path + ".tmp"
@@ -368,6 +446,110 @@ def build_v14_teacher_cache(
         "skipped_kl_disabled": int(skipped_kl_disabled),
         "processed_batches": int(processed_batches),
         "resumed_from_partial": bool(resumed_from_partial),
+        "seeded_from_cache": seeded_from_cache,
+    }
+    print(result, flush=True)
+    return result
+
+
+@app.function(
+    image=image,
+    timeout=60 * 60,
+    volumes={"/checkpoints": volume},
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def audit_teacher_cache_coverage(
+    *,
+    dataset: str,
+    cache_path: str,
+    teacher_checkpoint: str,
+    llm_backbone: str = "Qwen/Qwen3-8B",
+    teacher_image_tokens: int = 128,
+    split: str = "train",
+) -> dict[str, Any]:
+    import torch
+    from torch.utils.data import Subset
+    from transformers import AutoTokenizer
+
+    sys.path.insert(0, REMOTE_PROJECT_DIR)
+    from data.dataset_splitter import deterministic_train_val_split
+    from evaluation.checkpoint_eval.vqa_checkpoint_eval import (
+        _ensure_eval_llm_path,
+        _resolve_eval_llm_path,
+    )
+    from model_metadata import read_model_metadata
+    from scripts.modal.train import load_finetune_dataset
+
+    payload = torch.load(cache_path, map_location="cpu")
+    if payload.get("schema") != "v14_teacher_kl_topk_v1":
+        raise RuntimeError(f"Unexpected teacher-cache schema in {cache_path}")
+    cache_entries = payload.get("entries") or {}
+
+    teacher_meta = read_model_metadata(teacher_checkpoint) or {}
+    llm_path = _ensure_eval_llm_path(
+        _resolve_eval_llm_path(teacher_meta, llm_backbone),
+        model_meta=teacher_meta,
+        llm_backbone=llm_backbone,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(llm_path, trust_remote_code=True)
+    max_length = int(teacher_image_tokens) + 384
+    dataset_obj = load_finetune_dataset(
+        tokenizer,
+        dataset=dataset,
+        num_image_tokens=int(teacher_image_tokens),
+        image_token_policy="fixed",
+        min_image_tokens=int(teacher_image_tokens),
+        max_image_tokens=int(teacher_image_tokens),
+        image_size=int(teacher_meta.get("vision_image_size") or 384),
+        max_length=max_length,
+        vision_encoder_type="siglip2",
+        vision_model_name="google/siglip2-so400m-patch14-384",
+        image_view_mode="single",
+    )
+    split_key = str(split or "train").lower()
+    if split_key in {"all", "full", "dataset"}:
+        selected_dataset = dataset_obj
+    else:
+        train_dataset, val_dataset = deterministic_train_val_split(
+            dataset_obj,
+            val_fraction=0.05,
+        )
+        selected_dataset = val_dataset if split_key == "val" else train_dataset
+
+    if isinstance(selected_dataset, Subset):
+        base_dataset = selected_dataset.dataset
+        indices = list(selected_dataset.indices)
+    else:
+        base_dataset = selected_dataset
+        indices = list(range(len(selected_dataset)))
+
+    active_ids = set()
+    active_by_source: dict[str, int] = {}
+    missing = []
+    for idx in indices:
+        sample_id, weight, source = _sample_metadata_without_loading_image(
+            base_dataset,
+            int(idx),
+        )
+        if float(weight) <= 0.0:
+            continue
+        active_ids.add(sample_id)
+        active_by_source[source] = active_by_source.get(source, 0) + 1
+        if sample_id not in cache_entries:
+            missing.append(sample_id)
+
+    result = {
+        "dataset": dataset,
+        "split": split,
+        "cache_path": cache_path,
+        "cache_entries": len(cache_entries),
+        "selected_rows": len(indices),
+        "active_rows": sum(active_by_source.values()),
+        "unique_active_ids": len(active_ids),
+        "missing_active_ids": len(missing),
+        "missing_preview": missing[:20],
+        "active_by_source": active_by_source,
+        "cache_extra_entries": max(0, len(set(cache_entries) - active_ids)),
     }
     print(result, flush=True)
     return result
@@ -386,7 +568,22 @@ def main(
     split: str = "train",
     checkpoint_every_batches: int = 1000,
     resume: bool = True,
+    seed_cache_path: str = "",
+    audit_only: bool = False,
+    cache_path: str = "",
 ):
+    if audit_only:
+        print(
+            audit_teacher_cache_coverage.remote(
+                dataset=dataset,
+                cache_path=cache_path or output_path,
+                teacher_checkpoint=teacher_checkpoint,
+                llm_backbone=llm_backbone,
+                teacher_image_tokens=teacher_image_tokens,
+                split=split,
+            )
+        )
+        return
     print(
         build_v14_teacher_cache.remote(
             dataset=dataset,
@@ -400,5 +597,6 @@ def main(
             split=split,
             checkpoint_every_batches=checkpoint_every_batches,
             resume=resume,
+            seed_cache_path=seed_cache_path,
         )
     )

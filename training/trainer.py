@@ -39,6 +39,7 @@ Memory Optimization Strategies:
 import os
 import time
 import random
+from contextlib import nullcontext
 from numbers import Number
 import numpy as np
 import torch
@@ -456,7 +457,20 @@ class Trainer:
             if batch is None:
                 continue
 
-            loss = self._train_step(batch)
+            next_micro_step = micro_steps + 1
+            should_sync_gradients = (
+                next_micro_step % self.config.gradient_accumulation_steps == 0
+            )
+            sync_context = nullcontext()
+            if (
+                get_world_size() > 1
+                and hasattr(self.model, "no_sync")
+                and not should_sync_gradients
+            ):
+                sync_context = self.model.no_sync()
+
+            with sync_context:
+                loss = self._train_step(batch)
             micro_steps += 1
             self._record_accumulation_metrics(loss)
 
