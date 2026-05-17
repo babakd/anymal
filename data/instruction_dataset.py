@@ -214,18 +214,30 @@ class InstructionDataset(Dataset):
         if self.image_dir is None:
             return self.samples
 
-        # Get set of available images for fast lookup
+        # Get set of top-level available images for fast lookup. Some sources
+        # such as LCS-558k keep sampled images in nested shard directories, so
+        # fall back to an existence cache for refs containing subdirectories.
         available_images = set()
         for f in os.listdir(self.image_dir):
             if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
                 available_images.add(f)
+        nested_ref_cache = {}
 
         # Filter samples
         original_count = len(self.samples)
+        def _ref_available(ref):
+            if not ref:
+                return True
+            if ref in available_images:
+                return True
+            if ref not in nested_ref_cache:
+                nested_ref_cache[ref] = os.path.exists(os.path.join(self.image_dir, str(ref)))
+            return nested_ref_cache[ref]
+
         def _all_image_refs_available(sample):
             image_refs = [sample.get("image")]
             image_refs.extend(sample.get("negative_images") or [])
-            return all(ref in available_images for ref in image_refs if ref)
+            return all(_ref_available(ref) for ref in image_refs if ref)
 
         filtered = [
             s for s in self.samples
@@ -779,6 +791,7 @@ def _summarize_license_metadata(
                 "name": str(name),
                 "license": license_text,
                 "license_source": metadata.get("license_source"),
+                "license_note": metadata.get("license_note"),
                 "commercial_use_allowed": commercial,
                 "dataset_family": metadata.get("dataset_family"),
                 "loss_family": metadata.get("loss_family"),
@@ -1000,6 +1013,7 @@ def build_instruction_mixture_dataset(
             "sample_weight",
             "license",
             "license_source",
+            "license_note",
             "commercial_use_allowed",
         ):
             if key in entry:
@@ -1031,6 +1045,7 @@ def build_instruction_mixture_dataset(
                 for key in (
                     "license",
                     "license_source",
+                    "license_note",
                     "commercial_use_allowed",
                     "dataset_family",
                     "loss_family",
